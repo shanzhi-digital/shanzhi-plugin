@@ -1,0 +1,4 @@
+- insert:
+    - id: datahub-echarts
+      name: '@local/datahub-echarts'
+      config: {}

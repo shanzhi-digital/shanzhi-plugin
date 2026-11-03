@@ -1,0 +1,10 @@
+{
+  "name": "@local/datahub-echarts",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "description": "DataHub 问表图表",
+  "exports": {".": "./index.js", "./client": "./client.js", "./locale/*.json": "./locale/*.json", "./icon": "./icon.svg"},
+  "files": ["index.js", "core.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "LICENSE-ECHARTS", "NOTICE-ECHARTS", "LICENSE-ZRENDER"],
+  "dsh": {"bundle": {"patch": "./cordis.patch.yml"}, "client": {"platform": "web", "immediately": true, "inject": ["@deepseek-ai/dsh-client-ui-conversation"]}}
+}
