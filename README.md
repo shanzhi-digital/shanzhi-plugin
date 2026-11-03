@@ -22,7 +22,9 @@
 
 ## 许可证
 
-各插件目录中的 `LICENSE-ECHARTS`、`LICENSE-ZRENDER`、`NOTICE-ECHARTS` 仅约束对应的第三方组件（ECharts 为 Apache-2.0，zrender 为 BSD 3-Clause）。**本仓库原创代码的许可证尚未确定**，在仓库权利人决定并添加 LICENSE 之前，请不要将其视为 MIT/Apache 等开源许可下的自由分发。
+本仓库原创代码按 **MIT License** 开源分发，见仓库根目录 `LICENSE`。
+
+各插件目录中的 `LICENSE-ECHARTS`、`LICENSE-ZRENDER`、`NOTICE-ECHARTS` 仅约束对应的第三方组件（ECharts 为 Apache-2.0，zrender 为 BSD 3-Clause），转载时按其原文保留。
 
 ## 维护
 
