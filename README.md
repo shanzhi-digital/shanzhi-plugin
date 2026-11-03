@@ -1,4 +1,4 @@
-# 善智 Harness 插件集
+# 善治 Harness 插件集
 
 此仓库维护多个 DeepSeek Harness 插件，每个插件放在 `plugins/<插件名>` 目录下，独立版本、独立安装。
 
