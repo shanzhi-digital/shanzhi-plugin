@@ -2,20 +2,9 @@ import * as echarts from 'echarts';
 import React from 'react';
 import { finiteNumber } from '../core.js';
 const h=React.createElement;
-const KEY='datahub-echarts';
+import { KEY, definition } from './event-projection.js';
 const VERSION=typeof __PLUGIN_VERSION__==='string'?__PLUGIN_VERSION__:'dev';
 const VIEWS=[['bar','柱状图'],['line','折线图'],['pie','饼图'],['table','表格']];
-const definition={
-  kind:KEY,
-  match(event){if(event.type==='turn/start')return {id:String(event.data.turn),role:'start'};if(event.type==='tool/call'||event.type==='tool/result')return {id:String(event.data.turn),role:'update'};return null;},
-  start(_context,match){return {turn:match.event.data.turn,calls:new Set(),charts:[]};},
-  update(context,match){const e=match.event,s=context.state;if(e.type==='tool/call'){if(e.data.name!=='datahub_chart')return s;const calls=new Set(s.calls);calls.add(String(e.data.callId));return {...s,calls};}
-    if(e.type!=='tool/result'||e.surfaceOp!=='append'||e.data.message?.isError||e.data.error||!s.calls.has(String(e.data.message?.source?.callId)))return s;
-    const texts=(e.data.message?.content||[]).filter(x=>x.type==='text');if(texts.length!==1)return s;let value;try{value=JSON.parse(texts[0].text);}catch{return s;}
-    if(!value||!Array.isArray(value.data)||!Array.isArray(value.columns)||!Array.isArray(value.measures))return s;
-    return {...s,charts:[...s.charts,{seq:e.seq,value}]};},
-  buildLocationData(context,scope,previous){const s=context.state;if(scope!=='turn'||!s)return null;if(previous?.kind==='turn'&&previous.value===s.charts)return previous;return {kind:'turn',turn:s.turn,key:KEY,value:s.charts};}
-};
 const MUTED='var(--dsw-alias-label-secondary)';
 const BORDER='var(--dsw-alias-border-l1)';
 
@@ -42,18 +31,24 @@ function Segmented({view,onChange}){
    style:{border:0,borderLeft:id===VIEWS[0][0]?0:`1px solid ${BORDER}`,background:active?'var(--dsw-alias-bg-layer-2)':'transparent',color:active?'var(--dsw-alias-label-primary)':MUTED,cursor:'pointer',font:'inherit',fontSize:12,lineHeight:'24px',padding:'0 10px'}},label);}));
 }
 function Chart({value,inputActions}){
- const [view,setView]=React.useState(value.measures.length>0?(value.chartType||'bar'):'table');
+ const [view,setView]=React.useState(value.defaultView||(value.measures.length>0?(value.chartType||'bar'):'table'));
  const hasNumeric=value.measures.some(name=>value.data.some(row=>finiteNumber(row[name])!==null));
  const hasUnplottable=value.measures.some(name=>value.data.some(row=>row[name]!=null&&String(row[name]).trim()!==''&&finiteNumber(row[name])===null));
- const showChart=view!=='table'&&hasNumeric&&Boolean(value.dimension);
+ const invalidPie=view==='pie'&&(value.data.some(row=>(finiteNumber(row[value.measures[0]])??0)<0)||!value.data.some(row=>(finiteNumber(row[value.measures[0]])??0)>0));
+ const showChart=view!=='table'&&hasNumeric&&Boolean(value.dimension)&&!invalidPie;
+ const sourceLabel=value.datasourceId!=null?`数据源：${value.datasourceId}`:value.source?.toolName?`来源：${value.source.toolName}`:'查询结果';
+ const totalNote=value.rowCount>value.data.length?` / 共 ${value.rowCount} 行`:'';
  return h('section',{style:{border:`1px solid ${BORDER}`,background:'var(--dsw-alias-bg-layer-1)',color:'var(--dsw-alias-label-primary)',borderRadius:10,padding:16,margin:'12px 0',overflow:'hidden'}},
   h('div',{style:{display:'flex',alignItems:'flex-start',gap:12,flexWrap:'wrap',justifyContent:'space-between'}},
    h('div',{style:{minWidth:0,flex:'1 1 200px'}},
     h('strong',null,value.title||'数据图表'),
-    h('div',{style:{fontSize:12,color:MUTED,marginTop:4}},`数据源：${value.datasourceId} · 返回 ${value.data.length} 行${value.truncated?' · 结果已截断，可继续分页':''}${hasUnplottable?' · 部分数值无法安全绘制，原值见表格':''}`)),
+    h('div',{style:{fontSize:12,color:MUTED,marginTop:4}},`${sourceLabel} · 返回 ${value.data.length} 行${totalNote}${value.offset>0?` · 偏移 ${value.offset}`:''}${value.truncated?' · 仅展示部分结果，可继续分页':''}${hasUnplottable?' · 部分数值无法安全绘制，原值见表格':''}`)),
    h(Segmented,{view,onChange:setView})),
   h('div',{style:{marginTop:12}},showChart?h(Plot,{value,type:view}):h(ResultTable,{value})),
-  view==='table'&&value.data.length===0?h('p',{style:{color:MUTED,fontSize:12}},value.reason||'查询没有返回数据。'):null,
+  !showChart&&(value.reason||invalidPie)?h('p',{style:{color:MUTED,fontSize:12}},value.reason||(invalidPie?'结果含负数或全部为零，无法呈现有效占比，已保留原始表格。':'')):null,
+   value.source?h('details',{style:{marginTop:10,fontSize:12,color:MUTED}},h('summary',{style:{cursor:'pointer'}},'查看查询来源'),
+    h('div',{style:{marginTop:6,overflowWrap:'anywhere'}},`工具：${value.source.toolName} · 调用：${value.source.callId}`),
+    value.source.sql?h('pre',{style:{whiteSpace:'pre-wrap',overflowWrap:'anywhere',padding:10,border:`1px solid ${BORDER}`,borderRadius:6}},value.source.sql):null):null,
   h(FollowUps,{items:value.followUps,inputActions}),
   h('div',{style:{marginTop:8,fontSize:11,color:MUTED,textAlign:'right'}},`问表图表插件 v${VERSION}`));
 }

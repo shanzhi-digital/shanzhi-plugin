@@ -6,7 +6,7 @@
 
 | 目录 | 名称 | 版本 | 说明 |
 |---|---|---|---|
-| `plugins/datahub-echarts` | DataHub 问表图表 | 0.6.0 | 问表/问图时用 ECharts 渲染授权 DataHub 数据源的真实查询结果，附跟问建议 |
+| `plugins/datahub-echarts` | 通用查询结果图表 | 0.7.0 | 消费当前会话真实查询结果，提供图表/表格切换和三个跟问，保留 DataHub 兼容入口 |
 
 ## 使用
 
@@ -17,7 +17,7 @@
 
 ## 目录约定
 
-- 每个插件包含：运行文件（`index.js`、`core.js`、`client.js`、`cordis.patch.yml`、locale、icon）、第三方许可文件，以及 `build/` 下的客户端构建源与烟测脚本。
+- 每个插件包含：运行文件（`index.js`、`core.js`、`results.js`、`client.js`、`cordis.patch.yml`、locale、icon）、第三方许可文件，以及 `build/` 下的客户端构建源与烟测脚本。
 - 新增插件请沿用同一结构，并在本文件的清单中登记名称、版本与说明。
 
 ## 许可证

@@ -36,6 +36,10 @@ test('无图表时保留真实结果并给出原因',()=>{
  const empty=buildChart(bare,{...result,data:[],rowCount:0});assert.deepEqual(empty.data,[]);assert.match(empty.reason,/没有返回/);
  assert.equal(finiteNumber('   '),null);assert.equal(finiteNumber('9007199254740992'),null);assert.equal(finiteNumber('3'),3);
 });
+test('安全数值边界不会吞掉十进制或科学计数的小数部分',()=>{
+ for(const value of ['9007199254740991.1','-9007199254740991.1','9007199254740990.9','9.0071992547409911e15']) assert.equal(finiteNumber(value),null,value);
+ for(const value of ['9007199254740991','9007199254740991.0','9.007199254740991e15','90071992547409910e-1']) assert.equal(finiteNumber(value),Number.MAX_SAFE_INTEGER,value);
+});
 test('省略或给错绘图列时按真实结果自动识别',()=>{
  const bare={datasourceId:args.datasourceId,sql:args.sql,title:'结果'};
  const real={...result,columns:[{name:'activity_type',type:'String',title:'活动类别'},{name:'enroll',type:'Int64',title:'已报名人数'},{name:'checkin',type:'Int64',title:'签到人数'},{name:'id',type:'Int64',title:'活动编号'}],data:[{activity_type:'志愿服务',enroll:'691',checkin:'644',id:'3'},{activity_type:'文体活动',enroll:'1006',checkin:'960',id:'4'}]};
@@ -89,6 +93,9 @@ test('跟问建议最多三条且去重清洗',()=>{
 test('模拟查询管线绑定当前会话结果',async()=>{
  let tool,query; const agent={id:'a'}; const signal=new AbortController().signal; const token=Symbol('parent');
  const ctx={systemPrompt:{section(){}},sessions:{get(id){assert.equal(id,'a');return {snapshotEvents(){return [{type:'turn/start'},user('问表')]}}}},tools:{register(t){tool=t},get(name,scope){assert.equal(scope,agent);return {}},async execute(input){query=input;return {isError:false,value:result}}}};
- apply(ctx); const value=await tool.execute(args,{agent,signal,token,rootCallId:'root'});
+ apply(ctx);
+ await assert.rejects(tool.execute({...args,followUps:Array(3).fill('可以展开查看这些活动吗？')},{agent,signal,token,rootCallId:'root'}),/3 条/);
+ assert.equal(query,undefined);
+ const value=await tool.execute({...args,followUps:['可以展开查看这些活动吗？','可以按月展示报名人数吗？','可以换成志愿时长指标吗？']},{agent,signal,token,rootCallId:'root'});
  assert.equal(query.name,'mcp__datahub-ask-data__execute_semantic_sql');assert.equal(query.agent,agent);assert.equal(query.signal,signal);assert.equal(query.parent,token);assert.equal(query.arguments.sql,args.sql);assert.deepEqual(value.data,result.data);
 });

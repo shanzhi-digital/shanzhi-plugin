@@ -39,17 +39,32 @@ export function finiteNumber(value) {
   if (value === null || value === undefined || (typeof value === 'string' && !value.trim())) return null;
   if (typeof value !== 'number' && typeof value !== 'string') return null;
   const number = Number(value);
-  return Number.isFinite(number) && Math.abs(number) <= Number.MAX_SAFE_INTEGER ? number : null;
+  if (!Number.isFinite(number) || Math.abs(number) > Number.MAX_SAFE_INTEGER) return null;
+  if (typeof value === 'string' && Math.abs(number) === Number.MAX_SAFE_INTEGER) {
+    // A decimal just beyond the safe boundary can round back to MAX_SAFE_INTEGER.
+    const parts = value.trim().match(/^[+-]?(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i);
+    if (parts) {
+      const digits = parts[1] + (parts[2] || '');
+      const decimalPoint = parts[1].length + Number(parts[3] || 0);
+      if (/[1-9]/.test(digits.slice(Math.max(0, decimalPoint)))) return null;
+    }
+  }
+  return number;
 }
 
 const NUMERIC_TYPE = /(?:number|int|decimal|float|double|numeric|real)/i;
-const ID_LIKE = /(?:^id$|_id$)/i;
+const ID_LIKE = /(?:^id$|_id$|_no$|Id$|ID$)/;
 const ID_TITLE = /编号|学号|身份证|证件|工号/u;
 /** Trailing words that decorate a measure title without changing what it counts. */
 const MEASURE_DECORATION = /(?:合计|总计|总数|数量|总|值)$/u;
 
 export function numericMeasure(column) {
   return NUMERIC_TYPE.test(column?.type || '') && !ID_LIKE.test(column?.name || '') &&
+    !ID_TITLE.test(`${column?.title || ''}${column?.name || ''}`);
+}
+
+export function categoryDimension(column) {
+  return !NUMERIC_TYPE.test(column?.type || '') && !ID_LIKE.test(column?.name || '') &&
     !ID_TITLE.test(`${column?.title || ''}${column?.name || ''}`);
 }
 
@@ -97,6 +112,11 @@ export function buildChart(args, result, question = '') {
   if (String(result.datasourceId) !== String(args.datasourceId) || result.semanticSql !== args.sql) {
     throw new Error('返回数据源或 SQL 与请求不一致，未生成图表。');
   }
+  return buildResultChart(args, result, question);
+}
+
+/** Renderer shared by DataHub and tabular results from other query tools. */
+export function buildResultChart(args, result, question = '') {
   const columns = result.columns;
   const byName = new Map(columns.map((column) => [column.name, column]));
   const names = new Set(columns.map((column) => column.name));
@@ -106,33 +126,42 @@ export function buildChart(args, result, question = '') {
     const column = byName.get(name);
     return column && name !== args.dimension && numericMeasure(column);
   });
-  const requestedDimension = typeof args.dimension === 'string' && names.has(args.dimension) && !requestedMeasures.includes(args.dimension);
+  const requestedDimension = typeof args.dimension === 'string' && names.has(args.dimension) &&
+    categoryDimension(byName.get(args.dimension)) && !requestedMeasures.includes(args.dimension);
 
   // Precedence: what the caller declared, then what the question names, then the first numeric column.
   const numericColumns = columns.filter(numericMeasure).map((column) => column.name);
   const named = measuresFromQuestion(columns, question).filter((name) => name !== args.dimension);
   const measures = requestedMeasures.length > 0 ? requestedMeasures
     : named.length > 0 ? named : numericColumns.slice(0, 1);
-  const nonNumeric = columns.filter((column) => !numericMeasure(column)).map((column) => column.name);
+  const nonNumeric = columns.filter(categoryDimension).map((column) => column.name);
   const dimension = requestedDimension ? args.dimension : nonNumeric[0] ?? null;
 
   const chartType = args.chartType === 'line' || args.chartType === 'pie' || args.chartType === 'bar'
     ? args.chartType : inferChartType(question);
   // A pie shows the share of one measure; more than one measure would misrepresent the whole.
   const plottedMeasures = chartType === 'pie' ? measures.slice(0, 1) : measures;
-  const canChart = hasValue && dimension !== null && plottedMeasures.length > 0 &&
+  const invalidPie = chartType === 'pie' && plottedMeasures.length > 0 &&
+    (result.data.some(row => (finiteNumber(row[plottedMeasures[0]]) ?? 0) < 0) ||
+      !result.data.some(row => (finiteNumber(row[plottedMeasures[0]]) ?? 0) > 0));
+  const canChart = hasValue && dimension !== null && plottedMeasures.length > 0 && !invalidPie &&
     result.data.some((row) => plottedMeasures.some((name) => finiteNumber(row[name]) !== null));
 
   const reason = !hasValue ? '查询没有返回数据。' : canChart ? '' :
+    invalidPie ? '结果含负数或全部为零，无法呈现有效占比，已保留原始表格。' :
     dimension === null ? '结果只有数值列，没有可作类别的维度，已保留原始表格。'
       : plottedMeasures.length === 0 ? '结果没有可绘制的数值指标，已保留原始表格。'
         : '结果中的数值为空或超出安全精度，已保留原始表格。';
 
   const followUps = cleanFollowUps(args.followUps);
+  // A rejected share can still be a valid bar/line chart when the user switches views.
+  const switchable = canChart || (hasValue && invalidPie && dimension !== null &&
+    result.data.some(row => plottedMeasures.some(name => finiteNumber(row[name]) !== null)));
 
   return {title: args.title, datasourceId: result.datasourceId, columns, data: result.data,
     rowCount: result.rowCount ?? result.data.length, truncated: result.truncated === true, offset: result.offset ?? 0, limit: result.limit ?? result.data.length,
-    dimension: canChart ? dimension : null, measures: canChart ? plottedMeasures : [], chartType, reason, followUps};
+    dimension: switchable ? dimension : null, measures: switchable ? plottedMeasures : [], chartType,
+    defaultView: canChart ? chartType : 'table', reason, followUps};
 }
 
 /** At most three short, non-duplicate follow-up questions the user can pick up next. */

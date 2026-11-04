@@ -1,1 +1,1 @@
-{"meta":{"title":"DataHub 问表图表","description":"将授权数据源的问表结果显示为交互图表和数据表。"}}
+{"meta":{"title":"通用查询结果图表","description":"将当前会话真实查询结果显示为交互图表和数据表，兼容 DataHub 与其他查询工具。"}}
