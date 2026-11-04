@@ -1,6 +1,6 @@
 {
   "name": "dsh-sql",
-  "version": "0.6.0-local.1",
+  "version": "0.6.0-local.2",
   "description": "数据源：可视化管理 MySQL、PostgreSQL 和 SQLite，提供三个只读 SQL 工具。",
   "type": "module",
   "main": "./index.js",

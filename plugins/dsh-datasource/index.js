@@ -15,10 +15,10 @@ export function createSecrets(credentials) {
   return {
     async get(key) {
       const record = await credentials.readRecord(recordKey(key));
-      return typeof record?.payload?.password === 'string' ? record.payload.password : undefined;
+      return record?.kind === 'grant' && typeof record.payload?.password === 'string' ? record.payload.password : undefined;
     },
     async set(key, password) {
-      await credentials.modifyRecord(recordKey(key), async () => ({ kind: 'database-password', payload: { password } }));
+      await credentials.modifyRecord(recordKey(key), async () => ({ kind: 'grant', payload: { password } }));
     },
     async delete(key) { await credentials.deleteRecord(recordKey(key)); },
   };

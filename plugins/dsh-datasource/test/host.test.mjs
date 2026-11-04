@@ -1,18 +1,61 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { API_PREFIX, createSecrets, registerRoutes } from '../index.js';
 import { DatasourceRuntime } from '../runtime.js';
 
-// Contract fake for the Host's native CredentialRecords methods. It models record
-// keys/documents, not the Host's encryption, owner authentication or authorization.
+// Contract fake for the Host's native CredentialRecords methods. The native
+// credentials-local document admits only api-key (key/env) and grant (JSON
+// payload) records and rejects extra fields. Fixture persistence below is JSON,
+// not the Host's YAML provider, file permissions, authentication or authorization.
+function assertJsonPayload(value, seen = new Set()) {
+  if (value === null || ['string', 'boolean'].includes(typeof value)) return;
+  if (typeof value === 'number' && Number.isFinite(value)) return;
+  assert.ok(value && typeof value === 'object' && (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype), 'grant payload must be JSON');
+  assert.equal(seen.has(value), false, 'grant payload must not be cyclic');
+  seen.add(value);
+  for (const nested of Object.values(value)) assertJsonPayload(nested, seen);
+  seen.delete(value);
+}
+function assertNativeRecord(record) {
+  assert.ok(record && typeof record === 'object' && !Array.isArray(record), 'record must be a mapping');
+  assert.ok(['api-key', 'grant'].includes(record.kind), 'record kind must be api-key or grant');
+  const allowed = record.kind === 'grant' ? ['kind', 'payload'] : ['kind', 'key', 'env'];
+  assert.ok(Object.keys(record).every((field) => allowed.includes(field)), 'record has an unknown field');
+  if (record.kind === 'grant') {
+    assert.ok(Object.hasOwn(record, 'payload'), 'grant record needs a payload');
+    assertJsonPayload(record.payload);
+  } else {
+    assert.ok(record.key === undefined || (typeof record.key === 'string' && record.key.length > 0), 'api-key key must be a non-empty string');
+    if (record.env !== undefined) {
+      assert.ok(record.env && typeof record.env === 'object' && !Array.isArray(record.env), 'api-key env must be a mapping');
+      for (const [name, value] of Object.entries(record.env)) {
+        assert.match(name, /^[A-Za-z_][A-Za-z0-9_]*$/);
+        assert.ok(typeof value === 'string' && value.length > 0, 'api-key env value must be a non-empty string');
+      }
+    }
+  }
+}
 class CredentialRecords {
   records = new Map();
   calls = [];
 
+  constructor(records = []) {
+    for (const [key, record] of records) {
+      this.#check(key);
+      assertNativeRecord(record);
+      this.records.set(key, structuredClone(record));
+    }
+  }
+  async persist(filePath) {
+    await writeFile(filePath, JSON.stringify([...this.records]), 'utf8');
+  }
+  static async reload(filePath) {
+    return new CredentialRecords(JSON.parse(await readFile(filePath, 'utf8')));
+  }
   #check(key) {
     assert.match(key, /^sql\/[a-z][a-z0-9-]*$/);
   }
@@ -26,8 +69,8 @@ class CredentialRecords {
     this.calls.push(['modifyRecord', key]);
     const previous = this.records.has(key) ? structuredClone(this.records.get(key)) : undefined;
     const next = await modify(previous);
-    assert.equal(typeof next.kind, 'string');
-    assert.equal(typeof next.payload, 'object');
+    if (next === undefined) return previous;
+    assertNativeRecord(next);
     this.records.set(key, structuredClone(next));
     return structuredClone(next);
   }
@@ -57,15 +100,16 @@ async function setup(t) {
   db.close();
   const credentials = new CredentialRecords();
   const runtime = new DatasourceRuntime({ filePath, secrets: createSecrets(credentials) });
+  const runtimes = [runtime];
   await runtime.initialize();
   const routes = register(runtime);
   t.after(async () => {
-    await runtime.close();
+    await Promise.allSettled(runtimes.map((item) => item.close()));
     assert.ok(resolve(directory).startsWith(resolve(tmpdir())));
     // Remove only this test's uniquely generated temporary directory.
     await rm(directory, { recursive: true, force: true });
   });
-  return { directory, file, filePath, credentials, runtime, routes };
+  return { directory, file, filePath, credentials, runtime, runtimes, routes };
 }
 
 async function call(routes, operation, options = {}) {
@@ -93,6 +137,35 @@ async function json(response, status = 200) {
 
 const network = { name: '服务器凭据', description: '不连接实际服务器', engine: 'mysql', host: 'localhost', port: 3306, user: 'readonly_fixture', database: 'fixture' };
 
+test('credential contract rejects the legacy custom kind and invalid native record shapes', async () => {
+  const credentials = new CredentialRecords();
+  const key = 'sql/fixture-password';
+  const legacy = { kind: 'database-password', payload: { password: 'synthetic-legacy-password' } };
+  await assert.rejects(credentials.modifyRecord(key, async () => legacy), /record kind must be api-key or grant/);
+  assert.throws(() => new CredentialRecords([[key, legacy]]), /record kind must be api-key or grant/);
+  for (const record of [
+    {}, [], null, { kind: 'oauth' },
+    { kind: 'grant' },
+    { kind: 'grant', payload: undefined },
+    { kind: 'grant', payload: { password: Infinity } },
+    { kind: 'grant', payload: { password: new Date() } },
+    { kind: 'grant', payload: {}, extra: true },
+    { kind: 'api-key', payload: {} },
+    { kind: 'api-key', key: '' },
+    { kind: 'api-key', env: { INVALID: '' } },
+  ]) {
+    await assert.rejects(credentials.modifyRecord(key, async () => record));
+  }
+  assert.equal(credentials.records.size, 0);
+  // Native grants admit any JSON payload, while api-key uses its own fields.
+  for (const payload of [null, false, 123, 'fixture', ['fixture'], { nested: { fixture: true } }]) {
+    const record = { kind: 'grant', payload };
+    assert.deepEqual(await credentials.modifyRecord(key, async () => record), record);
+  }
+  const apiKey = { kind: 'api-key', key: 'synthetic-api-key', env: { FIXTURE_KEY: 'synthetic-env-key' } };
+  assert.deepEqual(await credentials.modifyRecord(key, async () => apiKey), apiKey);
+});
+
 test('createSecrets maps keys to native scoped records and performs password CRUD', async () => {
   const credentials = new CredentialRecords();
   const secrets = createSecrets(credentials);
@@ -100,7 +173,7 @@ test('createSecrets maps keys to native scoped records and performs password CRU
   const recordKey = 'sql/dsh-datasource-2b7995a5-7eae-4729-ba8c-39ed7ad72ed8-password';
   assert.equal(await secrets.get(key), undefined);
   await secrets.set(key, '  synthetic-record-password  ');
-  assert.deepEqual(credentials.records.get(recordKey), { kind: 'database-password', payload: { password: '  synthetic-record-password  ' } });
+  assert.deepEqual(credentials.records.get(recordKey), { kind: 'grant', payload: { password: '  synthetic-record-password  ' } });
   assert.equal(await secrets.get(key), '  synthetic-record-password  ');
   await secrets.set(key, 'replacement-fixture-password');
   assert.equal(await secrets.get(key), 'replacement-fixture-password');
@@ -111,17 +184,29 @@ test('createSecrets maps keys to native scoped records and performs password CRU
   assert.ok(credentials.calls.some(([method, id]) => method === 'deleteRecord' && id === recordKey));
 });
 
-test('createSecrets treats absent, incomplete and non-string password payloads as absent', async () => {
+test('createSecrets reads only string passwords from grant records', async () => {
   const credentials = new CredentialRecords();
   const secrets = createSecrets(credentials);
   const key = 'dsh-datasource:fixture:password';
   const id = 'sql/dsh-datasource-fixture-password';
-  for (const value of [undefined, null, {}, { kind: 'database-password' }, { payload: null }, { payload: {} }, { payload: { password: 123 } }, { payload: { password: false } }]) {
+  // Bypass write validation to exercise defensive reads of unexpected service results.
+  for (const value of [
+    undefined, null, {},
+    { kind: 'grant' },
+    { kind: 'grant', payload: null },
+    { kind: 'grant', payload: {} },
+    { kind: 'grant', payload: { password: 123 } },
+    { kind: 'grant', payload: { password: false } },
+    { kind: 'grant', payload: 'synthetic-scalar-password' },
+    { kind: 'api-key', key: 'synthetic-api-key' },
+    { payload: { password: 'synthetic-untyped-password' } },
+    { kind: 'database-password', payload: { password: 'synthetic-legacy-password' } },
+  ]) {
     if (value === undefined) credentials.records.delete(id);
     else credentials.records.set(id, value);
     assert.equal(await secrets.get(key), undefined);
   }
-  credentials.records.set(id, { payload: { password: '' } });
+  credentials.records.set(id, { kind: 'grant', payload: { password: '' } });
   assert.equal(await secrets.get(key), '');
 });
 
@@ -203,6 +288,38 @@ test('route responses never expose saved passwords and native records follow sav
   await json(await call(routes, 'save', { data: { id: saved.item.id, password: 'replacement-fixture-password' } }));
   await json(await call(routes, 'remove', { data: { id: saved.item.id } }));
   assert.equal(credentials.records.size, 0);
+});
+
+test('grant passwords persist and reload with metadata without appearing in route responses', async (t) => {
+  const { directory, routes, runtime, runtimes, credentials, filePath } = await setup(t);
+  const password = '  synthetic-reload-password  ';
+  const saved = await json(await call(routes, 'save', { data: { ...network, password } }));
+  const recordKey = 'sql/dsh-datasource-' + saved.item.id + '-password';
+  const fixturePath = join(directory, 'credential-records.fixture.json');
+  await credentials.persist(fixturePath);
+  assert.deepEqual(JSON.parse(await readFile(fixturePath, 'utf8')), [[recordKey, { kind: 'grant', payload: { password } }]]);
+  await runtime.close();
+  credentials.records.clear();
+
+  const reloadedCredentials = await CredentialRecords.reload(fixturePath);
+  const secrets = createSecrets(reloadedCredentials);
+  assert.equal(await secrets.get('dsh-datasource:' + saved.item.id + ':password'), password);
+  const reloaded = new DatasourceRuntime({ filePath, secrets });
+  runtimes.push(reloaded);
+  await reloaded.initialize();
+  const reloadedRoutes = register(reloaded);
+  const listed = await json(await call(reloadedRoutes, 'list'));
+  assert.deepEqual(listed.items, [saved.item]);
+  const edited = await json(await call(reloadedRoutes, 'save', { data: { id: saved.item.id, password: '' } }));
+  assert.equal(edited.item.hasPassword, true);
+  assert.equal(reloadedCredentials.records.get(recordKey).payload.password, password);
+  assert.doesNotMatch(await readFile(filePath, 'utf8'), /synthetic-reload-password|"password"|sql\/dsh-datasource/);
+  const removed = await json(await call(reloadedRoutes, 'remove', { data: { id: saved.item.id } }));
+  assert.deepEqual(removed, { ok: true });
+  assert.doesNotMatch(JSON.stringify({ saved, listed, edited, removed }), /synthetic-reload-password|"password"|"payload"/);
+  assert.doesNotMatch(await readFile(filePath, 'utf8'), /synthetic-reload-password|"password"|sql\/dsh-datasource/);
+  await reloadedCredentials.persist(fixturePath);
+  assert.equal((await CredentialRecords.reload(fixturePath)).records.size, 0);
 });
 
 test('POST routes reject missing and unsupported media types with 415 JSON', async (t) => {
