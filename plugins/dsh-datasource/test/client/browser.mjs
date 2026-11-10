@@ -68,7 +68,37 @@ const results = [];
 const check = (result, label) => { result.checks.push(label); console.log(`PASS ${result.viewport}: ${label}`); };
 const wait = (page, callback, argument) => page.waitForFunction(callback, argument, { timeout: 12000 });
 const calls = (page, action) => page.evaluate((name) => window.__fixture.calls.filter((call) => call.operation === 'flow-action' && call.payload.action === name).map((call) => call.payload), action);
-const tab = (page, name) => page.getByRole('tab', { name: new RegExp(`^${name}`) }).click();
+const mainTab = (page, name) => page.getByRole('tablist', { name: '数据源详情', exact: true }).getByRole('tab', { name: new RegExp(`^${name}`) });
+const tab = (page, name) => mainTab(page, name).click();
+const questionTab = (page, name) => page.getByRole('tab', { name, exact: true });
+const confirmQuestions = (page) => page.getByRole('button', { name: '确认并分析', exact: true });
+const viewSession = (page) => page.getByRole('button', { name: '查看会话', exact: true });
+const retryAnalysis = (page) => page.getByRole('button', { name: '重试分析', exact: true });
+async function assertQuestionPane(page, pane, questionCount = 12) {
+  const writing = pane === 'write';
+  if (!writing && questionCount > 0) await page.getByRole('checkbox', { name: /^选择问题：/ }).first().waitFor();
+  assert.equal(await questionTab(page, writing ? '填写问题' : '问题列表').getAttribute('aria-selected'), 'true');
+  assert.equal(await page.getByLabel('原问题，每行一个', { exact: true }).count(), writing ? 1 : 0);
+  assert.equal(await page.getByRole('checkbox', { name: /^选择问题：/ }).count(), writing ? 0 : questionCount);
+}
+async function assertSimpleDetail(page) {
+  assert.equal(await page.locator('.ds-steps, .ds-preview, .ds-batch-size, .ds-batches').count(), 0, 'Detail must omit the old steps, preview and batch controls');
+  assert.equal(await page.getByRole('navigation', { name: '数据源工作步骤', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: /^(?:预览分析批次|开始分析)/ }).count(), 0);
+}
+async function assertSourceColumns(page, result) {
+  const alignment = await page.getByTestId('source-row-fixture-mysql').evaluate((row) => {
+    const cells = [...row.cells], headers = [...row.closest('table').querySelectorAll('thead th')], rect = (element) => { const { left, right, width } = element.getBoundingClientRect(); return { left, right, width }; };
+    return { cells: cells.map(rect), name: rect(cells[0].querySelector('.ds-link')), type: rect(cells[1].firstElementChild), action: rect(cells[2].lastElementChild), table: rect(row.closest('table')), cellAlignment: cells.map((cell) => getComputedStyle(cell).textAlign), headerAlignment: headers.map((cell) => getComputedStyle(cell).textAlign) };
+  });
+  assert.equal(alignment.cells.length, 3);
+  for (const textAlign of [...alignment.cellAlignment.slice(0, 2), ...alignment.headerAlignment.slice(0, 2)]) assert.ok(['left', 'start'].includes(textAlign));
+  assert.equal(alignment.cellAlignment[2], 'right'); assert.equal(alignment.headerAlignment[2], 'right');
+  assert.ok(alignment.type.left >= alignment.name.right && alignment.type.left - alignment.name.right <= 220, 'Name and type should be adjacent near the left');
+  assert.ok(alignment.type.left < alignment.table.left + alignment.table.width * .45, 'Type should remain in the left portion at every desktop width');
+  assert.ok(alignment.table.right - alignment.action.right <= 25, 'Actions should align to the right edge');
+  result.columnAlignment = alignment;
+}
 const settlePoll = async (page, callback) => { await page.evaluate(callback); const count = await page.evaluate(() => window.__fixture.stateReads); await wait(page, (before) => window.__fixture.stateReads > before, count); };
 const screenshot = async (page, result, name) => { await page.locator('.dsh-ds').evaluate((element) => { element.scrollTop = 0; }); const filename = `${result.viewport}-${name}.png`; await page.screenshot({ path: path.join(output, filename), fullPage: true }); result.screenshots.push(filename); };
 async function setup(viewport, options = {}) {
@@ -134,13 +164,15 @@ const surfaceTokens = (stage) => [
     token('.ds-modal select', 'backgroundColor', '--dsw-specific-input-major'),
     token('.ds-modal select option', 'backgroundColor', '--dsw-specific-input-major'),
     token('.ds-modal select option', 'color', '--dsw-alias-label-primary'),
-  ] : [
+  ] : stage === 'question-list' ? [
     token('.ds-card', 'backgroundColor', '--dsw-alias-bg-layer-1'),
-    token('.ds-composer textarea', 'backgroundColor', '--dsw-specific-input-major'),
-    token('.ds-composer textarea', 'color', '--dsw-alias-label-primary'),
-    token('.ds-batch-size', 'backgroundColor', '--dsw-specific-input-major'),
+    token('.ds-question-text', 'color', '--dsw-alias-label-primary'),
     token('.dsh-ds input[type=checkbox]', 'accentColor', '--dsw-alias-brand-primary'),
     token('.dsh-ds th', 'backgroundColor', '--dsw-alias-bg-module-platform'),
+  ] : [
+    token('.ds-card', 'backgroundColor', '--dsw-alias-bg-layer-1'),
+    token('.ds-question-page textarea', 'backgroundColor', '--dsw-specific-input-major'),
+    token('.ds-question-page textarea', 'color', '--dsw-alias-label-primary'),
   ]),
 ];
 const primaryTokens = (selector = '.ds-button.primary:not(:disabled)', hover = false) => [
@@ -238,26 +270,33 @@ async function verifyThemeModes(viewport) {
       }
       await page.keyboard.press('Escape'); await page.getByRole('dialog').waitFor({ state: 'hidden' });
       check(result, `初始${initialTheme}弹框/原生input、select/option与成功说明，动态切换保留连接草稿`);
-      await page.getByRole('button', { name: '测试业务库', exact: true }).click(); await page.getByRole('heading', { name: '输入几个问题', exact: true }).waitFor();
+      await page.getByRole('button', { name: '测试业务库', exact: true }).click();
+      await assertQuestionPane(page, 'list'); await assertSimpleDetail(page);
+      await auditTheme(page, result, 'initial-question-list', [...surfaceTokens('question-list'), ...primaryTokens()], ['.ds-card h2', '.ds-question-text', '.ds-button.primary:not(:disabled)'], initialTheme);
+      await screenshot(page, result, 'questions');
+      await questionTab(page, '填写问题').click(); await assertQuestionPane(page, 'write');
       const editor = page.getByLabel('原问题，每行一个', { exact: true }); await editor.fill('主题切换时保留这一行未提交的问题。\n还有第二行输入草稿。'); await rememberDraft(editor);
-      await auditTheme(page, result, 'initial-questions', [...surfaceTokens('questions'), ...primaryTokens()], ['.ds-card h2', '.ds-question-text', '.ds-composer textarea', '.ds-button.primary:not(:disabled)'], initialTheme);
-      await auditStatusProse(page, result, initialTheme, 'initial'); await screenshot(page, result, 'questions');
+      await auditTheme(page, result, 'initial-questions', [...surfaceTokens('questions'), ...primaryTokens()], ['.ds-card h2', '.ds-question-page textarea', '.ds-button.primary:not(:disabled)'], initialTheme);
+      await auditStatusProse(page, result, initialTheme, 'initial'); await screenshot(page, result, 'questions-write');
       if (initialTheme === 'light') {
         for (const scheme of ['light', 'dark', 'light']) {
           await page.evaluate((scheme) => window.__fixtureTheme.set(scheme), scheme);
-          await auditTheme(page, result, `runtime-questions-${scheme}`, [...surfaceTokens('questions'), ...primaryTokens()], ['.ds-card h2', '.ds-question-text', '.ds-composer textarea', '.ds-button.primary:not(:disabled)'], scheme);
+          await auditTheme(page, result, `runtime-questions-${scheme}`, [...surfaceTokens('questions'), ...primaryTokens()], ['.ds-card h2', '.ds-question-page textarea', '.ds-button.primary:not(:disabled)'], scheme);
           await auditStatusProse(page, result, scheme, 'runtime'); await assertDraft(page, `questions-${scheme}`);
         }
         await page.evaluate((values) => { window.__fixtureTheme.set('dark'); window.__fixtureTheme.override(values); }, syntheticCustomOverrides);
-        await auditTheme(page, result, 'custom-questions', [...surfaceTokens('questions'), ...primaryTokens()], ['.ds-card h2', '.ds-question-text', '.ds-composer textarea', '.ds-button.primary:not(:disabled)'], 'dark');
+        await auditTheme(page, result, 'custom-questions', [...surfaceTokens('questions'), ...primaryTokens()], ['.ds-card h2', '.ds-question-page textarea', '.ds-button.primary:not(:disabled)'], 'dark');
         await auditStatusProse(page, result, 'dark', 'custom'); await assertDraft(page, 'custom-questions'); await screenshot(page, result, 'custom-questions');
         await page.evaluate(() => { window.__fixtureTheme.override(); window.__fixtureTheme.set('light'); }); await assertDraft(page, 'restored-questions');
-        await auditTheme(page, result, 'restored-questions', surfaceTokens('questions'), ['.ds-composer textarea', '.ds-question-text'], 'light');
+        await auditTheme(page, result, 'restored-questions', surfaceTokens('questions'), ['.ds-question-page textarea', '.ds-card h2'], 'light');
         assert.equal((await calls(page, 'organize')).length, 0, 'Theme changes must not submit the draft');
         check(result, '运行时light→dark→light与body自定义token/清除覆写，无重挂载，保留两类草稿、焦点与选区');
       }
       assert.deepEqual(errors, []); result.status = 'passed';
-      check(result, `初始${initialTheme}卡片/问题表格/textarea/checkbox与各类状态长文字使用label-primary且对比度≥4.5`);
+      const draft = await editor.inputValue();
+      await questionTab(page, '问题列表').click(); await assertQuestionPane(page, 'list');
+      await questionTab(page, '填写问题').click(); await assertQuestionPane(page, 'write'); assert.equal(await editor.inputValue(), draft);
+      check(result, `初始${initialTheme}问题列表/填写页互斥，卡片/表头/checkbox/textarea和状态文字对比度≥4.5，切换子页保留输入`);
     } catch (error) { result.status = 'failed'; result.error = error.stack; result.errors = errors; await screenshot(page, result, 'failure').catch(() => {}); throw error; }
     finally { await context.close(); }
   }
@@ -273,6 +312,7 @@ async function verifyDesktop(viewport) {
     assert.ok(registration.slots.some((slot) => slot.name === 'main' && slot.key === 'datasources'));
     assert.ok(registration.slots.some((slot) => slot.name === 'sidebar.panellist' && slot.id === 'datasources' && slot.order === 5));
     await page.getByTestId('source-row-fixture-mysql').waitFor();
+    await assertSourceColumns(page, result);
     await screenshot(page, result, 'list');
     await page.getByRole('button', { name: '编辑连接 测试业务库', exact: true }).click();
     assert.equal(await page.getByLabel('密码', { exact: true }).inputValue(), '');
@@ -303,66 +343,106 @@ async function verifyDesktop(viewport) {
     check(result, '连接测试、密码留空保留/明确清除、引擎切换、创建与删除；操作不误入详情');
 
     const originalHash = await page.evaluate(() => location.hash);
+    await page.getByTestId('source-row-fixture-mysql').click(); await assertQuestionPane(page, 'list'); await assertSimpleDetail(page);
+    await page.getByRole('button', { name: '‹ 返回数据源列表', exact: true }).click();
     await page.getByTestId('source-row-fixture-mysql').locator('td').nth(1).click();
-    await page.getByRole('heading', { name: '输入几个问题', exact: true }).waitFor();
-    assert.equal(await page.getByRole('tab', { name: /^问题/ }).getAttribute('aria-selected'), 'true');
+    await assertQuestionPane(page, 'list'); await assertSimpleDetail(page);
+    assert.equal(await mainTab(page, '问题').getAttribute('aria-selected'), 'true');
     await page.getByRole('button', { name: '‹ 返回数据源列表', exact: true }).click();
     await page.getByRole('button', { name: '测试业务库（已编辑）', exact: true }).click();
-    await page.getByRole('heading', { name: '输入几个问题', exact: true }).waitFor(); assert.equal(await page.evaluate(() => location.hash), originalHash);
+    await assertQuestionPane(page, 'list'); await assertSimpleDetail(page); assert.equal(await page.evaluate(() => location.hash), originalHash);
+    await questionTab(page, '填写问题').click(); await assertQuestionPane(page, 'write');
     await page.getByLabel('原问题，每行一个', { exact: true }).fill('新增原问题一\n新增原问题二');
-    await page.getByLabel('执行工作区', { exact: true }).fill('relative-workspace');
+    await page.locator('.ds-compose-settings summary').click();
+    await page.getByLabel('执行工作区（可选）', { exact: true }).fill('relative-workspace');
     await page.getByRole('button', { name: '整理问题', exact: true }).click();
     await page.getByRole('alert').filter({ hasText: '执行工作区请填写绝对路径。' }).waitFor();
     assert.equal((await calls(page, 'organize')).length, 0);
-    await page.getByLabel('执行工作区', { exact: true }).fill('D:/fixture/selected-workspace');
+    await page.getByLabel('执行工作区（可选）', { exact: true }).fill('D:/fixture/selected-workspace');
     await page.getByLabel('原问题，每行一个', { exact: true }).fill('新增原问题一\n新增原问题二');
     await page.getByRole('button', { name: '整理问题', exact: true }).click();
-    await page.getByRole('heading', { name: '任务进度', exact: true }).waitFor();
+    await viewSession(page).waitFor();
     const organized = (await calls(page, 'organize')).at(-1); assert.equal(organized.text, '新增原问题一\n新增原问题二'); assert.equal(organized.cwd, 'D:/fixture/selected-workspace');
-    await page.getByRole('button', { name: '查看第1批会话', exact: true }).click(); assert.equal((await page.evaluate(() => window.__fixture.sessions)).length, 1);
-    await page.evaluate(() => { window.__fixture.noWorkspace = true; }); await page.getByRole('button', { name: '查看第1批会话', exact: true }).click();
+    await viewSession(page).click(); assert.equal((await page.evaluate(() => window.__fixture.sessions)).length, 1);
+    await page.evaluate(() => { window.__fixture.noWorkspace = true; }); await viewSession(page).click();
     await page.getByText(/会话 ID：fixture-session/).first().waitFor();
+    await page.evaluate(() => { window.__fixture.noWorkspace = false; });
+    await settlePoll(page, () => { const state = window.__fixture.states['fixture-mysql'], run = state.runs.find((candidate) => candidate.kind === 'questions'); run.status = 'failed'; run.batches[0].status = 'failed'; run.batches[0].error = 'fixture 整理失败，可重试。'; state.revision++; });
+    const organizeRetry = page.getByRole('button', { name: '重试整理', exact: true }); await organizeRetry.waitFor(); await organizeRetry.click();
+    assert.equal((await calls(page, 'retry')).at(-1).runId, 'run-1'); assert.equal((await calls(page, 'retry')).at(-1).batchId, 'run-1-batch-0');
     await settlePoll(page, () => window.__fixture.completeQuestions());
-    await page.getByText('新增原问题一', { exact: true }).first().waitFor();
+    await page.getByText('新增原问题一', { exact: true }).first().waitFor(); await assertQuestionPane(page, 'list', 14);
+    await page.getByLabel('搜索问题', { exact: true }).fill('新增原问题');
+    assert.equal(await page.getByRole('checkbox', { name: /^选择问题：/ }).count(), 2);
+    await page.getByLabel('筛选问题', { exact: true }).selectOption('expanded');
+    assert.equal(await page.getByRole('checkbox', { name: /^选择问题：/ }).count(), 0);
+    await page.getByLabel('搜索问题', { exact: true }).fill('');
+    assert.equal(await page.getByRole('checkbox', { name: /^选择问题：/ }).count(), 10);
+    await page.getByLabel('筛选问题', { exact: true }).selectOption('all');
+    await page.getByRole('button', { name: '取消全选', exact: true }).click(); assert.equal(await page.locator('.ds-question-table input:checked').count(), 0);
+    await page.getByRole('button', { name: '全选问题', exact: true }).click(); assert.equal(await page.locator('.ds-question-table input:checked').count(), 14);
+    for (const text of ['新增原问题一', '新增原问题二']) await page.getByRole('checkbox', { name: '选择问题：' + text, exact: true }).uncheck();
     assert.equal((await calls(page, 'analyze')).length, 0);
-    check(result, '整行和名称点击进入问题页、返回、无hash导航、多行整理、任务回填与会话入口');
+    check(result, '整行/名称进入默认问题列表、无步骤条、返回和URL不变；列表/填写互斥，多行整理回填及通用会话入口');
 
     await page.getByRole('button', { name: '编辑问题1', exact: true }).click();
     const editor = page.getByLabel('问题正文', { exact: true }); await editor.fill('编辑后的完整问题，轮询期间保留。');
     await settlePoll(page, () => window.__fixture.bump()); assert.equal(await editor.inputValue(), '编辑后的完整问题，轮询期间保留。');
     assert.ok(await editor.evaluate((element) => document.activeElement === element));
     await page.evaluate(() => { window.__fixture.failNextAction = 'save-questions'; });
-    await page.getByRole('button', { name: '保存清单', exact: true }).click(); await page.getByRole('alert').filter({ hasText: '未保存的修改仍保留' }).waitFor();
+    await page.getByRole('button', { name: '保存问题清单', exact: true }).click(); await page.getByRole('alert').filter({ hasText: '未保存的修改仍保留' }).waitFor();
     assert.equal(await editor.inputValue(), '编辑后的完整问题，轮询期间保留。');
-    await page.getByRole('button', { name: '保存清单', exact: true }).click(); await editor.waitFor({ state: 'hidden' });
-    await page.getByRole('button', { name: '手动添加问题', exact: true }).click(); await editor.fill('手动添加并选择的问题。');
-    await page.getByRole('button', { name: '完成编辑', exact: true }).click(); await page.getByRole('checkbox', { name: '选择问题：手动添加并选择的问题。', exact: true }).check();
-    await page.getByRole('button', { name: '保存清单', exact: true }).click();
+    await page.getByRole('button', { name: '保存问题清单', exact: true }).click(); await editor.waitFor({ state: 'hidden' });
+    await questionTab(page, '填写问题').click();
+    await page.getByLabel('原问题，每行一个', { exact: true }).fill('手动添加并选择的问题。');
+    await page.getByRole('button', { name: '手动添加问题', exact: true }).click(); await assertQuestionPane(page, 'list', 15);
+    assert.equal(await page.getByRole('checkbox', { name: '选择问题：手动添加并选择的问题。', exact: true }).isChecked(), true);
+    await page.getByRole('button', { name: '保存问题清单', exact: true }).click();
     await wait(page, () => window.__fixture.states['fixture-mysql'].questions.length === 15);
-    await page.getByLabel('每批问题数', { exact: true }).selectOption('5');
-    await page.getByRole('button', { name: '预览分析批次', exact: true }).click();
-    const preview = page.getByTestId('analysis-preview'); await preview.waitFor();
-    assert.equal(await preview.locator('li').count(), 13); assert.equal(await preview.locator('.ds-preview-batch').count(), 3);
-    const firstSelection = page.getByRole('checkbox', { name: /^选择问题：/ }).first();
-    await firstSelection.uncheck(); assert.equal(await preview.count(), 0);
-    await firstSelection.check(); await page.getByRole('button', { name: '保存清单', exact: true }).click();
-    await page.getByRole('button', { name: '预览分析批次', exact: true }).click(); await preview.waitFor();
-    const expected = await page.evaluate(() => window.__fixture.states['fixture-mysql'].questions.filter((question) => question.selected).map((question) => question.text));
-    assert.deepEqual(await preview.locator('li').allTextContents(), expected); assert.equal((await calls(page, 'analyze')).length, 0);
-    await screenshot(page, result, 'questions');
-    check(result, '问题编辑/手动添加/选择保存，轮询保留焦点和草稿，409回读重试，13条完整快照3批且预览不执行，选项变化废弃预览');
+    await page.getByRole('button', { name: '删除问题14', exact: true }).click();
+    assert.equal(await page.getByRole('checkbox', { name: '选择问题：新增原问题二', exact: true }).count(), 0);
+    await page.getByRole('button', { name: '保存问题清单', exact: true }).click();
+    await wait(page, () => window.__fixture.states['fixture-mysql'].questions.length === 14);
+    assert.equal(await page.evaluate(() => window.__fixture.states['fixture-mysql'].questions.some((question) => question.text === '新增原问题二')), false);
+    const savedQuestions = await calls(page, 'save-questions');
+    const firstSelection = page.getByRole('checkbox', { name: /^选择问题：/ }).first(); await firstSelection.uncheck();
+    const expected = await page.evaluate(() => window.__fixture.states['fixture-mysql'].questions.filter((question) => question.selected && question.id !== 'q1').map((question) => question.text));
+    assert.equal(expected.length, 12); assert.equal((await calls(page, 'analyze')).length, 0);
+    await assertSimpleDetail(page); await screenshot(page, result, 'questions');
+    check(result, '问题编辑/手动添加/删除持久化、轮询保留焦点和草稿、409回读后重试，确认前不发起分析');
 
-    await page.getByRole('button', { name: '开始分析（共 3 批）', exact: true }).click();
+    await page.evaluate(() => { window.__fixture.failNextAction = 'save-questions'; }); await confirmQuestions(page).click();
+    await page.getByRole('alert').filter({ hasText: '未保存的修改仍保留' }).waitFor();
+    assert.equal((await calls(page, 'analyze')).length, 0); assert.equal(await firstSelection.isChecked(), false);
+    await confirmQuestions(page).click();
     await wait(page, () => window.__fixture.states['fixture-mysql'].runs.some((run) => run.kind === 'range'));
-    const analyzed = (await calls(page, 'analyze')).at(-1); assert.equal(analyzed.batchSize, 5); assert.equal(analyzed.cwd, 'D:/fixture/selected-workspace');
-    await page.getByRole('button', { name: '取消分析范围任务', exact: true }).waitFor();
+    const analyzed = (await calls(page, 'analyze')).at(-1), autoSaved = (await calls(page, 'save-questions')).at(-1);
+    assert.equal((await calls(page, 'save-questions')).length, savedQuestions.length + 2);
+    assert.equal(analyzed.revision, autoSaved.revision + 1); assert.equal(analyzed.batchSize, 5); assert.equal(analyzed.cwd, 'D:/fixture/selected-workspace');
+    const run = await page.evaluate(() => window.__fixture.states['fixture-mysql'].runs.find((run) => run.kind === 'range'));
+    assert.deepEqual(run.questionSnapshot.map((question) => question.text), expected); assert.equal(run.batches.length, 3);
+    assert.deepEqual(run.batches.flatMap((batch) => batch.questions.map((question) => question.text)), expected);
+    assert.equal((await calls(page, 'analyze')).length, 1); await assertSimpleDetail(page);
+    await page.getByRole('button', { name: '取消任务', exact: true }).waitFor();
     await screenshot(page, result, 'tasks');
     await settlePoll(page, () => window.__fixture.finishRange(true));
-    await page.getByRole('button', { name: '重试第2批', exact: true }).waitFor();
-    await page.getByRole('button', { name: '重试第2批', exact: true }).click();
-    assert.equal((await calls(page, 'retry')).length, 1);
+    await retryAnalysis(page).waitFor();
+    assert.equal(await page.getByRole('complementary', { name: '后台分析状态', exact: true }).count(), 1);
+    await page.locator('.ds-task-error summary').click(); await page.getByText('fixture 模型错误，可重试。', { exact: true }).waitFor();
+    const failedSession = await page.evaluate((id) => window.__fixture.states['fixture-mysql'].runs.find((run) => run.id === id).batches[1].sessionId, run.id);
+    await page.getByLabel('查看后台会话', { exact: true }).selectOption(failedSession);
+    assert.equal(await page.evaluate(() => window.__fixture.sessions.at(-1)), failedSession);
+    await assertSimpleDetail(page); await retryAnalysis(page).click();
+    const rangeRetries = (await calls(page, 'retry')).filter((payload) => payload.runId === run.id);
+    assert.equal(rangeRetries.length, 1); assert.equal(rangeRetries[0].batchId, run.batches[1].id);
     await settlePoll(page, () => window.__fixture.finishRange(false));
-    await tab(page, '数据表'); await page.getByRole('heading', { name: '数据表范围', exact: true }).waitFor();
+    await page.getByRole('heading', { name: '数据表范围', exact: true }).waitFor();
+    assert.equal(await mainTab(page, '数据表').getAttribute('aria-selected'), 'true');
+    await page.getByRole('button', { name: '查看关联关系', exact: true }).click();
+    assert.equal(await mainTab(page, '关联关系').getAttribute('aria-selected'), 'true');
+    await page.getByRole('button', { name: '查看数据表', exact: true }).click();
+    assert.equal(await mainTab(page, '数据表').getAttribute('aria-selected'), 'true');
+    assert.equal(await questionTab(page, '问题列表').count(), 0); assert.equal(await page.getByLabel('原问题，每行一个', { exact: true }).count(), 0);
     await page.locator('.ds-table-card').filter({ hasText: 'orders' }).locator('summary').click();
     const note = page.getByRole('checkbox', { name: '选择字段 orders.note', exact: true }); await note.uncheck();
     await settlePoll(page, () => window.__fixture.bump()); assert.equal(await note.isChecked(), false);
@@ -370,9 +450,10 @@ async function verifyDesktop(viewport) {
     await wait(page, () => !window.__fixture.states['fixture-mysql'].tables[0].fields.find((field) => field.name === 'note').selected);
     const tablePayload = (await calls(page, 'save-tables')).at(-1); assert.equal(tablePayload.tables[0].fields[2].name, 'note'); assert.equal(tablePayload.tables[0].fields[2].type, 'TEXT');
     await screenshot(page, result, 'tables');
-    check(result, '真实队列/进度回填、失败批次重试、表和字段选择保存且轮询保留草稿');
+    check(result, '确认直接保存最新选择并分析，12条完整快照仅在后台分3批；简洁状态、失败重试、完成查看结果和表字段草稿保存');
 
     await tab(page, '关联关系');
+    assert.equal(await page.locator('.ds-table-card').count(), 0); assert.equal(await questionTab(page, '问题列表').count(), 0);
     await page.getByRole('checkbox', { name: '选择关系1', exact: true }).check();
     await page.getByLabel('左侧字段 relation-orders-customer', { exact: true }).selectOption('id');
     await page.getByLabel('关系类型 relation-orders-customer', { exact: true }).selectOption('many-to-many');
@@ -392,23 +473,35 @@ async function verifyDesktop(viewport) {
     assert.equal(await page.getByLabel('关系类型 relation-orders-customer', { exact: true }).inputValue(), 'many-to-many'); assert.equal(await description.inputValue(), '用户核对后的关系说明。');
     await page.getByRole('button', { name: '确认关联关系', exact: true }).click(); await page.getByText('本轮关联关系已确认', { exact: true }).waitFor();
     await screenshot(page, result, 'relations');
+    if (viewport.width === 1440) {
+      await page.evaluate(() => window.__fixtureTheme.set('dark'));
+      await auditTheme(page, result, 'dark-result-relations', [token('.ds-card', 'backgroundColor', '--dsw-alias-bg-layer-1'), token('.ds-relation input:not([type=checkbox])', 'backgroundColor', '--dsw-specific-input-major')], ['.ds-section-head h2', '.ds-relation-head .ds-check', '.ds-relation select:not(:disabled)', '.ds-relation input:not([type=checkbox]):not(:disabled)', '.ds-relation-sources li'], 'dark');
+      await screenshot(page, result, 'relations-dark'); await tab(page, '数据表');
+      await auditTheme(page, result, 'dark-result-tables', [token('.ds-card', 'backgroundColor', '--dsw-alias-bg-layer-1'), token('.ds-table-title', 'backgroundColor', '--dsw-alias-interactive-bg-hover')], ['.ds-section-head h2', '.ds-table-title strong', '.ds-fields-details summary', '.ds-task-summary p'], 'dark');
+      await screenshot(page, result, 'tables-dark'); await tab(page, '关联关系'); await page.evaluate(() => window.__fixtureTheme.set('light'));
+    }
     check(result, '关系按表ID/字段/基数编辑，勾选触发待复核并阻止确认，复核保留编辑，两阶段确认完成');
 
-    await tab(page, '问题'); await page.getByLabel('执行工作区', { exact: true }).fill('');
-    await page.getByRole('button', { name: '预览分析批次', exact: true }).click(); await page.getByRole('button', { name: '开始分析（共 3 批）', exact: true }).click();
+    await tab(page, '问题'); await questionTab(page, '填写问题').click();
+    await page.locator('.ds-compose-settings summary').click();
+    await page.getByLabel('执行工作区（可选）', { exact: true }).fill(''); await questionTab(page, '问题列表').click();
+    await firstSelection.check(); await confirmQuestions(page).click();
+    await wait(page, () => window.__fixture.states['fixture-mysql'].runs.filter((run) => run.kind === 'range').length === 2);
     const defaultRun = (await calls(page, 'analyze')).at(-1); assert.equal(Object.hasOwn(defaultRun, 'cwd'), false);
-    await page.getByRole('button', { name: '取消分析范围任务', exact: true }).click();
+    await page.getByRole('button', { name: '取消任务', exact: true }).click();
     await wait(page, () => [...window.__fixture.states['fixture-mysql'].runs].reverse().find((run) => run.kind === 'range').status === 'canceled');
-    await settlePoll(page, () => { const run = [...window.__fixture.states['fixture-mysql'].runs].reverse().find((item) => item.kind === 'range'); run.batches[1].status = 'queued'; window.__fixture.bump(); });
-    assert.equal(await page.getByRole('button', { name: '预览分析批次', exact: true }).isEnabled(), true);
-    check(result, '正在执行的分析可取消，取消状态来自服务端，终态遗留排队批次不锁住新分析');
+    await settlePoll(page, () => { const run = [...window.__fixture.states['fixture-mysql'].runs].reverse().find((item) => item.kind === 'range'); run.batches[1].status = 'queued'; run.batches[0].status = 'failed'; run.batches[0].error = 'fixture 取消时保留的失败记录。'; window.__fixture.bump(); });
+    await page.locator('.ds-task-error summary').waitFor(); assert.equal(await confirmQuestions(page).isEnabled(), true); assert.equal(await retryAnalysis(page).count(), 0);
+    await settlePoll(page, () => { const state = window.__fixture.states['fixture-mysql']; state.runs.at(-1).status = 'stale'; state.revision++; });
+    await page.getByRole('status').filter({ hasText: '问题已修改，请按当前清单重新确认分析。' }).waitFor(); assert.equal(await retryAnalysis(page).count(), 0);
+    check(result, '正在执行的分析可取消，终态遗留排队批次不锁住新分析，取消/失效状态均无可点击重试');
     await page.getByRole('button', { name: '‹ 返回数据源列表', exact: true }).click();
     await page.evaluate(() => { window.__fixture.delayNextState = true; });
     await page.getByRole('button', { name: '测试业务库（已编辑）', exact: true }).click();
     await page.getByTestId('datasource-detail').waitFor();
     await page.getByRole('button', { name: '‹ 返回数据源列表', exact: true }).click();
     await page.getByRole('button', { name: '测试本地库', exact: true }).click();
-    await page.getByRole('heading', { name: '输入几个问题', exact: true }).waitFor();
+    await assertQuestionPane(page, 'list'); await assertSimpleDetail(page);
     assert.equal(await page.getByTestId('datasource-detail').getAttribute('data-source-id'), 'fixture-sqlite');
     assert.ok(await page.evaluate(() => window.__fixture.aborted > 0));
     const overflow = await page.evaluate(() => ({ document: document.documentElement.scrollWidth > innerWidth, page: document.querySelector('.dsh-ds').scrollWidth > document.querySelector('.dsh-ds').clientWidth + 1 }));
@@ -434,7 +527,7 @@ async function verifySandbox() {
     const frame = page.frameLocator('#sandbox-client'); await frame.getByTestId('source-row-fixture-mysql').waitFor();
     const host = await page.locator('#sandbox-client').elementHandle(), child = await host.contentFrame();
     const originalUrl = child.url(); assert.ok(originalUrl.startsWith('blob:')); assert.equal(await child.evaluate(() => window.origin), 'null');
-    await frame.getByTestId('source-row-fixture-mysql').click(); await frame.getByRole('heading', { name: '输入几个问题', exact: true }).waitFor();
+    await frame.getByTestId('source-row-fixture-mysql').click(); await assertQuestionPane(frame, 'list'); await assertSimpleDetail(frame);
     await frame.getByRole('tab', { name: /^数据表/ }).click(); await frame.getByRole('heading', { name: '数据表范围', exact: true }).waitFor();
     await frame.getByRole('tab', { name: /^关联关系/ }).click(); await frame.getByRole('heading', { name: '关联关系', exact: true }).waitFor();
     await frame.getByRole('button', { name: '‹ 返回数据源列表', exact: true }).click();

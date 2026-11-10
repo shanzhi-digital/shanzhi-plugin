@@ -1,6 +1,6 @@
 {
   "name": "dsh-sql",
-  "version": "0.7.0-local.2",
+  "version": "0.7.0-local.3",
   "description": "数据源：连接管理、问题驱动的后台会话与持久回填、分批选表和关系确认；保留三个只读 SQL 工具。",
   "type": "module",
   "main": "./index.js",
