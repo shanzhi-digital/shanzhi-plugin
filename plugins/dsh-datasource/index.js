@@ -1,9 +1,11 @@
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { DatasourceRuntime } from './runtime.js';
+import { DatasourceFlow } from './flow.js';
+import { DatasourceSessionBridge, injectKeys } from './host-bridge.js';
 
 export const name = 'sql';
-export const inject = ['tools', 'connection', 'credentials'];
+export const inject = ['tools', 'connection', 'credentials', ...injectKeys];
 export const API_PREFIX = '/api/datasources';
 
 export function createSecrets(credentials) {
@@ -28,16 +30,25 @@ function json(body, status = 200) {
   return Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
 }
 
-export function registerRoutes(ctx, runtime) {
+export function registerRoutes(ctx, runtime, flow) {
   const definitions = [
     ['list', 'GET', async () => ({ items: await runtime.list() })],
-    ['save', 'POST', async (input) => ({ item: await runtime.save(input) })],
+    ['save', 'POST', async (input) => {
+      const item = await runtime.save(input);
+      if (input.id) await flow?.sourceChanged(item.id);
+      return { item };
+    }],
     ['test', 'POST', async (input) => await runtime.test(input)],
     ['remove', 'POST', async (input) => {
       if (typeof input.id !== 'string' || !input.id) throw Object.assign(new Error('请选择要删除的数据源。'), { publicMessage: '请选择要删除的数据源。' });
       await runtime.remove(input.id);
+      await flow?.sourceChanged(input.id);
       return { ok: true };
     }],
+    ...(flow ? [
+      ['flow-state', 'POST', async (input) => ({ state: await flow.get(input.id) })],
+      ['flow-action', 'POST', async (input) => ({ state: await flow.action(input) })],
+    ] : []),
   ];
   for (const [operation, method, handler] of definitions) {
     // DSH exact-fetch routes admit only the authenticated owner, and reject cross-site requests.
@@ -53,7 +64,7 @@ export function registerRoutes(ctx, runtime) {
               return json({ error: '请使用 JSON 提交连接信息。' }, 415);
             }
             const body = await request.text();
-            if (body.length > 32768) return json({ error: '连接信息过长。' }, 413);
+            if (Buffer.byteLength(body, 'utf8') > (operation.startsWith('flow-') ? 1048576 : 32768)) return json({ error: '提交信息过长。' }, 413);
             try { input = JSON.parse(body); } catch { return json({ error: '连接信息格式无效。' }, 400); }
             if (!input || typeof input !== 'object' || Array.isArray(input)) return json({ error: '连接信息格式无效。' }, 400);
           }
@@ -61,7 +72,8 @@ export function registerRoutes(ctx, runtime) {
           return json(await handler(input));
         } catch (error) {
           // Runtime emits only validated UI errors; never return a stack, a connection config, or a driver error.
-          return json({ error: error?.publicMessage || '操作失败，请检查连接信息后重试。' }, 400);
+          const status = [400, 404, 409, 413].includes(error?.status) ? error.status : 400;
+          return json({ error: error?.publicMessage || '操作失败，请检查连接信息后重试。' }, status);
         }
       },
     });
@@ -75,7 +87,17 @@ export async function apply(ctx, config = {}) {
     secrets: createSecrets(ctx.credentials),
   });
   await runtime.initialize();
-  for (const definition of runtime.getTools()) ctx.tools.register(definition);
-  registerRoutes(ctx, runtime);
-  ctx.on('dispose', () => runtime.close());
+  const flow = new DatasourceFlow({
+    filePath: config.workflowPath || join(profileDir, 'datasources', 'workflow.json'),
+    runtime,
+    bridge: new DatasourceSessionBridge(ctx),
+    defaultCwd: config.workingDirectory || process.cwd(),
+  });
+  await flow.initialize();
+  for (const definition of runtime.getTools()) {
+    ctx.tools.register({ ...definition, execute: (args, execution) => flow.scopedSql(definition.name, args, execution, definition.execute) });
+  }
+  ctx.tools.register(flow.getTool());
+  registerRoutes(ctx, runtime, flow);
+  ctx.on('dispose', async () => { await flow.close(); await runtime.close(); });
 }
