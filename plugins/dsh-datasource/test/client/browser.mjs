@@ -33,10 +33,36 @@ const vendorFile = async (name, override) => {
   throw new Error(`Pinned React fixture module missing from archive: ${expected}`);
 };
 const clientPath = path.resolve(process.env.DSH_CLIENT_UNDER_TEST || path.join(directory, '../../client.js'));
-const [react, reactDom, html, fixture, client] = await Promise.all([
+const [react, reactDom, html, fixture, client, themeText] = await Promise.all([
   vendorFile('react', process.env.DSH_REACT_UMD), vendorFile('react-dom', process.env.DSH_REACTDOM_UMD),
   readFile(path.join(directory, 'fixture.html'), 'utf8'), readFile(path.join(directory, 'fixture.js'), 'utf8'), readFile(clientPath, 'utf8'),
+  readFile(path.join(directory, 'host-theme.json'), 'utf8'),
 ]);
+const hostTheme = JSON.parse(themeText);
+// Models the public Host DOM contract only. This is not an authenticated Host session.
+const hostThemeScript = `(${((tokens) => {
+  const style = document.createElement('style'); style.id = 'fixture-host-theme';
+  const declarations = (index) => Object.entries(tokens).map(([name, values]) => `${name}:${values[index]}`).join(';');
+  style.textContent = `body{${declarations(0)}}body[data-ds-dark-theme]{${declarations(1)}}:focus-visible{outline-color:var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-width:var(--dsw-focus-ring-width)}html[data-input-modality=pointer] body :focus-visible:not(:read-write){--dsw-focus-ring-color:transparent;outline-color:transparent}`;
+  document.head.append(style);
+  let overrides = [];
+  window.__fixtureTheme = {
+    set(scheme) {
+      if (!['light', 'dark'].includes(scheme)) throw new Error(`Unsupported fixture theme: ${scheme}`);
+      document.documentElement.style.colorScheme = scheme;
+      document.documentElement.dataset.dsThemeSource = scheme;
+      document.body.toggleAttribute('data-ds-dark-theme', scheme === 'dark');
+    },
+    override(values = {}) {
+      for (const name of overrides) document.body.style.removeProperty(name);
+      overrides = Object.keys(values);
+      for (const [name, value] of Object.entries(values)) document.body.style.setProperty(name, value);
+    },
+  };
+  document.addEventListener('keydown', (event) => { if (event.key === 'Tab') document.documentElement.dataset.inputModality = 'keyboard'; }, true);
+  document.addEventListener('pointerdown', () => { document.documentElement.dataset.inputModality = 'pointer'; }, true);
+  window.__fixtureTheme.set(window.__fixtureInitialTheme || 'light');
+}).toString()})(${JSON.stringify(hostTheme.tokens)});`;
 const browser = await chromium.launch({ headless: true, ...(process.env.DSH_CHROME ? { executablePath: process.env.DSH_CHROME } : {}), args: ['--no-first-run', '--no-default-browser-check'] });
 const results = [];
 const check = (result, label) => { result.checks.push(label); console.log(`PASS ${result.viewport}: ${label}`); };
@@ -46,16 +72,16 @@ const tab = (page, name) => page.getByRole('tab', { name: new RegExp(`^${name}`)
 const settlePoll = async (page, callback) => { await page.evaluate(callback); const count = await page.evaluate(() => window.__fixture.stateReads); await wait(page, (before) => window.__fixture.stateReads > before, count); };
 const screenshot = async (page, result, name) => { await page.locator('.dsh-ds').evaluate((element) => { element.scrollTop = 0; }); const filename = `${result.viewport}-${name}.png`; await page.screenshot({ path: path.join(output, filename), fullPage: true }); result.screenshots.push(filename); };
 async function setup(viewport, options = {}) {
-  const context = await browser.newContext({ viewport, deviceScaleFactor: 1, locale: 'zh-CN', colorScheme: 'light' });
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1, locale: 'zh-CN', colorScheme: options.theme || 'light' });
   const page = await context.newPage(), errors = []; page.setDefaultTimeout(10000);
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   await page.route('http://fixture.dsh.test/**', (route) => {
     const pathname = new URL(route.request().url()).pathname;
-    const files = { '/': ['text/html', html], '/vendor.js': ['text/javascript', `${react}\n;${reactDom}`], '/fixture.js': ['text/javascript', fixture], '/client.js': ['text/javascript', client] };
+    const files = { '/': ['text/html', html], '/host-theme.js': ['text/javascript', hostThemeScript], '/vendor.js': ['text/javascript', `${react}\n;${reactDom}`], '/fixture.js': ['text/javascript', fixture], '/client.js': ['text/javascript', client] };
     const entry = files[pathname]; return route.fulfill({ status: entry ? 200 : 204, contentType: entry?.[0] || 'text/plain', body: entry?.[1] || '' });
   });
-  if (options.empty) await page.addInitScript(() => { window.__fixtureEmpty = true; });
+  await page.addInitScript(({ empty, theme }) => { window.__fixtureEmpty = !!empty; window.__fixtureInitialTheme = theme || 'light'; }, options);
   await page.goto('http://fixture.dsh.test/');
   await page.getByTestId('datasource-page').waitFor();
   return { context, page, errors };
@@ -71,6 +97,170 @@ async function verifyEmpty(viewport, result) {
     assert.deepEqual(errors, []); check(result, '真实空状态、默认MySQL、Escape关闭弹框');
   } catch (error) { result.status = 'failed'; result.error = error.stack; result.errors = errors; await screenshot(page, result, 'empty-failure').catch(() => {}); throw error; }
   finally { await context.close(); }
+}
+function verifyCssContract() {
+  const result = { viewport: 'theme-css-contract', kind: 'theme-contract', checks: [], screenshots: [] }; results.push(result);
+  const css = client.match(/const css = `([\s\S]*?)`;/)?.[1];
+  assert.ok(css, 'Production CSS template must be present');
+  assert.doesNotMatch(css, /#[\da-f]{3,8}\b/i, 'Production CSS must consume Host tokens instead of fixed HEX colors');
+  const allowed = new Set([...Object.keys(hostTheme.tokens), ...hostTheme.optionalTokens]);
+  const referenced = [...new Set([...css.matchAll(/var\(\s*(--[\w-]+)/g)].map((match) => match[1]))];
+  assert.deepEqual(referenced.filter((name) => !allowed.has(name)), [], 'CSS references must be verified public Host tokens');
+  assert.deepEqual(hostTheme.valueOrder, ['light', 'dark']);
+  assert.equal(hostTheme.fixtureOnly, true); assert.equal(hostTheme.authenticatedHostPageObserved, false);
+  result.referencedTokens = referenced; result.status = 'passed';
+  check(result, '生产CSS无固定HEX，全部变量均在已取证官方token白名单（含可选focus-ring-color）内');
+}
+const syntheticCustomOverrides = {
+  '--dsw-alias-bg-base': '#14112b', '--dsw-alias-bg-layer-1': '#211c3b',
+  '--dsw-alias-bg-layer-2': '#2e284a', '--dsw-alias-bg-layer-3': '#3d365a',
+  '--dsw-alias-bg-module-platform': '#302947', '--dsw-specific-input-major': '#1c1735',
+  '--dsw-alias-label-primary': '#fff5e9', '--dsw-alias-label-secondary': '#d5c8ec',
+  '--dsw-alias-label-tertiary': '#b4a6cf', '--dsw-alias-button-primary-fill': '#f7d78b',
+  '--dsw-alias-button-primary-hover': '#ffe9ad', '--dsw-alias-label-primary-foreground': '#22162a',
+  '--dsw-alias-brand-primary': '#f7d78b', '--dsw-alias-brand-text': '#f7d78b',
+  '--dsw-alias-state-business-primary': '#bba4ff', '--dsw-focus-ring-color': '#ffcf80',
+};
+const token = (selector, property, name) => ({ selector, property, token: name });
+const surfaceTokens = (stage) => [
+  token('.dsh-ds', 'backgroundColor', '--dsw-alias-bg-base'), token('.dsh-ds', 'color', '--dsw-alias-label-primary'),
+  ...(stage === 'list' ? [
+    token('.ds-table-wrap', 'backgroundColor', '--dsw-alias-bg-layer-1'),
+    token('.dsh-ds th', 'backgroundColor', '--dsw-alias-bg-module-platform'),
+    token('.ds-source-name .ds-link', 'color', '--dsw-alias-label-primary'),
+  ] : stage === 'dialog' ? [
+    token('.ds-modal', 'backgroundColor', '--dsw-alias-bg-layer-2'), token('.ds-modal', 'color', '--dsw-alias-label-primary'),
+    token('.ds-modal input:not([type=checkbox])', 'backgroundColor', '--dsw-specific-input-major'),
+    token('.ds-modal select', 'backgroundColor', '--dsw-specific-input-major'),
+    token('.ds-modal select option', 'backgroundColor', '--dsw-specific-input-major'),
+    token('.ds-modal select option', 'color', '--dsw-alias-label-primary'),
+  ] : [
+    token('.ds-card', 'backgroundColor', '--dsw-alias-bg-layer-1'),
+    token('.ds-composer textarea', 'backgroundColor', '--dsw-specific-input-major'),
+    token('.ds-composer textarea', 'color', '--dsw-alias-label-primary'),
+    token('.ds-batch-size', 'backgroundColor', '--dsw-specific-input-major'),
+    token('.dsh-ds input[type=checkbox]', 'accentColor', '--dsw-alias-brand-primary'),
+    token('.dsh-ds th', 'backgroundColor', '--dsw-alias-bg-module-platform'),
+  ]),
+];
+const primaryTokens = (selector = '.ds-button.primary:not(:disabled)', hover = false) => [
+  token(selector, 'backgroundColor', hover ? '--dsw-alias-button-primary-hover' : '--dsw-alias-button-primary-fill'),
+  token(selector, 'color', '--dsw-alias-label-primary-foreground'),
+];
+async function auditTheme(page, result, label, specs, readable, scheme) {
+  const audit = await page.evaluate(({ specs, readable }) => {
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    const rgba = (value) => { context.clearRect(0, 0, 1, 1); context.fillStyle = value; context.fillRect(0, 0, 1, 1); return [...context.getImageData(0, 0, 1, 1).data].map((value, index) => index === 3 ? value / 255 : value); };
+    const over = (front, back) => { const alpha = front[3] + back[3] * (1 - front[3]); return [...front.slice(0, 3).map((value, index) => alpha ? (value * front[3] + back[index] * back[3] * (1 - front[3])) / alpha : 0), alpha]; };
+    const background = (element) => { const ancestors = []; for (let node = element; node; node = node.parentElement) ancestors.unshift(node); return ancestors.reduce((value, node) => over(rgba(getComputedStyle(node).backgroundColor), value), [255, 255, 255, 1]); };
+    const luminance = (color) => color.slice(0, 3).map((value) => { const normalized = value / 255; return normalized <= .04045 ? normalized / 12.92 : ((normalized + .055) / 1.055) ** 2.4; }).reduce((value, channel, index) => value + channel * [.2126, .7152, .0722][index], 0);
+    const reference = document.createElement('span'); reference.style.position = 'fixed'; reference.style.visibility = 'hidden'; document.body.append(reference);
+    const samples = specs.map(({ selector, property, token }) => {
+      const element = document.querySelector(selector); if (!element) throw new Error(`Missing theme surface: ${selector}`);
+      reference.style.color = token.startsWith('var(') ? token : `var(${token})`;
+      const value = getComputedStyle(element)[property];
+      return { selector, property, token, actual: rgba(value), expected: rgba(getComputedStyle(reference).color), cssValue: value };
+    });
+    const contrasts = readable.flatMap((selector) => {
+      const elements = [...document.querySelectorAll(selector)].filter((element) => element.getClientRects().length && !element.closest(':disabled'));
+      if (!elements.length) throw new Error(`No visible ordinary text/control to check: ${selector}`);
+      return elements.map((element) => { const back = background(element), front = over(rgba(getComputedStyle(element).color), back); const first = luminance(front), second = luminance(back); return { selector, text: (element.value || element.textContent || '').trim().slice(0, 80), foreground: front, background: back, ratio: (Math.max(first, second) + .05) / (Math.min(first, second) + .05) }; });
+    });
+    reference.remove();
+    return { samples, contrasts, darkAttribute: document.body.hasAttribute('data-ds-dark-theme'), colorSchemes: [...document.querySelectorAll('.dsh-ds,.dsh-ds input,.dsh-ds select,.dsh-ds textarea')].map((element) => getComputedStyle(element).colorScheme) };
+  }, { specs, readable });
+  result.themeAudits ||= []; result.themeAudits.push({ label, ...audit });
+  for (const sample of audit.samples) assert.deepEqual(sample.actual, sample.expected, `${label}: ${sample.selector}.${sample.property} must inherit ${sample.token}; got ${sample.cssValue}`);
+  for (const sample of audit.contrasts) assert.ok(sample.ratio >= 4.5, `${label}: ${sample.selector} ordinary text contrast ${sample.ratio.toFixed(3)} is below 4.5:1`);
+  assert.equal(audit.darkAttribute, scheme === 'dark', `${label}: public body dark selector`);
+  assert.ok(audit.colorSchemes.every((value) => value === scheme), `${label}: native controls must inherit ${scheme} color-scheme`);
+}
+async function auditStatusProse(page, result, scheme, label) {
+  const classes = ['ds-notice', 'ds-notice success', 'ds-notice error', 'ds-warning', 'ds-error-text'];
+  await page.evaluate((classes) => {
+    const probes = document.createElement('div'); probes.id = 'fixture-status-probes'; probes.dataset.fixtureOnly = 'style-coverage';
+    for (const className of classes) { const prose = document.createElement('p'); prose.className = className; prose.textContent = '这是一段用于验证状态说明的完整长文字，需在亮色、暗色和自定义主题中清楚可读，状态颜色通过边框和背景呈现。'; probes.append(prose); }
+    document.querySelector('.dsh-ds').append(probes);
+  }, classes);
+  try {
+    const selectors = classes.map((_, index) => `#fixture-status-probes>p:nth-child(${index + 1})`);
+    await auditTheme(page, result, `${label}-status-prose`, selectors.map((selector) => token(selector, 'color', '--dsw-alias-label-primary')), selectors, scheme);
+  } finally { await page.locator('#fixture-status-probes').evaluate((element) => element.remove()); }
+}
+async function rememberDraft(locator) {
+  await locator.focus();
+  await locator.evaluate((element) => { element.setSelectionRange(2, 5); window.__themeDraft = { element, root: document.querySelector('.dsh-ds'), value: element.value, start: element.selectionStart, end: element.selectionEnd }; });
+}
+async function assertDraft(page, label) {
+  const actual = await page.evaluate(() => { const draft = window.__themeDraft; return { sameNode: draft.element.isConnected && draft.element === document.activeElement, sameRoot: draft.root === document.querySelector('.dsh-ds'), value: draft.element.value, expected: draft.value, start: draft.element.selectionStart, end: draft.element.selectionEnd, expectedStart: draft.start, expectedEnd: draft.end }; });
+  assert.ok(actual.sameNode && actual.sameRoot, `${label}: switching must preserve the mounted root, editor node, and focus`);
+  assert.equal(actual.value, actual.expected, `${label}: draft contents`); assert.equal(actual.start, actual.expectedStart, `${label}: selection start`); assert.equal(actual.end, actual.expectedEnd, `${label}: selection end`);
+}
+async function verifyThemeModes(viewport) {
+  for (const initialTheme of ['light', 'dark']) {
+    const result = { viewport: `${viewport.width}x${viewport.height}-theme-${initialTheme}`, kind: 'theme', checks: [], screenshots: [], errors: [] }; results.push(result);
+    const { context, page, errors } = await setup(viewport, { theme: initialTheme });
+    try {
+      const primary = page.getByRole('button', { name: '+ 创建数据源连接', exact: true });
+      await page.mouse.move(1, 1);
+      await auditTheme(page, result, 'initial-list', [...surfaceTokens('list'), ...primaryTokens()], ['.dsh-ds h1', '.ds-source-name .ds-link', '.ds-button.primary:not(:disabled)'], initialTheme);
+      await screenshot(page, result, 'list');
+      await primary.hover();
+      await auditTheme(page, result, 'primary-hover', primaryTokens(undefined, true), ['.ds-button.primary:not(:disabled)'], initialTheme);
+      await page.getByTestId('source-row-fixture-mysql').hover();
+      await auditTheme(page, result, 'row-hover', [token('.ds-source-row:hover', 'backgroundColor', '--dsw-alias-interactive-bg-hover')], ['.ds-source-row:hover .ds-source-name .ds-link'], initialTheme);
+      await page.mouse.move(1, 1); await page.keyboard.press('Tab'); await primary.focus();
+      assert.ok(await primary.evaluate((element) => element.matches(':focus-visible')));
+      assert.ok(await primary.evaluate((element) => { const style = getComputedStyle(element); return style.outlineStyle === 'solid' && parseFloat(style.outlineWidth) >= 2; }));
+      await auditTheme(page, result, 'keyboard-focus', [token('.ds-button.primary:focus-visible', 'outlineColor', 'var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))')], ['.ds-button.primary:not(:disabled)'], initialTheme);
+      check(result, `初始${initialTheme}列表/表头/主按钮与hover/focus按官方变量，普通正文及主按钮对比度≥4.5`);
+      if (initialTheme === 'light') {
+        await page.evaluate((values) => { window.__fixtureTheme.set('dark'); window.__fixtureTheme.override(values); }, syntheticCustomOverrides);
+        await auditTheme(page, result, 'custom-list', [...surfaceTokens('list'), ...primaryTokens(), token('.ds-button.primary:focus-visible', 'outlineColor', '--dsw-focus-ring-color')], ['.dsh-ds h1', '.ds-source-name .ds-link', '.ds-button.primary:not(:disabled)'], 'dark');
+        await primary.hover(); await auditTheme(page, result, 'custom-primary-hover', primaryTokens(undefined, true), ['.ds-button.primary:not(:disabled)'], 'dark');
+        await page.mouse.move(1, 1); await page.evaluate(() => { window.__fixtureTheme.override(); window.__fixtureTheme.set('light'); });
+      }
+      await page.getByRole('button', { name: '编辑连接 测试业务库', exact: true }).click();
+      const name = page.getByLabel('数据源名称', { exact: true }); await name.fill('主题切换期间保留的连接草稿');
+      await page.getByRole('button', { name: '测试连接', exact: true }).click(); await page.getByText('fixture 连接测试成功。', { exact: true }).waitFor();
+      await page.mouse.move(1, 1); await rememberDraft(name);
+      await auditTheme(page, result, 'initial-dialog', [...surfaceTokens('dialog'), token('.ds-modal input:focus', 'borderTopColor', '--dsw-alias-state-business-primary'), token('.ds-notice.success', 'color', '--dsw-alias-label-primary'), ...primaryTokens('.ds-modal .ds-button.primary')], ['.ds-modal h2', '.ds-modal input:not([type=checkbox])', '.ds-modal select', '.ds-notice.success', '.ds-modal .ds-button.primary'], initialTheme);
+      await screenshot(page, result, 'dialog');
+      if (initialTheme === 'light') {
+        for (const scheme of ['light', 'dark', 'light']) {
+          await page.evaluate((scheme) => window.__fixtureTheme.set(scheme), scheme);
+          await auditTheme(page, result, `runtime-dialog-${scheme}`, surfaceTokens('dialog'), ['.ds-modal input:not([type=checkbox])', '.ds-modal .ds-button.primary'], scheme); await assertDraft(page, `dialog-${scheme}`);
+        }
+        await page.evaluate((values) => { window.__fixtureTheme.set('dark'); window.__fixtureTheme.override(values); }, syntheticCustomOverrides);
+        await auditTheme(page, result, 'custom-dialog', [...surfaceTokens('dialog'), ...primaryTokens('.ds-modal .ds-button.primary')], ['.ds-modal h2', '.ds-modal input:not([type=checkbox])', '.ds-notice.success', '.ds-modal .ds-button.primary'], 'dark'); await assertDraft(page, 'custom-dialog');
+        await page.evaluate(() => { window.__fixtureTheme.override(); window.__fixtureTheme.set('light'); }); await assertDraft(page, 'restored-dialog');
+      }
+      await page.keyboard.press('Escape'); await page.getByRole('dialog').waitFor({ state: 'hidden' });
+      check(result, `初始${initialTheme}弹框/原生input、select/option与成功说明，动态切换保留连接草稿`);
+      await page.getByRole('button', { name: '测试业务库', exact: true }).click(); await page.getByRole('heading', { name: '输入几个问题', exact: true }).waitFor();
+      const editor = page.getByLabel('原问题，每行一个', { exact: true }); await editor.fill('主题切换时保留这一行未提交的问题。\n还有第二行输入草稿。'); await rememberDraft(editor);
+      await auditTheme(page, result, 'initial-questions', [...surfaceTokens('questions'), ...primaryTokens()], ['.ds-card h2', '.ds-question-text', '.ds-composer textarea', '.ds-button.primary:not(:disabled)'], initialTheme);
+      await auditStatusProse(page, result, initialTheme, 'initial'); await screenshot(page, result, 'questions');
+      if (initialTheme === 'light') {
+        for (const scheme of ['light', 'dark', 'light']) {
+          await page.evaluate((scheme) => window.__fixtureTheme.set(scheme), scheme);
+          await auditTheme(page, result, `runtime-questions-${scheme}`, [...surfaceTokens('questions'), ...primaryTokens()], ['.ds-card h2', '.ds-question-text', '.ds-composer textarea', '.ds-button.primary:not(:disabled)'], scheme);
+          await auditStatusProse(page, result, scheme, 'runtime'); await assertDraft(page, `questions-${scheme}`);
+        }
+        await page.evaluate((values) => { window.__fixtureTheme.set('dark'); window.__fixtureTheme.override(values); }, syntheticCustomOverrides);
+        await auditTheme(page, result, 'custom-questions', [...surfaceTokens('questions'), ...primaryTokens()], ['.ds-card h2', '.ds-question-text', '.ds-composer textarea', '.ds-button.primary:not(:disabled)'], 'dark');
+        await auditStatusProse(page, result, 'dark', 'custom'); await assertDraft(page, 'custom-questions'); await screenshot(page, result, 'custom-questions');
+        await page.evaluate(() => { window.__fixtureTheme.override(); window.__fixtureTheme.set('light'); }); await assertDraft(page, 'restored-questions');
+        await auditTheme(page, result, 'restored-questions', surfaceTokens('questions'), ['.ds-composer textarea', '.ds-question-text'], 'light');
+        assert.equal((await calls(page, 'organize')).length, 0, 'Theme changes must not submit the draft');
+        check(result, '运行时light→dark→light与body自定义token/清除覆写，无重挂载，保留两类草稿、焦点与选区');
+      }
+      assert.deepEqual(errors, []); result.status = 'passed';
+      check(result, `初始${initialTheme}卡片/问题表格/textarea/checkbox与各类状态长文字使用label-primary且对比度≥4.5`);
+    } catch (error) { result.status = 'failed'; result.error = error.stack; result.errors = errors; await screenshot(page, result, 'failure').catch(() => {}); throw error; }
+    finally { await context.close(); }
+  }
 }
 async function verifyDesktop(viewport) {
   const result = { viewport: `${viewport.width}x${viewport.height}`, checks: [], screenshots: [], errors: [] }; results.push(result);
@@ -235,7 +425,7 @@ async function verifySandbox() {
   const { context, page, errors } = await setup({ width: 1366, height: 768 });
   try {
     const inline = (text) => `<script>${text.replace(/<\/script/gi, '<\\/script')}</script>`;
-    const content = html.replace('<script src="/vendor.js"></script>', () => inline(`${react}\n;${reactDom}`)).replace('<script src="/fixture.js"></script>', () => inline(fixture)).replace('<script src="/client.js"></script>', () => inline(client));
+    const content = html.replace('<script src="/host-theme.js"></script>', () => inline(hostThemeScript)).replace('<script src="/vendor.js"></script>', () => inline(`${react}\n;${reactDom}`)).replace('<script src="/fixture.js"></script>', () => inline(fixture)).replace('<script src="/client.js"></script>', () => inline(client));
     await page.evaluate((source) => {
       const frame = document.createElement('iframe'); frame.id = 'sandbox-client'; frame.setAttribute('sandbox', 'allow-scripts');
       frame.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;border:0'; frame.src = URL.createObjectURL(new Blob([source], { type: 'text/html' }));
@@ -257,7 +447,10 @@ async function verifySandbox() {
   finally { await context.close(); }
 }
 try {
-  for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) await verifyDesktop(viewport);
+  verifyCssContract();
+  const viewports = [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }];
+  for (const viewport of viewports) await verifyDesktop(viewport);
   await verifySandbox();
+  for (const viewport of viewports) await verifyThemeModes(viewport);
 } catch (error) { console.error(error); process.exitCode = 1; }
-finally { await browser.close(); await writeFile(path.join(output, 'browser-report.json'), `${JSON.stringify({ reactVersion: '18.3.1', clientPath, clientSha256: createHash('sha256').update(client).digest('hex'), fixtureOnly: true, guiServerStarted: false, checksPassed: results.reduce((total, result) => total + result.checks.length, 0), results }, null, 2)}\n`, 'utf8'); console.log(`Browser evidence: ${output}`); }
+finally { await browser.close(); await writeFile(path.join(output, 'browser-report.json'), `${JSON.stringify({ reactVersion: '18.3.1', clientPath, clientSha256: createHash('sha256').update(client).digest('hex'), fixtureOnly: true, authenticatedHostPageObserved: false, guiServerStarted: false, themeFixture: { path: path.join(directory, 'host-theme.json'), sha256: createHash('sha256').update(themeText).digest('hex'), package: hostTheme.package, sources: hostTheme.sources }, interactionChecksPassed: results.filter((result) => !result.kind).reduce((total, result) => total + result.checks.length, 0), checksPassed: results.reduce((total, result) => total + result.checks.length, 0), results }, null, 2)}\n`, 'utf8'); console.log(`Browser evidence: ${output}`); }

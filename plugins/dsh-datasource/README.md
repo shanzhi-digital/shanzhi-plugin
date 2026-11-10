@@ -1,6 +1,6 @@
 # DSH 数据源
 
-基于 `dsh-sql 0.5.9` 的本地定制版 `0.7.0-local.1`。保留 SQL 查询与只读事务能力，提供连接列表、问题整理、后台分批分析及表范围和关系确认。本包不是上游正式发布。
+基于 `dsh-sql 0.5.9` 的本地定制版 `0.7.0-local.2`。保留 SQL 查询与只读事务能力，提供连接列表、问题整理、后台分批分析及表范围和关系确认。本包不是上游正式发布。
 
 ## 使用
 
@@ -13,6 +13,12 @@ DSH 左侧的「数据源」位于「插件」与「自动化任务」之间。�
 - 编辑时密码留空会保留已保存密码。输入新值替换；勾选「清除已保存的密码」删除凭据。
 
 数据库工具为 `sql_list`、`sql_query`、`sql_schema`；新增 `datasource_task` 仅供本插件创建并绑定的后台任务读取上下文和提交结构化结果，不提供数据库写入能力。没有连接时会提示先添加，不产生默认连接。SQL 查询保留真实 `columns` / `rows`，支持 `table` / `csv` / `json` 输出，最多返回 1000 行。MySQL / PostgreSQL 每次查询使用只读事务；SQLite 以只读方式打开。保留引擎相关 SQL 校验，拒绝写入、多语句、行锁和修改型 PRAGMA。
+
+## 界面主题
+
+列表、表头、步骤导航、问题/表/关系卡片、连接弹框、输入框、按钮及状态提示直接继承 DSH 官方 `--dsw-*` 主题变量。亮暗模式、系统主题和主题包覆写由 Host 管理，切换后页面同步更新，保留当前草稿；不额外设置插件主题开关。主按钮沿用官方主按钮配色，状态长文使用正文色，以彩色边框和底色区分状态。
+
+桌面主题回归使用安装的 DSH `0.2.1-rc.5` 公开亮暗 token 基线，检查运行时切换、自定义色覆写及主要文字对比；属于浏览器隔离夹具，实际 GUI 的当前主题仍以现场页面为准。
 
 ## 问题驱动分析
 
@@ -48,7 +54,7 @@ pnpm pack --pack-destination <profile之外的归档目录>
 使用正式 **Desktop carrier** `<安装目录>/resources/runtime/cli/bin/dsh.cmd` 安装打包后的本地归档：
 
 ```powershell
-& '<安装目录>\resources\runtime\cli\bin\dsh.cmd' plugin --profile desktop add <dsh-sql-0.7.0-local.1.tgz>
+& '<安装目录>\resources\runtime\cli\bin\dsh.cmd' plugin --profile desktop add <dsh-sql-0.7.0-local.2.tgz>
 ```
 
 该官方桌面入口会调用 `dsh-desktop-host/lib/cli.js` 管理 Desktop。不能直接调用通用 `dsh` 的 `lib/bin.js` 管理 desktop，也不手工修改 profile 依赖或补丁。包名与插件行 ID `sql` 保持一致，替换已有 `dsh-sql`。本版不启动上游自动更新控件，防止本地定制被普通更新覆盖。

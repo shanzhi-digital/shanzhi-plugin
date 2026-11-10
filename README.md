@@ -7,7 +7,7 @@
 | 目录 | 名称 | 版本 | 说明 |
 |---|---|---|---|
 | `plugins/datahub-echarts` | 通用查询结果图表 | 0.7.0 | 消费当前会话真实查询结果，提供图表/表格切换和三个跟问，保留 DataHub 兼容入口 |
-| [plugins/dsh-datasource](plugins/dsh-datasource/README.md) | 数据源 | 0.6.0-local.2 | 本地定制 dsh-sql：独立连接管理页面，支持 MySQL / PostgreSQL / SQLite，仅注册三个只读 SQL 工具 |
+| [plugins/dsh-datasource](plugins/dsh-datasource/README.md) | 数据源 | 0.7.0-local.2 | 本地定制 dsh-sql：连接管理、问题驱动后台分析、表与关系分别确认，跟随官方主题；保留三个只读 SQL 工具及受绑定会话限定的结构化回填工具 |
 
 ## 使用
 
