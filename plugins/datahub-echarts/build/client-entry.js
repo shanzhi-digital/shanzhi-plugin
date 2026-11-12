@@ -1,10 +1,10 @@
 import * as echarts from 'echarts';
 import React from 'react';
-import { finiteNumber } from '../core.js';
+import { finiteNumber, cleanFollowUps } from '../core.js';
+import { createExport } from './export.js';
 const h=React.createElement;
 import { KEY, definition } from './event-projection.js';
-const VERSION=typeof __PLUGIN_VERSION__==='string'?__PLUGIN_VERSION__:'dev';
-const VIEWS=[['bar','柱状图'],['line','折线图'],['pie','饼图'],['table','表格']];
+const VIEWS=[['table','表格'],['bar','柱状图'],['line','折线图'],['pie','饼图']];
 const MUTED='var(--dsw-alias-label-secondary)';
 const BORDER='var(--dsw-alias-border-l1)';
 
@@ -21,36 +21,84 @@ function Plot({value,type}){
 }
 function ResultTable({value}){
  const columns=value.columns;
- return h('div',{style:{overflowX:'auto',border:`1px solid ${BORDER}`,borderRadius:8}},
-  h('table',{style:{borderCollapse:'collapse',width:'100%',fontSize:12}},h('thead',null,h('tr',null,...columns.map(c=>h('th',{key:c.name,style:{padding:'6px 8px',textAlign:'left',whiteSpace:'nowrap',borderBottom:`1px solid ${BORDER}`}},c.title||c.name)))),
-  h('tbody',null,...value.data.map((row,i)=>h('tr',{key:i},...columns.map(c=>h('td',{key:c.name,style:{padding:'6px 8px',whiteSpace:'nowrap',borderBottom:`1px solid ${BORDER}`}},row[c.name]==null?'—':String(row[c.name]))))))));
+ const cellStyle=column=>({padding:'12px 10px',textAlign:/(?:number|int|decimal|float|double|numeric|real)/i.test(column.type||'')?'right':'left',whiteSpace:'nowrap',borderBottom:`1px solid ${BORDER}`,fontVariantNumeric:'tabular-nums'});
+ return h('div',{style:{overflowX:'auto'}},
+  h('table',{style:{borderCollapse:'collapse',width:'100%',fontSize:13,lineHeight:'20px'}},
+   h('thead',null,h('tr',null,...columns.map(c=>h('th',{key:c.name,scope:'col',style:{...cellStyle(c),fontWeight:600}},c.title||c.name)))),
+   h('tbody',null,...value.data.map((row,i)=>h('tr',{key:i},...columns.map(c=>h('td',{key:c.name,style:cellStyle(c)},row[c.name]==null?'—':String(row[c.name]))))))));
 }
-function Segmented({view,onChange}){
- return h('div',{role:'group','aria-label':'呈现方式',style:{display:'inline-flex',flexShrink:0,border:`1px solid ${BORDER}`,borderRadius:8,overflow:'hidden'}},
-  ...VIEWS.map(([id,label])=>{const active=view===id;return h('button',{key:id,type:'button','aria-pressed':active,title:label,onClick:()=>onChange(id),
-   style:{border:0,borderLeft:id===VIEWS[0][0]?0:`1px solid ${BORDER}`,background:active?'var(--dsw-alias-bg-layer-2)':'transparent',color:active?'var(--dsw-alias-label-primary)':MUTED,cursor:'pointer',font:'inherit',fontSize:12,lineHeight:'24px',padding:'0 10px'}},label);}));
+const controlStyle={border:`1px solid ${BORDER}`,borderRadius:6,background:'var(--dsw-alias-bg-layer-1)',color:'var(--dsw-alias-label-primary)',font:'inherit',fontSize:12,lineHeight:'20px',padding:'5px 10px',cursor:'pointer'};
+function ViewSelect({view,onChange}){
+ return h('select',{'aria-label':'呈现方式',value:view,onChange:event=>onChange(event.target.value),style:controlStyle},
+  ...VIEWS.map(([id,label])=>h('option',{key:id,value:id},label)));
 }
-function Chart({value,inputActions}){
- const [view,setView]=React.useState(value.defaultView||(value.measures.length>0?(value.chartType||'bar'):'table'));
+function ExportMenu({value}){
+ const root=React.useRef(null);const [open,setOpen]=React.useState(false);const [error,setError]=React.useState('');
+ React.useEffect(()=>{
+  if(!open)return;
+  root.current?.querySelector('[role="menuitem"]')?.focus();
+  const outside=event=>{if(!root.current?.contains(event.target))setOpen(false);};
+  const escape=event=>{if(event.key==='Escape'){setOpen(false);root.current?.querySelector('button')?.focus();}};
+  document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
+  return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
+ },[open]);
+ const download=format=>{
+  let url;let anchor;
+  try{
+   const file=createExport(value,format);
+   url=URL.createObjectURL(new Blob([file.data],{type:file.mime}));
+   anchor=document.createElement('a');anchor.href=url;anchor.download=file.filename;document.body.appendChild(anchor);anchor.click();
+   setError('');
+  }catch{setError('导出失败，请重试。');}
+  finally{anchor?.remove();if(url)setTimeout(()=>URL.revokeObjectURL(url),1000);setOpen(false);}
+ };
+ return h('div',{ref:root,style:{position:'relative'}},
+  h('button',{type:'button','aria-label':'导出','aria-haspopup':'menu','aria-expanded':open,onClick:()=>setOpen(!open),style:controlStyle},'导出 ▾'),
+  open?h('div',{role:'menu','aria-label':'导出格式',style:{position:'absolute',right:0,top:'calc(100% + 5px)',zIndex:20,minWidth:120,padding:4,border:`1px solid ${BORDER}`,borderRadius:7,background:'var(--dsw-alias-bg-layer-1)',boxShadow:'0 4px 14px rgba(0,0,0,.08)'}},
+   ...['csv','xlsx'].map(format=>h('button',{key:format,role:'menuitem',type:'button',onClick:()=>download(format),style:{...controlStyle,display:'block',border:0,width:'100%',textAlign:'left',whiteSpace:'nowrap'}},`导出 ${format.toUpperCase()}`))):null,
+  error?h('span',{role:'alert',style:{position:'absolute',right:0,top:'100%',whiteSpace:'nowrap',fontSize:12,color:MUTED}},error):null);
+}
+function Chart({value,view,onViewChange}){
  const hasNumeric=value.measures.some(name=>value.data.some(row=>finiteNumber(row[name])!==null));
  const hasUnplottable=value.measures.some(name=>value.data.some(row=>row[name]!=null&&String(row[name]).trim()!==''&&finiteNumber(row[name])===null));
  const invalidPie=view==='pie'&&(value.data.some(row=>(finiteNumber(row[value.measures[0]])??0)<0)||!value.data.some(row=>(finiteNumber(row[value.measures[0]])??0)>0));
  const showChart=view!=='table'&&hasNumeric&&Boolean(value.dimension)&&!invalidPie;
- const sourceLabel=value.datasourceId!=null?`数据源：${value.datasourceId}`:value.source?.toolName?`来源：${value.source.toolName}`:'查询结果';
  const totalNote=value.rowCount>value.data.length?` / 共 ${value.rowCount} 行`:'';
- return h('section',{style:{border:`1px solid ${BORDER}`,background:'var(--dsw-alias-bg-layer-1)',color:'var(--dsw-alias-label-primary)',borderRadius:10,padding:16,margin:'12px 0',overflow:'hidden'}},
+ return h(React.Fragment,null,
   h('div',{style:{display:'flex',alignItems:'flex-start',gap:12,flexWrap:'wrap',justifyContent:'space-between'}},
-   h('div',{style:{minWidth:0,flex:'1 1 200px'}},
-    h('strong',null,value.title||'数据图表'),
-    h('div',{style:{fontSize:12,color:MUTED,marginTop:4}},`${sourceLabel} · 返回 ${value.data.length} 行${totalNote}${value.offset>0?` · 偏移 ${value.offset}`:''}${value.truncated?' · 仅展示部分结果，可继续分页':''}${hasUnplottable?' · 部分数值无法安全绘制，原值见表格':''}`)),
-   h(Segmented,{view,onChange:setView})),
+   h('strong',{style:{minWidth:0,flex:'1 1 200px',fontSize:14,lineHeight:'22px'}},value.title||'查询结果'),
+   h('div',{style:{display:'flex',alignItems:'center',gap:8,flexShrink:0}},h(ExportMenu,{key:value.title,value}),h(ViewSelect,{view,onChange:onViewChange}))),
   h('div',{style:{marginTop:12}},showChart?h(Plot,{value,type:view}):h(ResultTable,{value})),
   !showChart&&(value.reason||invalidPie)?h('p',{style:{color:MUTED,fontSize:12}},value.reason||(invalidPie?'结果含负数或全部为零，无法呈现有效占比，已保留原始表格。':'')):null,
-   value.source?h('details',{style:{marginTop:10,fontSize:12,color:MUTED}},h('summary',{style:{cursor:'pointer'}},'查看查询来源'),
-    h('div',{style:{marginTop:6,overflowWrap:'anywhere'}},`工具：${value.source.toolName} · 调用：${value.source.callId}`),
-    value.source.sql?h('pre',{style:{whiteSpace:'pre-wrap',overflowWrap:'anywhere',padding:10,border:`1px solid ${BORDER}`,borderRadius:6}},value.source.sql):null):null,
-  h(FollowUps,{items:value.followUps,inputActions}),
-  h('div',{style:{marginTop:8,fontSize:11,color:MUTED,textAlign:'right'}},`问表图表插件 v${VERSION}`));
+  h('div',{style:{fontSize:12,color:MUTED,marginTop:12}},`${value.data.length} 行 · ${value.columns.length} 列${totalNote}${value.offset>0?` · 偏移 ${value.offset}`:''}${value.truncated?' · 仅展示部分结果，可继续分页':''}${hasUnplottable?' · 部分数值无法安全绘制，原值见表格':''}`));
+}
+function ResultsPanel({charts,inputActions}){
+ const panelId=React.useId();
+ const [selected,setSelected]=React.useState(charts[0]?.seq);
+ const [views,setViews]=React.useState({});
+ const active=charts.find(item=>item.seq===selected)||charts[0];
+ React.useEffect(()=>{if(active&&selected!==active.seq)setSelected(active.seq);},[active?.seq,selected]);
+ if(!active)return null;
+ const value=active.value;
+ const view=views[active.seq]||value.defaultView||(value.measures.length>0?(value.chartType||'bar'):'table');
+ const followUps=charts.map(item=>cleanFollowUps(item.value.followUps)).findLast(items=>items.length===3)||[];
+ const changeTab=(index,focus=false)=>{
+  setSelected(charts[index].seq);
+  if(focus)document.getElementById(`${panelId}-tab-${charts[index].seq}`)?.focus();
+ };
+ return h('div',{style:{margin:'16px 0',color:'var(--dsw-alias-label-primary)'}},
+  h('section',{'aria-label':'查询结果',style:{border:`1px solid ${BORDER}`,background:'var(--dsw-alias-bg-layer-1)',borderRadius:10,padding:16,minWidth:0}},
+   charts.length>1?h(React.Fragment,null,
+    h('div',{style:{color:MUTED,fontSize:12,marginBottom:8}},`查询结果 · ${charts.length} 份`),
+    h('div',{role:'tablist','aria-label':'查询结果列表',style:{display:'flex',gap:16,overflowX:'auto',borderBottom:`1px solid ${BORDER}`,marginBottom:16}},
+     ...charts.map((item,index)=>h('button',{key:item.seq,id:`${panelId}-tab-${item.seq}`,role:'tab',type:'button','aria-selected':item.seq===active.seq,'aria-controls':`${panelId}-panel-${active.seq}`,tabIndex:item.seq===active.seq?0:-1,title:item.value.title||`结果 ${index+1}`,
+      onClick:()=>changeTab(index),onKeyDown:event=>{
+       let next;if(event.key==='ArrowRight')next=(index+1)%charts.length;else if(event.key==='ArrowLeft')next=(index+charts.length-1)%charts.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=charts.length-1;
+       if(next!==undefined){event.preventDefault();changeTab(next,true);}
+      },style:{border:0,borderBottom:item.seq===active.seq?'2px solid var(--dsw-alias-label-primary)':'2px solid transparent',padding:'8px 0',background:'transparent',color:item.seq===active.seq?'var(--dsw-alias-label-primary)':MUTED,font:'inherit',fontSize:13,fontWeight:item.seq===active.seq?600:400,cursor:'pointer',whiteSpace:'nowrap',maxWidth:200,flexShrink:0,overflow:'hidden',textOverflow:'ellipsis'}},item.value.title||`结果 ${index+1}`)))):null,
+   h('div',{role:charts.length>1?'tabpanel':undefined,id:`${panelId}-panel-${active.seq}`,'aria-labelledby':charts.length>1?`${panelId}-tab-${active.seq}`:undefined},
+    h(Chart,{key:active.seq,value,view,onViewChange:next=>setViews(previous=>({...previous,[active.seq]:next}))}))),
+  h(FollowUps,{items:followUps,inputActions}));
 }
 function FollowUps({items,inputActions}){
  const [note,setNote]=React.useState('');
@@ -62,12 +110,12 @@ function FollowUps({items,inputActions}){
   catch{/* fall through to the clipboard */ }
   try{navigator.clipboard.writeText(text);setNote('已复制，粘贴即可追问');}catch{setNote('请手动输入该问题');}
  };
- return h('div',{style:{marginTop:12,paddingTop:12,borderTop:`1px solid ${BORDER}`}},
-  h('div',{style:{fontSize:12,color:MUTED,marginBottom:8}},note||'可以接着问：'),
+ return h('div',{'aria-label':'后续问题',style:{marginTop:16,padding:'0 2px'}},
+  h('div',{style:{fontSize:12,color:MUTED,marginBottom:8}},note||'进一步分析'),
   h('div',{style:{display:'flex',flexWrap:'wrap',gap:8}},
    ...items.map((text,index)=>h('button',{key:index,type:'button',title:text,onClick:()=>pick(text),
     style:{border:`1px solid ${BORDER}`,borderRadius:999,background:'transparent',color:'var(--dsw-alias-label-primary)',cursor:'pointer',font:'inherit',fontSize:12,lineHeight:'20px',padding:'4px 12px',textAlign:'left',maxWidth:'100%'}},text))));
 }
-function TurnTail(props){const charts=props.turn.data.get(KEY)||[];return h(React.Fragment,null,...charts.filter(item=>item.seq<props.seq).map(item=>h(Chart,{key:item.seq,value:item.value,inputActions:props.inputActions})));}
+function TurnTail(props){const charts=(props.turn.data.get(KEY)||[]).filter(item=>item.seq<props.seq);return h(ResultsPanel,{charts,inputActions:props.inputActions});}
 export const inject=['slots','uiConversation'];
 export function apply(ctx){ctx.uiConversation.events.register(definition);ctx.slots.inject('conversation.chat.turnTail',()=>ctx.slots.register({name:'conversation.chat.turnTail',id:KEY,order:10},TurnTail));}

@@ -8,7 +8,7 @@ const rows = [{ region: '东区', enroll: 12 }, { region: '西区', enroll: 7 }]
 const args = { sourceCallId: 'q1', title: '各区报名人数', followUps: ['东区有哪些活动？', '西区有哪些活动？', '可以按月份展示这些数据吗？'] };
 function events(value = rows, overrides = {}) {
   return [{ type: 'turn/start', seq: 1, data: { turn: 2 } },
-    { type: 'user/message', seq: 2, data: { content: [{ type: 'text', text: '问表：各区报名人数' }] } },
+    { type: 'user/message', seq: 2, data: { content: [{ type: 'text', text: '按区县统计报名人数' }] } },
     { type: 'tool/call', seq: 3, data: { callId: 'q1', name: 'mcp__postgres__query', arguments: JSON.stringify({ sql: 'select region, enroll from registrations' }) } },
     { type: 'tool/result', seq: 4, surfaceOp: 'append', data: { message: { source: { callId: 'q1' }, content: [{ type: 'text', text: JSON.stringify(value) }], ...overrides } } }];
 }
@@ -28,6 +28,7 @@ test('normalizes SQL MCP, API JSON and matrices without changing raw cells', () 
 test('source is bound to completed current-turn call, preserving SQL and making no query', () => {
   const result = chartFromEvents(args, events());
   assert.deepEqual(result.data, rows);
+  assert.equal(result.defaultView, 'table');
   assert.deepEqual(result.measures, ['enroll']);
   assert.equal(result.dimension, 'region');
   assert.equal(result.source.toolName, 'mcp__postgres__query');
@@ -36,7 +37,7 @@ test('source is bound to completed current-turn call, preserving SQL and making 
   assert.deepEqual(result.followUps, args.followUps);
   assert.throws(() => chartFromEvents({ ...args, sourceCallId: 'other-session' }, events()), /sourceCallId/);
   assert.throws(() => chartFromEvents(args, [...events(), { type: 'turn/end' }]), /本轮/);
-  assert.throws(() => chartFromEvents(args, [...events(), { type: 'turn/start' }]), /本轮/);
+  assert.throws(() => chartFromEvents(args, [...events(), { type: 'turn/start' }]), /当前回合/);
   assert.throws(() => chartFromEvents(args, events().slice(0, -1)), /尚未/);
   assert.throws(() => chartFromEvents(args, events(rows, { isError: true })), /失败/);
 });
@@ -115,6 +116,19 @@ test('automatic source selection is unique; ambiguity returns real candidate IDs
   assert.throws(() => chartFromEvents(auto, events().slice(0, 2)), /没有唯一/);
 });
 
+test('follow-ups may be omitted; explicitly supplied suggestions must clean to three valid questions', () => {
+  const { followUps, ...plain } = args;
+  const result = chartFromEvents(plain, events());
+  assert.deepEqual(result.data, rows);
+  assert.equal(result.defaultView, 'table');
+  assert.deepEqual(result.followUps, []);
+  assert.deepEqual(chartFromEvents({ ...plain, followUps: followUps.map(question => `  ${question} `) }, events()).followUps, followUps);
+  for (const invalid of [undefined, null, [], [followUps[0]], [followUps[0], followUps[1], '短'],
+    Array(3).fill(followUps[0]), '可以展开查看这些活动吗？']) {
+    assert.throws(() => chartFromEvents({ ...plain, followUps: invalid }, events()), /3 条/);
+  }
+});
+
 test('explicit bad selections, multiple row arrays and duplicate follow-ups fail closed', () => {
   for (const selection of [{ dimension: 'missing' }, { dimension: 'enroll' }, { measures: ['missing'] },
     { measures: ['enroll', 'missing'] }, { measures: ['region'] }, { followUps: Array(3).fill('可以再详细说明吗？') }]) {
@@ -133,7 +147,10 @@ test('replaced tool or user surface cannot be used to render stale data', () => 
   const userReplaced = events();
   userReplaced.push({ type: 'user/message', seq: 6, surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 },
     data: { content: [{ type: 'text', text: '不要图表' }] } });
-  assert.throws(() => chartFromEvents(args, userReplaced), /本轮/);
+  assert.equal(chartFromEvents({ ...args, chartType: 'bar' }, userReplaced).defaultView, 'table');
+  const textOnly = events();
+  textOnly[1].data.content[0].text = '只用文字回答，不用表格和图表';
+  assert.throws(() => chartFromEvents(args, textOnly), /文字/);
 });
 
 test('generic DataHub adapter preserves semantic SQL and datasource binding', () => {
@@ -155,6 +172,25 @@ test('generic tool executes using session events with zero tools.execute calls',
     sessions: { get(id) { assert.equal(id, 'session'); return { snapshotEvents: () => events() }; } } };
   apply(ctx);
   assert.ok(registered.has('datahub_chart'));
-  const result = await registered.get('query_result_chart').execute(args, { agent: { id: 'session' } });
-  assert.deepEqual(result.data, rows); assert.equal(queryCount, 0);
+  const { followUps, ...plain } = args;
+  const result = await registered.get('query_result_chart').execute(plain, { agent: { id: 'session' } });
+  assert.deepEqual(result.data, rows); assert.deepEqual(result.followUps, []); assert.equal(queryCount, 0);
+});
+
+test('tool schemas and delivery guidance support one overall follow-up group', () => {
+  const registered = new Map(); let prompt;
+  apply({ systemPrompt: { section(section) { prompt = section.text; } },
+    tools: { register(tool) { registered.set(tool.name, tool); } } });
+  assert.deepEqual(registered.get('query_result_chart').parameters.required, ['title']);
+  assert.deepEqual(registered.get('datahub_chart').parameters.required, ['datasourceId', 'sql', 'title']);
+  for (const tool of registered.values()) {
+    assert.equal(tool.parameters.properties.followUps.minItems, 3);
+    assert.equal(tool.parameters.properties.followUps.maxItems, 3);
+  }
+  assert.match(prompt, /正文仅补充结论、统计口径和建议/);
+  assert.match(prompt, /不再重复输出完整 Markdown 表格/);
+  assert.match(prompt, /不要在正文另列跟问建议/);
+  assert.match(prompt, /插件展示失败时才允许用普通表格兜底/);
+  assert.match(prompt, /每份使用简短的中文业务标题/);
+  assert.match(prompt, /中间结果可省略 followUps，最后一份结果提供覆盖整体的 3 条 followUps/);
 });

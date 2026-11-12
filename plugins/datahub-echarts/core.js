@@ -1,19 +1,19 @@
-export function isExplicitTableRequest(events) {
-  let start = -1;
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].type === 'turn/end') return false;
-    if (events[i].type === 'turn/start') { start = i; break; }
-  }
-  if (start < 0) return false;
-  const messages = events.slice(start + 1).filter((event) => event.type === 'user/message');
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const text = (Array.isArray(messages[i].data?.content) ? messages[i].data.content : [])
-      .filter((block) => block.type === 'text').map((block) => block.text || '').join('\n');
-    if (/(?:不要|不需要|不必|别|无需).{0,8}(?:问表|查表|表格|图表|柱状图|折线图|饼图)/u.test(text)) return false;
-    if (/(?:开发|实现|调试|安装|设计|修复|介绍|如何|怎么).{0,15}(?:问表|图表).{0,8}(?:插件|功能|工具)/u.test(text)) continue;
-    if (/问表|查表|做个表|(?:用|以|生成|制作|列出|展示|显示|给我|来个|画|绘制).{0,12}(?:表格|图表|柱状图|折线图|饼图)|(?:表格|图表|柱状图|折线图|饼图).{0,8}(?:展示|显示|呈现|输出)/u.test(text)) return true;
-  }
-  return false;
+/** Rendering needs an active turn, not a particular keyword in the question. */
+export function canPresentResults(events) {
+  const start = events.findLastIndex(event => event.type === 'turn/start' || event.type === 'turn/end');
+  if (start < 0 || events[start].type !== 'turn/start') return false;
+  const latest = events.slice(start + 1).findLast(event => event.type === 'user/message');
+  const text = (Array.isArray(latest?.data?.content) ? latest.data.content : [])
+    .filter(block => block.type === 'text').map(block => block.text || '').join('\n');
+  return !/(?:只|仅).{0,4}(?:用)?(?:文字|文本).{0,4}(?:回答|说明|输出)|(?:不要|不需要|不用|无需)(?:再|任何|生成|展示|显示|输出|提供|给我|用)?(?:表格|问表)/u.test(text);
+}
+
+/** Explicit table/no-chart instructions take precedence over a caller's chart hint. */
+function requestedView(question) {
+  if (/(?:不要|不需要|不必|别|无需|不用).{0,8}(?:图表|柱状图|折线图|饼图|画图|绘图)|(?:只|仅).{0,4}(?:表格|问表)|(?:用|以|生成|列出|展示|显示|给我).{0,6}表格/u.test(question)) return 'table';
+  if (/(?:开发|实现|调试|安装|设计|修复|介绍|如何|怎么).{0,15}(?:图表).{0,8}(?:插件|功能|工具)/u.test(question)) return undefined;
+  if (/图表|柱状图|折线图|饼图|画图|绘图|(?:画|绘制).{0,12}(?:趋势|占比|走势|变化)/u.test(question)) return 'chart';
+  return undefined;
 }
 
 export function extractSqlResult(outcome) {
@@ -158,10 +158,12 @@ export function buildResultChart(args, result, question = '') {
   const switchable = canChart || (hasValue && invalidPie && dimension !== null &&
     result.data.some(row => plottedMeasures.some(name => finiteNumber(row[name]) !== null)));
 
+  const view = requestedView(question);
+  const showChart = view === 'chart' || (view === undefined && ['bar', 'line', 'pie'].includes(args.chartType));
   return {title: args.title, datasourceId: result.datasourceId, columns, data: result.data,
     rowCount: result.rowCount ?? result.data.length, truncated: result.truncated === true, offset: result.offset ?? 0, limit: result.limit ?? result.data.length,
     dimension: switchable ? dimension : null, measures: switchable ? plottedMeasures : [], chartType,
-    defaultView: canChart ? chartType : 'table', reason, followUps};
+    defaultView: canChart && showChart ? chartType : 'table', reason, followUps};
 }
 
 /** At most three short, non-duplicate follow-up questions the user can pick up next. */

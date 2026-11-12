@@ -1,4 +1,4 @@
-import { buildResultChart, isExplicitTableRequest, currentTurnText, numericMeasure, categoryDimension, cleanFollowUps, extractSqlResult } from './core.js';
+import { buildResultChart, canPresentResults, currentTurnText, numericMeasure, categoryDimension, cleanFollowUps, extractSqlResult } from './core.js';
 
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -94,7 +94,7 @@ export function chartFromEvents(args, events) {
   const surfaceTypes = new Set(['system/message', 'developer/message', 'user/message', 'assistant/message', 'tool/result']);
   events = events.filter(event => !surfaceTypes.has(event.type) || !replacements.some(replacement =>
     replacement.seq > event.seq && event.seq >= replacement.surfaceOp.startSeq && event.seq <= replacement.surfaceOp.endSeq));
-  if (!isExplicitTableRequest(events)) throw new Error('仅支持用户本轮明确要求问表或图表。');
+  if (!canPresentResults(events)) throw new Error('仅支持本轮未结束的查询结果，且用户未要求仅文字回答。');
   const start = events.findLastIndex(event => event.type === 'turn/start');
   const active = events.slice(start + 1);
   if (!args.sourceCallId) {
@@ -145,7 +145,7 @@ export function chartFromEvents(args, events) {
     args.measures.some(name => !byName.has(name) || !numericMeasure(byName.get(name)) || name === args.dimension))) {
     throw new Error('measures 必须是存在的数值指标列名，不能是标识列或维度。');
   }
-  if (cleanFollowUps(args.followUps).length !== 3) throw new Error('请提供 3 条不同且完整的跟问建议。');
+  if (own(args, 'followUps') && cleanFollowUps(args.followUps).length !== 3) throw new Error('请提供 3 条不同且完整的跟问建议。');
   const chart = buildResultChart(args, table, currentTurnText(events));
   let input;
   try { input = typeof call.data.arguments === 'string' ? JSON.parse(call.data.arguments) : call.data.arguments; } catch { input = {}; }

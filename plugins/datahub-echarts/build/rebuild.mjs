@@ -1,16 +1,16 @@
 // Rebuild ../client.js from client-entry.js.
 // Usage (from the package root):
-//   node build/rebuild.mjs <esbuildDir> <echartsDir>
-// e.g. node build/rebuild.mjs <repo>/.worktrees/<fe-tree>/node_modules/esbuild <repo>/.worktrees/<fe-tree>/node_modules/echarts
+//   node build/rebuild.mjs <esbuildDir> <echartsDir> <xlsxDir>
+// All dependency directories are build-time inputs; xlsxDir is the official SheetJS 0.20.3 package.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
-const [esbuildDir, echartsDir] = process.argv.slice(2);
-if (!esbuildDir || !echartsDir) {
-  console.error('usage: node build/rebuild.mjs <esbuildDir> <echartsDir>');
+const [esbuildDir, echartsDir, xlsxDir] = process.argv.slice(2);
+if (!esbuildDir || !echartsDir || !xlsxDir) {
+  console.error('usage: node build/rebuild.mjs <esbuildDir> <echartsDir> <xlsxDir>');
   process.exit(2);
 }
 
@@ -26,7 +26,7 @@ const result = await esbuild.build({
   legalComments: 'none',
   define: { __PLUGIN_VERSION__: JSON.stringify(version) },
   external: ['react'],
-  alias: { echarts: echartsDir },
+  alias: { echarts: resolve(echartsDir), xlsx: resolve(xlsxDir, 'xlsx.mjs') },
   logLevel: 'warning',
 });
 

@@ -13,6 +13,7 @@ const React = {
   createElement: (...args) => ({ type: 'element', args }),
   Fragment: 'fragment',
   useRef: () => ({ current: null }),
+  useId: () => 'smoke-result',
   useState: (initial) => [initial, () => {}],
   useEffect: () => {},
 };
@@ -89,7 +90,7 @@ const walk = (node) => {
 walk(tree);
 const followUpButtons = buttons.filter((props) => sample.followUps.includes(props.title));
 if (followUpButtons.length !== 3) throw new Error(`expected 3 follow-up buttons, got ${followUpButtons.length}`);
-if (buttons.length !== 7) throw new Error(`expected 4 view toggles + 3 follow-ups, got ${buttons.length}`);
+if (buttons.length !== 4) throw new Error(`expected export button + 3 outside follow-ups, got ${buttons.length}`);
 followUpButtons[0].onClick();
 if (!captured) throw new Error('captureInsertion was not used');
 if (inserted !== sample.followUps[0]) throw new Error(`unexpected insertion: ${inserted}`);

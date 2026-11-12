@@ -1,11 +1,11 @@
 {
   "name": "@local/datahub-echarts",
-  "version": "0.7.0",
+  "version": "0.10.0",
   "private": true,
   "license": "MIT",
   "type": "module",
   "description": "通用查询结果图表（兼容 DataHub）",
   "exports": {".": "./index.js", "./client": "./client.js", "./locale/*.json": "./locale/*.json", "./icon": "./icon.svg"},
-  "files": ["index.js", "core.js", "results.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "LICENSE", "CHANGELOG.md", "LICENSE-ECHARTS", "NOTICE-ECHARTS", "LICENSE-ZRENDER"],
+  "files": ["index.js", "core.js", "results.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "LICENSE", "CHANGELOG.md", "LICENSE-ECHARTS", "NOTICE-ECHARTS", "LICENSE-ZRENDER", "LICENSE-SHEETJS"],
   "dsh": {"bundle": {"patch": "./cordis.patch.yml"}, "client": {"platform": "web", "immediately": true, "inject": ["@deepseek-ai/dsh-client-ui-conversation"]}}
 }

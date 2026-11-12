@@ -18,7 +18,7 @@ for (let index = 2; index < process.argv.length; index += 2) {
   if (!name?.startsWith('--') || !value || value.startsWith('--')) throw new Error(`Expected --option value; got ${name}`);
   options.set(name.slice(2), value);
 }
-for (const name of ['playwright-dir', 'out-dir']) {
+for (const name of ['playwright-dir', 'out-dir', 'xlsx-dir']) {
   if (!options.has(name)) throw new Error(`Missing --${name}; see usage at the top of this script.`);
 }
 const moduleDir = (name) => resolve(options.get(name));
@@ -30,6 +30,7 @@ if (!scriptRuntime) for (const name of ['esbuild-dir', 'react-dir', 'react-dom-d
   if (!options.has(name)) throw new Error(`Missing --${name}, or supply --react-script and --react-dom-script.`);
 }
 const { chromium } = await import(pathToFileURL(join(moduleDir('playwright-dir'), 'index.mjs')).href);
+const XLSX = await import(pathToFileURL(join(moduleDir('xlsx-dir'), 'xlsx.mjs')).href);
 const browsers = [options.get('browser'),
   process.env.ProgramFiles && join(process.env.ProgramFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
   process.env.ProgramFiles && join(process.env.ProgramFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
@@ -76,7 +77,7 @@ function fixture(name, value, tool = 'query_result_chart') {
   ] };
 }
 const fixtures = {
-  generic: fixture('generic', common),
+  generic: fixture('generic', { ...common, defaultView: 'table' }),
   compatibility: fixture('compatibility', { ...common, title: '浏览器验收夹具 · DataHub 兼容工具', datasourceId: 'fixture-datahub', chartType: 'line' }, 'datahub_chart'),
   empty: fixture('empty', { ...common, title: '浏览器验收夹具 · 空查询结果', data: [], rowCount: 0, limit: 0, dimension: null, measures: [], reason: '查询没有返回数据。' }),
   negative: fixture('negative', { ...common, title: '浏览器验收夹具 · 负数饼图回退', chartType: 'pie', defaultView: 'table', dimension: 'category', measures: ['enroll_total'], reason: '结果含负数或全部为零，无法呈现有效占比，已保留原始表格。', rowCount: 2, data: [{ category: '正数', enroll_total: 10 }, { category: '负数', enroll_total: -5 }] }),
@@ -98,6 +99,10 @@ window.__ModuleLoader__={load(definition){
  };
  plugin.apply(ctx);
 }};
+window.__updateCharts=(charts)=>{
+ window.__location.value=charts;
+ window.__root.render(window.React.createElement(window.__TurnTail,{seq:1000,turn:{data:new Map([[window.__location.key,charts]])},inputActions:window.__inputActions}));
+};
 window.__mountFixture=(fixture)=>{
  if(window.__root)window.__root.unmount();
  const definition=window.__eventDefinition;let state;
@@ -110,6 +115,7 @@ window.__mountFixture=(fixture)=>{
   insertText(text,span){window.__calls.insertions.push({text,span});document.getElementById('composer').value=text;},
   send(...args){window.__calls.sends.push(args);},submit(...args){window.__calls.sends.push(args);},sendMessage(...args){window.__calls.sends.push(args);},
  };
+ window.__inputActions=inputActions;
  document.getElementById('composer').value='';
  window.__root=window.__createRoot(document.getElementById('root'));
  window.__root.render(window.React.createElement(window.__TurnTail,{seq:100,turn:{data:new Map([[location.key,location.value]])},inputActions}));
@@ -172,8 +178,8 @@ try {
     return hash;
   };
   const view = async (name, expectedCanvas) => {
-    await section.getByRole('button', { name, exact: true }).click();
-    assert.equal(await section.getByRole('button', { name, exact: true }).getAttribute('aria-pressed'), 'true');
+    const selected = await section.getByRole('combobox', { name: '呈现方式' }).selectOption({ label: name });
+    assert.equal(await section.getByRole('combobox', { name: '呈现方式' }).inputValue(), selected[0]);
     if (expectedCanvas) return canvas(`switch to ${name}`);
     assert.equal(await section.locator('canvas').count(), 0);
     assert.equal(await section.locator('table').count(), 1);
@@ -183,7 +189,42 @@ try {
   assert.equal(await page.evaluate(() => window.__calls.registrations[0].name), 'conversation.chat.turnTail');
   assert.equal(await page.evaluate(() => window.__location.value.length), 1);
   check('query_result_chart projects into a real React turn-tail card');
-  const barHash = await canvas('initial bar renders painted canvas');
+  assert.equal(await section.getByRole('combobox', { name: '呈现方式' }).inputValue(), 'table');
+  assert.equal(await section.locator('canvas').count(), 0);
+  assert.equal(await section.locator('tbody tr').count(), 3);
+  check('ordinary query opens a table while retaining chart switching');
+  await capture('00-default-table');
+  const exportMenu = section.getByRole('button', { name: '导出', exact: true });
+  await exportMenu.click();
+  assert.deepEqual(await section.getByRole('menuitem').allTextContents(), ['导出 CSV', '导出 XLSX']);
+  await capture('00-export-menu');
+  await page.keyboard.press('Escape');
+  assert.equal(await section.getByRole('menu').count(), 0);
+  const downloadFile = async format => {
+    await exportMenu.click();
+    const received = page.waitForEvent('download');
+    await section.getByRole('menuitem', { name: `导出 ${format.toUpperCase()}`, exact: true }).click();
+    const download = await received;
+    assert.equal(download.suggestedFilename(), `${common.title}.${format}`);
+    const filename = join(output, `exported.${format}`);
+    await download.saveAs(filename);
+    assert.equal(await download.failure(), null);
+    assert.equal(await section.getByRole('menu').count(), 0);
+    return readFileSync(filename);
+  };
+  const csv = await downloadFile('csv');
+  assert.deepEqual([...csv.subarray(0,3)], [239,187,191]);
+  assert.ok(csv.toString('utf8').includes('活动类别'));
+  assert.ok(csv.toString('utf8').includes('志愿服务'));
+  assert.ok(!csv.toString('utf8').includes('SELECT'));
+  check('CSV download has UTF-8 BOM and real data without source details');
+  const barHash = await view('柱状图', true);
+  const xlsxBytes = await downloadFile('xlsx');
+  const book = XLSX.read(xlsxBytes, {type:'buffer'});
+  assert.deepEqual(XLSX.utils.sheet_to_json(book.Sheets[book.SheetNames[0]], {header:1}), [
+    ['活动类别','报名人数'], ['志愿服务','691'], ['文体活动',1006], ['学术活动',420]
+  ]);
+  check('XLSX downloaded from chart view preserves all source rows and cell types');
   await capture('01-generic-bar');
   const lineHash = await view('折线图', true);
   await capture('02-generic-line');
@@ -196,17 +237,16 @@ try {
   assert.equal(await section.locator('tbody tr').count(), 3);
   assert.deepEqual(await section.locator('tbody tr').first().locator('td').allTextContents(), ['志愿服务', '691']);
   check('table preserves fixture columns and original numeric-string cells');
-  const details = section.locator('details');
-  assert.equal(await details.evaluate((node) => node.open), false);
-  await details.locator('summary').click();
-  assert.equal(await details.evaluate((node) => node.open), true);
-  assert.equal(await details.locator('pre').textContent(), sql);
-  assert.equal(await details.locator('pre img, pre script').count(), 0);
-  assert.notEqual(await page.evaluate(() => window.__sqlExecuted), true);
-  check('SQL starts collapsed and expands as literal text without HTML execution');
-  assert.equal(await section.getByRole('button').count(), 7);
+  assert.equal(await section.locator('details, summary, pre').count(), 0);
+  assert.equal(await section.getByText('查看查询来源').count(), 0);
+  const followUpArea = page.locator('#root [aria-label="后续问题"]');
+  assert.equal(await section.locator('[aria-label="后续问题"]').count(), 0);
+  assert.ok((await followUpArea.boundingBox()).y >= (await section.boundingBox()).y + (await section.boundingBox()).height);
+  check('query source removed and follow-ups positioned outside card border');
+  assert.equal(await section.getByRole('button').count(), 1);
+  assert.equal(await followUpArea.getByRole('button').count(), 3);
   for (const text of followUps) {
-    await section.getByRole('button', { name: text, exact: true }).click();
+    await followUpArea.getByRole('button', { name: text, exact: true }).click();
     assert.equal(await page.locator('#composer').inputValue(), text);
   }
   const followUpCalls = await page.evaluate(() => window.__calls);
@@ -219,7 +259,7 @@ try {
   await view('柱状图', true);
   await mount('compatibility');
   await canvas('legacy datahub_chart projects and renders initial line');
-  assert.ok((await section.textContent()).includes('数据源：fixture-datahub'));
+  assert.ok((await section.textContent()).includes('3 行 · 2 列'));
   await capture('05-datahub-compatibility');
   await mount('empty');
   assert.equal(await section.locator('canvas').count(), 0);
@@ -229,8 +269,8 @@ try {
   check('empty result stays an honest empty table across all chart choices');
   await capture('06-empty-table');
   await mount('negative');
-  assert.equal(await section.getByRole('button', { name: '表格', exact: true }).getAttribute('aria-pressed'), 'true');
-  assert.equal(await section.getByRole('button', { name: '饼图', exact: true }).getAttribute('aria-pressed'), 'false');
+  assert.equal(await section.getByRole('combobox', { name: '呈现方式' }).inputValue(), 'table');
+  assert.equal(await section.getByRole('combobox').count(), 1);
   assert.equal(await section.locator('canvas').count(), 0);
   assert.equal(await section.locator('tbody tr').count(), 2);
   assert.ok((await section.textContent()).includes('负数或全部为零'));
@@ -246,7 +286,7 @@ try {
   check('negative default-table result switches to a rendered bar and back to pie table');
   await capture('10-negative-switched-pie-table');
   await mount('zero');
-  assert.equal(await section.getByRole('button', { name: '表格', exact: true }).getAttribute('aria-pressed'), 'true');
+  assert.equal(await section.getByRole('combobox', { name: '呈现方式' }).inputValue(), 'table');
   assert.equal(await section.locator('canvas').count(), 0);
   assert.ok((await section.textContent()).includes('负数或全部为零'));
   check('all-zero pie honors defaultView table');
@@ -254,6 +294,61 @@ try {
   await view('柱状图', true);
   await view('饼图', false);
   check('all-zero default-table result switches to a rendered bar and back to pie table');
+  await mount('generic');
+  assert.equal(await section.getByRole('tablist').count(),0);
+  const overall=['哪些区县需要优先核查？','资源配置与服务效率有何关联？','可以比较各区县历年变化吗？'];
+  await page.evaluate(overall=>{
+   window.__multi=Array.from({length:5},(_,i)=>({seq:20+i,value:{...window.__fixtures.generic.value,title:['床位核对','资源配置','服务效率','机构情况','全市汇总'][i],data:[{category:`结果${i+1}`,enroll_total:i+10}],rowCount:1,followUps:i===4?overall:window.__fixtures.generic.value.followUps}}));
+   window.__updateCharts(window.__multi);
+  },overall);
+  await section.getByRole('tab',{name:'全市汇总',exact:true}).waitFor();
+  assert.equal(await page.locator('#root section').count(),1);
+  assert.equal(await section.locator('table').count(),1);
+  assert.equal(await section.getByRole('tab').count(),5);
+  assert.deepEqual(await followUpArea.getByRole('button').allTextContents(),overall);
+  assert.equal(await page.getByText('进一步分析',{exact:true}).count(),1);
+  assert.equal(await page.getByText(/问表图表插件 v/).count(),0);
+  await capture('12-multiple-results');
+  await section.getByRole('tab',{name:'资源配置',exact:true}).click();
+  await view('折线图',true);
+  await section.getByRole('tab',{name:'床位核对',exact:true}).click();
+  assert.equal(await section.getByRole('combobox').inputValue(),'table');
+  await section.getByRole('tab',{name:'资源配置',exact:true}).click();
+  assert.equal(await section.getByRole('combobox').inputValue(),'line');
+  await section.getByRole('tab',{name:'资源配置',exact:true}).press('ArrowRight');
+  assert.equal(await section.getByRole('tab',{name:'服务效率',exact:true}).getAttribute('aria-selected'),'true');
+  await exportMenu.click();
+  const currentDownload=page.waitForEvent('download');
+  await section.getByRole('menuitem',{name:'导出 XLSX',exact:true}).click();
+  const currentFile=await currentDownload;
+  assert.equal(currentFile.suggestedFilename(),'服务效率.xlsx');
+  await currentFile.saveAs(join(output,'selected-result.xlsx'));
+  const currentBook=XLSX.read(readFileSync(join(output,'selected-result.xlsx')),{type:'buffer'});
+  assert.deepEqual(XLSX.utils.sheet_to_json(currentBook.Sheets[currentBook.SheetNames[0]],{header:1}),[['活动类别','报名人数'],['结果3',12]]);
+  await page.evaluate(()=>window.__updateCharts([...window.__multi,{seq:30,value:{...window.__multi[0].value,title:'新到结果',followUps:[]}}]));
+  await section.getByRole('tab',{name:'新到结果',exact:true}).waitFor();
+  assert.equal(await section.getByRole('tab',{name:'服务效率',exact:true}).getAttribute('aria-selected'),'true');
+  await page.evaluate(()=>window.__updateCharts(window.__multi.filter(item=>item.seq!==22)));
+  await section.getByRole('tab',{name:'床位核对',exact:true}).waitFor();
+  await page.waitForFunction(()=>document.querySelector('[role="tab"][aria-selected="true"]')?.textContent==='床位核对');
+  assert.deepEqual(await followUpArea.getByRole('button').allTextContents(),overall);
+  check('five results share one panel and follow-ups; views persist, selected export matches, append preserves selection, removal falls back');
+  await page.setViewportSize({width:320,height:900});
+  const tabs=section.getByRole('tablist');
+  assert.ok(await tabs.evaluate(node=>node.scrollWidth>node.clientWidth));
+  await capture('13-narrow-multiple-results');
+  await page.evaluate(()=>window.__updateCharts([]));
+  await section.waitFor({state:'detached'});
+  assert.equal(await page.locator('#root [aria-label="后续问题"]').count(),0);
+  check('removing all results clears panel and stale follow-ups');
+  await mount('generic');
+  await page.setViewportSize({width:480,height:900});
+  const cardBounds = await section.boundingBox();
+  const exportBounds = await exportMenu.boundingBox();
+  const selectBounds = await section.getByRole('combobox').boundingBox();
+  assert.ok(exportBounds.x >= cardBounds.x && selectBounds.x + selectBounds.width <= cardBounds.x + cardBounds.width);
+  await capture('11-narrow-table-controls');
+  check('export and view dropdown remain inside card on narrow viewport');
   const calls = await page.evaluate(() => window.__calls);
   assert.deepEqual(calls.queries, []);
   assert.deepEqual(calls.network, []);

@@ -1,22 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {isExplicitTableRequest,extractSqlResult,buildChart,finiteNumber,currentTurnText,cleanFollowUps} from './core.js';
+import {canPresentResults,extractSqlResult,buildChart,finiteNumber,currentTurnText,cleanFollowUps} from './core.js';
 import {apply} from './index.js';
 const user = (text) => ({type:'user/message',data:{content:[{type:'text',text}]}});
 const args={datasourceId:'3000017',sql:'SELECT activity_type FROM domain_b960408b',title:'活动',dimension:'activity_type',measures:['n'],chartType:'bar'};
 const result={queryKind:'SEMANTIC_SQL',datasourceId:args.datasourceId,semanticSql:args.sql,columns:[{name:'activity_type',type:'String'},{name:'n',type:'Int64'}],data:[{activity_type:'志愿服务',n:'3'}],rowCount:1,truncated:false,offset:0,limit:100};
-test('仅本轮明确问表生效',()=>{
- assert.equal(isExplicitTableRequest([{type:'turn/start'},user('请问表：本月学生志愿情况')]),true);
- assert.equal(isExplicitTableRequest([{type:'turn/start'},user('本月学生志愿情况')]),false);
- assert.equal(isExplicitTableRequest([{type:'turn/start'},user('问表'),{type:'turn/end'},{type:'turn/start'},user('继续')]),false);
- assert.equal(isExplicitTableRequest([{type:'turn/start'},user('问表，但是不要图表')]),false);
- assert.equal(isExplicitTableRequest([{type:'turn/start'},user('查表：学生情况')]),true);
- assert.equal(isExplicitTableRequest([{type:'turn/start'},user('做个表：学生情况')]),true);
- assert.equal(isExplicitTableRequest([{type:'turn/start'},user('列出表格：学生情况')]),true);
- assert.equal(isExplicitTableRequest([{type:'turn/start'},user('如何开发问表插件')]),false);
- assert.equal(isExplicitTableRequest([{type:'turn/start'},user('不要图表'),user('改为问表：学生情况')]),true);
- assert.equal(isExplicitTableRequest([{type:'turn/start'},user('问表'),user('不要图表')]),false);
- assert.equal(isExplicitTableRequest([{type:'turn/start'},user('问表'),{type:'turn/end'}]),false);
+test('普通问数允许展示，保留当前回合与仅文字约束',()=>{
+ for(const question of ['本月学生志愿情况','按区县统计报名人数','不要图表，给表格','不要图表给表格','请用饼图展示占比']) {
+  assert.equal(canPresentResults([{type:'turn/start'},user(question)]),true,question);
+ }
+ for(const question of ['只用文字回答','仅文本说明','不用表格和图表']) {
+  assert.equal(canPresentResults([{type:'turn/start'},user(question)]),false,question);
+ }
+ assert.equal(canPresentResults([user('统计报名人数')]),false);
+ assert.equal(canPresentResults([{type:'turn/start'},user('统计报名人数'),{type:'turn/end'}]),false);
+ assert.equal(canPresentResults([{type:'turn/start'},user('只用文字回答'),user('改为表格展示')]),true);
+});
+test('普通问数默认表格，明确绘图才显示图形，仍保留切换列',()=>{
+ const bare={datasourceId:args.datasourceId,sql:args.sql,title:'结果'};
+ for(const question of ['按类别统计人数','各类别占比','每月趋势','问表：活动情况']) {
+  const value=buildChart(bare,result,question);
+  assert.equal(value.defaultView,'table',question);
+  assert.equal(value.dimension,'activity_type');
+  assert.deepEqual(value.measures,['n']);
+ }
+ for(const [question,view] of [['用柱状图展示人数','bar'],['画一下每月报名人数趋势','line'],['用饼图展示占比','pie']]) {
+  assert.equal(buildChart(bare,result,question).defaultView,view,question);
+ }
+ assert.equal(buildChart({...bare,chartType:'line'},result).defaultView,'line');
+ assert.equal(buildChart({...bare,chartType:'pie'},result,'不要图表，直接给表格').defaultView,'table');
+ assert.equal(buildChart({...bare,chartType:'bar'},result,'用表格展示人数').defaultView,'table');
 });
 test('成功结果与数据源和 SQL 精确匹配',()=>{
  assert.deepEqual(buildChart(args,extractSqlResult({isError:false,value:result})).data,result.data);
@@ -92,10 +105,15 @@ test('跟问建议最多三条且去重清洗',()=>{
 });
 test('模拟查询管线绑定当前会话结果',async()=>{
  let tool,query; const agent={id:'a'}; const signal=new AbortController().signal; const token=Symbol('parent');
- const ctx={systemPrompt:{section(){}},sessions:{get(id){assert.equal(id,'a');return {snapshotEvents(){return [{type:'turn/start'},user('问表')]}}}},tools:{register(t){tool=t},get(name,scope){assert.equal(scope,agent);return {}},async execute(input){query=input;return {isError:false,value:result}}}};
+ const ctx={systemPrompt:{section(){}},sessions:{get(id){assert.equal(id,'a');return {snapshotEvents(){return [{type:'turn/start'},user('按类别统计本月学生志愿情况')]}}}},tools:{register(t){tool=t},get(name,scope){assert.equal(scope,agent);return {}},async execute(input){query=input;return {isError:false,value:result}}}};
  apply(ctx);
- await assert.rejects(tool.execute({...args,followUps:Array(3).fill('可以展开查看这些活动吗？')},{agent,signal,token,rootCallId:'root'}),/3 条/);
- assert.equal(query,undefined);
- const value=await tool.execute({...args,followUps:['可以展开查看这些活动吗？','可以按月展示报名人数吗？','可以换成志愿时长指标吗？']},{agent,signal,token,rootCallId:'root'});
+ for(const followUps of [undefined,null,[],['可以展开查看这些活动吗？'],Array(3).fill('可以展开查看这些活动吗？'),['短','  ','另一条完整的问题可以吗？'],'可以展开查看这些活动吗？']) {
+  await assert.rejects(tool.execute({...args,followUps},{agent,signal,token,rootCallId:'root'}),/3 条/);
+  assert.equal(query,undefined);
+ }
+ const plain=await tool.execute({datasourceId:args.datasourceId,sql:args.sql,title:'活动类别统计'},{agent,signal,token,rootCallId:'root'});
+ assert.equal(plain.defaultView,'table');assert.deepEqual(plain.data,result.data);assert.deepEqual(plain.followUps,[]);
+ const value=await tool.execute({...args,followUps:['  可以展开查看这些活动吗？ ','可以按月展示报名人数吗？','可以换成志愿时长指标吗？']},{agent,signal,token,rootCallId:'root'});
+ assert.deepEqual(value.followUps,['可以展开查看这些活动吗？','可以按月展示报名人数吗？','可以换成志愿时长指标吗？']);
  assert.equal(query.name,'mcp__datahub-ask-data__execute_semantic_sql');assert.equal(query.agent,agent);assert.equal(query.signal,signal);assert.equal(query.parent,token);assert.equal(query.arguments.sql,args.sql);assert.deepEqual(value.data,result.data);
 });
