@@ -37,6 +37,33 @@ __export(client_entry_exports, {
 module.exports = __toCommonJS(client_entry_exports);
 var import_react = __toESM(require("react"), 1);
 
+// ../../.narrafork/verification/datahub-knowledge-docs-v0.3.0/build-input/workspace-path.js
+var FILE_ADDRESS_PREFIX = "dsh-resource://file/";
+function encodeSegment(segment) {
+  return encodeURIComponent(segment).replace(/%3A/gi, ":");
+}
+function encodePath(path) {
+  return path.split("/").map(encodeSegment).join("/");
+}
+function sessionFileAddress(sessionId, path) {
+  const normalized = path.replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
+  return `${FILE_ADDRESS_PREFIX}session/${encodeSegment(sessionId)}/${encodePath(normalized)}`;
+}
+function isWindowsStylePath(value) {
+  return /^[A-Za-z]:[/\\]/.test(value) || value.startsWith("\\\\");
+}
+function isAbsoluteWorkspacePath(path) {
+  return path.startsWith("/") || isWindowsStylePath(path);
+}
+function fileAddressFor(sessionId, cwd, path) {
+  const normalized = path.replace(/\\/g, "/");
+  if (!isAbsoluteWorkspacePath(normalized)) return sessionFileAddress(sessionId, normalized);
+  const root = cwd === void 0 ? "" : cwd.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (root !== "" && normalized === root) return sessionFileAddress(sessionId, "");
+  if (root !== "" && normalized.startsWith(`${root}/`)) return sessionFileAddress(sessionId, normalized.slice(root.length + 1));
+  return sessionFileAddress(sessionId, normalized);
+}
+
 // results.js
 var RETRIEVE_TOOL = "mcp__datahub-knowledge__retrieve_knowledge";
 var PRESENT_TOOL = "knowledge_documents_present";
@@ -324,7 +351,7 @@ function selectionOf(value) {
   return null;
 }
 function valueOf(state) {
-  return { records: state.records, selections: state.selections, userText: state.userText, documentMode: state.documentMode };
+  return { turn: state.turn, records: state.records, selections: state.selections, userText: state.userText, documentMode: state.documentMode };
 }
 function refresh(state) {
   const records = [];
@@ -497,6 +524,7 @@ var css = `
 .kd-document{display:flex;align-items:center;gap:10px;padding:9px 12px;min-width:0}.kd-icon{flex:none;color:var(--kd-muted);width:15px;height:18px}.kd-name{flex:1;min-width:0;overflow-wrap:anywhere;font-size:13px;font-weight:500}
 .kd-open{font:inherit;font-size:12px;border:0;border-radius:3px;background:transparent;color:var(--kd-muted);padding:3px 0 3px 10px;cursor:pointer;white-space:nowrap;flex:none}.kd-open:hover:not(:disabled){color:var(--dsw-alias-label-primary,#302d28);text-decoration:underline;text-underline-offset:3px}.kd-open:disabled{cursor:default;white-space:normal;max-width:180px;text-align:right;opacity:.8}.kd-docs button:focus-visible,.kd-docs summary:focus-visible{outline:2px solid currentColor;outline-offset:3px}
 .kd-evidence{border-top:1px solid var(--kd-border);font-size:12px}.kd-evidence summary{cursor:pointer;color:var(--kd-muted);padding:7px 12px;list-style-position:inside}.kd-evidence[open] summary{border-bottom:1px solid var(--kd-border)}.kd-evidence ol{list-style:none;padding:0 12px;margin:0;max-height:360px;overflow:auto}.kd-fragment{margin:0;padding:12px 0}.kd-fragment+.kd-fragment{border-top:1px solid var(--kd-border)}.kd-fragment-label{display:block;color:var(--kd-muted);font-size:11px;margin-bottom:5px}.kd-fragment p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.8}.kd-status{font-size:12px;color:var(--kd-muted);padding:10px 12px;border:1px solid var(--kd-border);border-radius:7px;margin:8px 0}
+.kd-error{color:var(--dsw-alias-label-secondary,#85817a);font-size:12px;margin:0;padding:0 12px 9px;overflow-wrap:anywhere}
 .kd-more{display:block;margin:12px auto 0;padding:6px 12px;border:0;border-radius:5px;background:transparent;color:var(--kd-muted);font:inherit;font-size:12px;cursor:pointer}.kd-more:hover{background:var(--dsw-alias-bg-layer-1,#f0eee9);color:var(--dsw-alias-label-primary,#302d28)}
 @media(max-width:520px){.kd-document{align-items:flex-start;flex-wrap:wrap;padding:10px}.kd-name{flex-basis:calc(100% - 26px)}.kd-open{margin-left:25px;padding:0;text-align:left!important;max-width:none!important}.kd-header{display:block}.kd-note{margin-top:5px}}
 `;
@@ -508,8 +536,14 @@ function FileIcon() {
     h("path", { d: "M10 2v5h5M6 11h6M6 14h6M6 17h4" })
   );
 }
-function DocumentRow({ document, purpose }) {
+function DocumentRow({ document, purpose, turn, sessionId, connection, sidebarRight }) {
   const [, refresh2] = import_react.default.useState(0);
+  const [loading, setLoading] = import_react.default.useState(false);
+  const [error, setError] = import_react.default.useState("");
+  const pending = import_react.default.useRef(null);
+  const identity2 = JSON.stringify([sessionId, turn, document.documentRef, document.sourceCallIds]);
+  const currentIdentity = import_react.default.useRef(identity2);
+  currentIdentity.current = identity2;
   const openState2 = getDocumentOpenState(document);
   import_react.default.useEffect(() => {
     if (!openState2.available || !Number.isFinite(openState2.expiresAt)) return;
@@ -517,15 +551,67 @@ function DocumentRow({ document, purpose }) {
     const timer = setTimeout(() => refresh2((value) => value + 1), delay);
     return () => clearTimeout(timer);
   }, [document, openState2.available, openState2.expiresAt]);
-  const open = () => {
+  import_react.default.useEffect(() => {
+    setLoading(false);
+    setError("");
+    const unsubscribe = sidebarRight.mounted.subscribe(() => {
+      if (sidebarRight.mounted.getSnapshot() !== sessionId && pending.current) {
+        pending.current.abort();
+        pending.current = null;
+        setLoading(false);
+      }
+    });
+    return () => {
+      unsubscribe();
+      pending.current?.abort();
+      pending.current = null;
+    };
+  }, [identity2, sidebarRight]);
+  const open = async () => {
+    if (pending.current) return;
     const current = getDocumentOpenState(document);
     if (!current.available) {
       refresh2((value) => value + 1);
       return;
     }
-    window.open(current.url, "_blank", "noopener,noreferrer");
+    const clickedSession = sidebarRight.mounted.getSnapshot();
+    const callId = document.sourceCallIds?.find((id) => typeof id === "string" && id.length);
+    if (!clickedSession || clickedSession !== sessionId || turn == null || !callId) {
+      setError("\u539F\u6587\u4E0D\u53EF\u7528\uFF0C\u8BF7\u91CD\u65B0\u68C0\u7D22\u3002");
+      return;
+    }
+    const controller = new AbortController();
+    pending.current = controller;
+    setLoading(true);
+    setError("");
+    const active = () => !controller.signal.aborted && pending.current === controller && currentIdentity.current === identity2 && sidebarRight.mounted.getSnapshot() === clickedSession;
+    try {
+      const response = await connection.rpc.call("/api", "knowledgeDocs/cacheOriginal", {
+        args: { sessionId: clickedSession, turn, callId, documentRef: document.documentRef }
+      }, controller.signal);
+      if (!active()) return;
+      if (!response?.ok) {
+        setError(originalError(response?.error?.code));
+        return;
+      }
+      const value = response.value;
+      if (value?.sessionId !== clickedSession || typeof value.absolutePath !== "string" || !value.absolutePath) {
+        setError("\u539F\u6587\u52A0\u8F7D\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\u3002");
+        return;
+      }
+      const address = fileAddressFor(clickedSession, void 0, value.absolutePath);
+      if (active()) sidebarRight.openResource(address, { destination: "sidebar" });
+    } catch {
+      if (active()) setError("\u539F\u6587\u52A0\u8F7D\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\u3002");
+    } finally {
+      if (pending.current === controller) {
+        pending.current = null;
+        setLoading(false);
+      }
+    }
   };
   const evidence = purpose === "knowledge" ? document.evidence || [] : [];
+  const label = loading ? "\u52A0\u8F7D\u4E2D\u2026" : openState2.label;
   return h(
     "li",
     { className: "kd-row", "data-document-ref": document.documentRef },
@@ -534,8 +620,9 @@ function DocumentRow({ document, purpose }) {
       { className: "kd-document" },
       h(FileIcon),
       h("span", { className: "kd-name" }, document.documentName),
-      h("button", { type: "button", className: "kd-open", disabled: !openState2.available, onClick: open, "aria-label": `${openState2.label}\uFF1A${document.documentName}` }, openState2.label)
+      h("button", { type: "button", className: "kd-open", disabled: loading || !openState2.available, onClick: open, "aria-label": `${label}\uFF1A${document.documentName}` }, label)
     ),
+    error ? h("p", { className: "kd-error", role: "alert" }, error) : null,
     evidence.length ? h(
       "details",
       { className: "kd-evidence" },
@@ -549,7 +636,19 @@ function DocumentRow({ document, purpose }) {
     ) : null
   );
 }
-function Panel({ panel }) {
+function originalError(code) {
+  return {
+    LINK_EXPIRED: "\u94FE\u63A5\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u68C0\u7D22\u3002",
+    SOURCE_UNAVAILABLE: "\u539F\u6587\u4E0D\u53EF\u7528\uFF0C\u8BF7\u91CD\u65B0\u68C0\u7D22\u3002",
+    TOO_LARGE: "\u6587\u4EF6\u8D85\u8FC7\u9884\u89C8\u4E0A\u9650\u3002",
+    ACCESS_DENIED: "\u65E0\u4F1A\u8BDD\u8BBF\u95EE\u6743\u9650\u3002",
+    "remote-access/denied": "\u65E0\u4F1A\u8BDD\u8BBF\u95EE\u6743\u9650\u3002",
+    CACHE_ERROR: "\u539F\u6587\u7F13\u5B58\u65E0\u6CD5\u8BFB\u53D6\uFF0C\u8BF7\u91CD\u8BD5\u3002",
+    DOWNLOAD_FAILED: "\u539F\u6587\u4E0B\u8F7D\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\u3002",
+    TIMEOUT: "\u539F\u6587\u4E0B\u8F7D\u8D85\u65F6\uFF0C\u8BF7\u91CD\u8BD5\u3002"
+  }[code] || "\u539F\u6587\u52A0\u8F7D\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\u3002";
+}
+function Panel({ panel, turn, sessionId, connection, sidebarRight }) {
   const [expanded, setExpanded] = import_react.default.useState(false);
   const listId = import_react.default.useId();
   const finding = panel.purpose === "documents";
@@ -574,7 +673,7 @@ function Panel({ panel }) {
       "div",
       { className: "kd-group", key: group.knowledgeBaseId },
       h("p", { className: "kd-base" }, h("span", null, "\u77E5\u8BC6\u5E93"), h("strong", null, group.knowledgeBaseName || "\u672A\u547D\u540D\u77E5\u8BC6\u5E93")),
-      h("ul", { className: "kd-list" }, ...group.documents.map((document) => h(DocumentRow, { key: document.documentRef, document, purpose: panel.purpose })))
+      h("ul", { className: "kd-list" }, ...group.documents.map((document) => h(DocumentRow, { key: document.documentRef, document, purpose: panel.purpose, turn, sessionId, connection, sidebarRight })))
     )) : h("p", { className: "kd-status", role: "status" }, panel.notice || (finding ? "\u672A\u627E\u5230\u76F8\u5173\u6587\u6863\u3002" : "\u672C\u6B21\u68C0\u7D22\u6CA1\u6709\u627E\u5230\u76F8\u5173\u6765\u6E90\u3002"))),
     total > 5 ? h("button", {
       type: "button",
@@ -585,7 +684,10 @@ function Panel({ panel }) {
     }, expanded ? "\u6536\u8D77\u6587\u6863\u5217\u8868 \u2191" : `\u5C55\u5F00\u5176\u4F59 ${total - 5} \u4EFD\u6587\u6863 \u2193`) : null
   );
 }
-function TurnTail({ turn }) {
+function TurnTail({ turn, connection, sidebarRight }) {
+  const subscribe = import_react.default.useCallback((listener) => sidebarRight.mounted.subscribe(listener), [sidebarRight]);
+  const getSnapshot = import_react.default.useCallback(() => sidebarRight.mounted.getSnapshot(), [sidebarRight]);
+  const sessionId = import_react.default.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const data = turn.data.get(KEY);
   const state = Array.isArray(data) ? { records: data } : data || { records: [] };
   const selection = state.selections?.at(-1)?.value;
@@ -606,15 +708,16 @@ function TurnTail({ turn }) {
     "div",
     { className: "kd-docs" },
     h("style", null, css),
-    ...panels.map((panel) => h(Panel, { key: panelKey(panel), panel })),
+    ...panels.map((panel) => h(Panel, { key: panelKey(panel), panel, turn: turn.turn ?? state.turn, sessionId, connection, sidebarRight })),
     ...notices.filter((notice) => !panels.some((panel) => panel.notice === notice.message)).map((notice, index) => h("p", { key: index, className: "kd-status", role: "status" }, noticeText(notice)))
   );
 }
-var inject = ["slots", "uiConversation"];
+var inject = ["slots", "uiConversation", "connection", "sidebarRight"];
 function apply(ctx) {
   ctx.uiConversation.events.register(userTextDefinition);
   ctx.uiConversation.events.register(definition);
-  ctx.slots.inject("conversation.chat.turnTail", () => ctx.slots.register({ name: "conversation.chat.turnTail", id: KEY, order: 20 }, TurnTail));
+  const ConnectedTurnTail = (props) => h(TurnTail, { ...props, connection: ctx.connection, sidebarRight: ctx.sidebarRight });
+  ctx.slots.inject("conversation.chat.turnTail", () => ctx.slots.register({ name: "conversation.chat.turnTail", id: KEY, order: 20 }, ConnectedTurnTail));
 }
 
 return module.exports;}});

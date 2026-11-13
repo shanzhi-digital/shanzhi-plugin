@@ -32,7 +32,7 @@ function selectionOf(value) {
 }
 
 function valueOf(state) {
-  return { records: state.records, selections: state.selections, userText: state.userText, documentMode: state.documentMode };
+  return { turn: state.turn, records: state.records, selections: state.selections, userText: state.userText, documentMode: state.documentMode };
 }
 
 function refresh(state) {

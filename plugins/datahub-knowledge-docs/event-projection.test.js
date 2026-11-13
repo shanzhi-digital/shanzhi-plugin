@@ -26,6 +26,7 @@ test('注册精确事件并按 turn 发布，不产生跨消息 scope 数据', (
   const published = definition.buildLocationData({ state }, 'turn');
   assert.equal(published.value, state.value);
   assert.equal(published.turn, 1);
+  assert.equal(published.value.turn, 1);
   assert.equal(definition.buildLocationData({ state }, 'message'), null);
   assert.equal(definition.buildLocationData({ state }, 'turn', published), published);
   const callsOnly = update(state, call('c2', 4));
@@ -50,6 +51,8 @@ test('两回合独立，其他工具、缺失调用和其他回合结果不记�
   const turn2 = update(update(begin(2), call('c1', 10, 2)), result('c1', 11, 2, payload({ retrievalId: 'r2' })));
   assert.equal(turn1.records[0].retrievalId, 'r1');
   assert.equal(turn2.records[0].retrievalId, 'r2');
+  assert.equal(turn1.value.turn, 1);
+  assert.equal(turn2.value.turn, 2);
   assert.equal(update(turn1, result('c1', 12, 2)), turn1);
   assert.equal(replay([result('missing')]).records.length, 0);
   for (const name of ['retrieve_knowledge', 'mcp__other__retrieve_knowledge', 'mcp__datahub-knowledge__other']) {
@@ -194,7 +197,7 @@ test('真实无turn用户消息和arguments字符串被读取，projectEvents只
   assert.equal(projected.userText, '请找d1.md');
   assert.equal(projected.documentMode, true);
   assert.equal(projected.records[0].purpose, 'documents');
-  assert.deepEqual(projectEvents([...events, start(2)]), { records: [], selections: [], userText: '', documentMode: false });
+  assert.deepEqual(projectEvents([...events, start(2)]), { turn: 2, records: [], selections: [], userText: '', documentMode: false });
   assert.equal(projectEvents([...events, start(2), user('新问题', 20)]).userText, '新问题');
 });
 

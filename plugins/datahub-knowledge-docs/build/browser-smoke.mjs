@@ -1,4 +1,4 @@
-// Offline browser verification. No server or live knowledge request.
+// Offline browser verification. No live knowledge request; RPC/sidebar use controlled fixtures.
 // node build/browser-smoke.mjs --tools-dir <node_modules> --out-dir <artifacts>
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -71,12 +71,16 @@ fixtures.invalid.at(-1).data.message.content[0].text = '{"schemaVersion":2,"docu
 fixtures.failed.at(-1).data.message.isError = true;
 const harness = `
 window.__opens=[];window.open=(...args)=>{window.__opens.push(args);return null;};
-window.__definitions=[];window.__ModuleLoader__={load(def){const plugin=def.factory(name=>{if(name==='react')return window.React;throw new Error(name);});plugin.apply({uiConversation:{events:{register(definition){window.__definitions.push(definition);}}},slots:{inject(key,callback){callback();},register(options,Component){window.__TurnTail=Component;}}});}};
+window.__rpcCalls=[];window.__sidebarCalls=[];window.__rpcMode='success';window.__session='fixture-session';window.__mountListeners=new Set();
+window.__sidebar={mounted:{getSnapshot:()=>window.__session,subscribe:fn=>{window.__mountListeners.add(fn);return()=>window.__mountListeners.delete(fn);}},openResource(address,options){window.__sidebarCalls.push({address,options});}};
+window.setSession=id=>{window.__session=id;for(const fn of [...window.__mountListeners])fn();};
+window.__connection={rpc:{async call(channel,endpoint,request,signal){window.__rpcCalls.push({channel,endpoint,request});const mode=window.__rpcMode;return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{if(mode==='failure')resolve({ok:false,error:{code:'DOWNLOAD_FAILED',message:'fixture'}});else resolve({ok:true,value:{sessionId:request.args.sessionId,absolutePath:'C:/fixture-cache/'+window.__targetName,documentName:window.__targetName}});},mode==='slow'?300:40);signal?.addEventListener('abort',()=>{clearTimeout(timer);reject(new DOMException('Aborted','AbortError'));},{once:true});});}}};
+window.__definitions=[];window.__ModuleLoader__={load(def){const plugin=def.factory(name=>{if(name==='react')return window.React;throw new Error(name);});plugin.apply({connection:window.__connection,sidebarRight:window.__sidebar,uiConversation:{events:{register(definition){window.__definitions.push(definition);}}},slots:{inject(key,callback){callback();},register(options,Component){window.__TurnTail=Component;}}});}};
 window.renderEvents=events=>{const contexts=new Map(),latest=new Map();const reader={previous:kind=>latest.get(kind)};for(const event of events)for(const d of window.__definitions){const m=d.match(event);if(!m)continue;const match={...m,event};const key=d.kind+':'+m.id;let c=contexts.get(key);if(!c){if(m.role!=='start')continue;c={kind:d.kind,id:m.id,state:undefined};c.state=d.start(c,match,reader);contexts.set(key,c);}else c.state=d.update(c,match);latest.set(d.kind,c);}const d=window.__definitions.find(d=>d.kind==='datahub-knowledge-docs');const c=latest.get(d.kind);const loc=c?d.buildLocationData(c,'turn'):{value:{records:[],selections:[],userText:'',documentMode:false}};window.__projected=loc.value;window.__root??=window.createRoot(document.getElementById('root'));window.__root.render(window.React.createElement(window.__TurnTail,{turn:{data:new Map([[d.kind,loc.value]])},seq:9}));};
 `;
-const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>问知文档插件0.2.0 · 离线验证</title><style>body{margin:0;background:#faf9f6;color:#302d28;font:14px/1.8 'Microsoft YaHei',sans-serif}main{max-width:960px;margin:48px auto;padding:0 24px}.answer{padding-bottom:12px;border-bottom:1px solid #e8e5df}.answer h2{font-size:20px}.label{font-size:11px;color:#918a80}body.dark{background:#20211f;color:#e6e4de;--dsw-alias-label-primary:#e6e4de;--dsw-alias-label-secondary:#a9a69d;--dsw-alias-border-l1:#42433e;--dsw-alias-bg-layer-1:#292a26}@media(max-width:520px){main{margin:24px auto;padding:0 16px}}</style><main><div class="label">问知文档插件0.2.0 · 合成测试数据</div><article class="answer"><h2>文档查询结果</h2><p>已找到你要的文档。</p></article><div id="root"></div></main><script src="runtime.js"></script><script src="harness.js"></script><script src="client-under-test.js"></script><script src="fixtures.js"></script><script>renderEvents(__fixtures.target);</script></html>`;
+const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>问知文档插件0.3.0 · 离线验证</title><style>body{margin:0;background:#faf9f6;color:#302d28;font:14px/1.8 'Microsoft YaHei',sans-serif}main{max-width:960px;margin:48px auto;padding:0 24px}.answer{padding-bottom:12px;border-bottom:1px solid #e8e5df}.answer h2{font-size:20px}.label{font-size:11px;color:#918a80}body.dark{background:#20211f;color:#e6e4de;--dsw-alias-label-primary:#e6e4de;--dsw-alias-label-secondary:#a9a69d;--dsw-alias-border-l1:#42433e;--dsw-alias-bg-layer-1:#292a26}@media(max-width:520px){main{margin:24px auto;padding:0 16px}}</style><main><div class="label">问知文档插件0.3.0 · 合成测试数据</div><article class="answer"><h2>文档查询结果</h2><p>已找到你要的文档。</p></article><div id="root"></div></main><script src="runtime.js"></script><script src="harness.js"></script><script src="client-under-test.js"></script><script src="fixtures.js"></script><script>renderEvents(__fixtures.target);</script></html>`;
 mkdirSync(output, { recursive: true });
-for (const [name, content] of Object.entries({ 'runtime.js': runtime.outputFiles[0].text, 'harness.js': harness, 'client-under-test.js': client, 'fixtures.js': `window.__fixtures=${JSON.stringify(fixtures)};`, 'fixture.html': html })) writeFileSync(join(output, name), content);
+for (const [name, content] of Object.entries({ 'runtime.js': runtime.outputFiles[0].text, 'harness.js': harness, 'client-under-test.js': client, 'fixtures.js': `window.__targetName=${JSON.stringify(targetName)};window.__fixtures=${JSON.stringify(fixtures)};`, 'fixture.html': html })) writeFileSync(join(output, name), content);
 const executablePath = [options.get('--browser'), 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Google/Chrome/Application/chrome.exe', chromium.executablePath()].find(p => p && existsSync(p));
 assert.ok(executablePath, 'No installed browser');
 const browser = await chromium.launch({ executablePath, headless: true });
@@ -94,9 +98,38 @@ try {
     assert.equal(await page.getByRole('heading', { name: '检索来源', exact: true }).count(), 0);
     assert.equal(await page.locator('details').count(), 0);
   });
-  await check('openPath以MCP站点解析且保留完整票据fragment', async () => {
+  await check('原文经专用RPC打开右侧会话文件，不跳浏览器', async () => {
     await page.locator('.kd-open').click();
-    assert.deepEqual(await page.evaluate(() => window.__opens[0]), [new URL(documents[0].openPath, origin).href, '_blank', 'noopener,noreferrer']);
+    await page.waitForFunction(() => window.__sidebarCalls.length === 1);
+    const result = await page.evaluate(() => ({ rpc: window.__rpcCalls[0], sidebar: window.__sidebarCalls[0], external: window.__opens.length }));
+    assert.equal(result.rpc.channel, '/api'); assert.equal(result.rpc.endpoint, 'knowledgeDocs/cacheOriginal');
+    assert.deepEqual(Object.keys(result.rpc.request.args).sort(), ['callId', 'documentRef', 'sessionId', 'turn']);
+    assert.equal(result.rpc.request.args.sessionId, 'fixture-session'); assert.equal(result.rpc.request.args.documentRef, documents[0].documentRef);
+    assert.equal(result.rpc.request.args.turn, 1);
+    assert.ok(result.sidebar.address.startsWith('dsh-resource://file/session/fixture-session/'));
+    assert.ok(decodeURIComponent(result.sidebar.address).endsWith(targetName));
+    assert.deepEqual(result.sidebar.options, { destination: 'sidebar' }); assert.equal(result.external, 0);
+  });
+  await check('加载中禁重复点击，失败行内提示且可以重试', async () => {
+    await page.evaluate(() => { window.__rpcMode = 'slow'; });
+    const before = await page.evaluate(() => window.__rpcCalls.length);
+    const sidebarBefore = await page.evaluate(() => window.__sidebarCalls.length);
+    await page.locator('.kd-open').click(); assert.equal(await page.locator('.kd-open:disabled').count(), 1);
+    assert.match(await page.locator('.kd-open').innerText(), /加载/);
+    await page.waitForFunction(n => window.__sidebarCalls.length > n, sidebarBefore);
+    assert.equal(await page.evaluate(() => window.__rpcCalls.length), before + 1);
+    await page.evaluate(() => { window.__rpcMode = 'failure'; }); await page.locator('.kd-open').click();
+    await page.waitForFunction(() => !document.querySelector('.kd-open').disabled);
+    assert.match(await page.locator('.kd-row').innerText(), /失败|重试/);
+    await page.evaluate(() => { window.__rpcMode = 'success'; }); await page.locator('.kd-open').click();
+    await page.waitForFunction(() => !document.querySelector('.kd-open').disabled);
+  });
+  await check('下载期间切换会话不打开到另一会话', async () => {
+    await page.evaluate(() => { window.__rpcMode = 'slow'; });
+    const before = await page.evaluate(() => window.__sidebarCalls.length);
+    await page.locator('.kd-open').click(); await page.evaluate(() => window.setSession('other-session'));
+    await page.waitForTimeout(350); assert.equal(await page.evaluate(() => window.__sidebarCalls.length), before);
+    await page.evaluate(() => { window.setSession('fixture-session'); window.__rpcMode = 'success'; });
   });
   await page.screenshot({ path: join(output, 'documents-target.png'), fullPage: true });
   await check('历史完整找文件数据精确筛选，无最终工具也不列出无关候选', async () => { await render('fallback'); assert.equal(await page.locator('.kd-row').count(), 1); });

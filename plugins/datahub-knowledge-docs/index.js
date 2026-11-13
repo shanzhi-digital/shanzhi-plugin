@@ -1,10 +1,14 @@
 import { appendPluginRecord } from '@deepseek-ai/dsh-session';
+import { TypertRemoteService, Remote, RemoteError } from '@deepseek-ai/dsh-typert-protocol';
+import { dshCachePath } from '@deepseek-ai/dsh-home-paths';
+import { registerOriginalPreview } from './original-preview.js';
 import { PRESENT_TOOL } from './results.js';
 import { registerHostBridge, presentKnowledgeDocuments } from './host-bridge.js';
 
-export const inject = ['tools', 'sessions', 'systemPrompt', 'loader'];
+export const inject = ['tools', 'sessions', 'sessionPersistence', 'remoteAccess', 'systemPrompt', 'loader'];
 
 export function apply(ctx) {
+  registerOriginalPreview(ctx, { TypertRemoteService, Remote, RemoteError, dshCachePath });
   registerHostBridge(ctx, appendPluginRecord);
   ctx.systemPrompt.section({
     name: 'datahub-knowledge-docs',
