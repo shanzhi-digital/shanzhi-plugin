@@ -68,9 +68,16 @@ export function apply(ctx) {
       if (Object.prototype.hasOwnProperty.call(args, 'followUps') && cleanFollowUps(args.followUps).length !== 3) throw new Error('请提供 3 条不同且完整的跟问建议。');
       if (!ctx.tools.get(SQL_TOOL,exec.agent)) throw new Error('当前会话未授权 DataHub 语义 SQL 工具。');
       const query = {datasourceId:args.datasourceId,sql:args.sql,limit:args.limit ?? 100,offset:args.offset ?? 0};
-      const outcome = await ctx.tools.execute({name:SQL_TOOL,arguments:query,agent:exec.agent,signal:exec.signal,
-        callId:`datahub-chart-${randomUUID()}`,rootCallId:exec.rootCallId,parent:exec.token});
-      const result = extractSqlResult(outcome);
+      const outcome = await ctx.tools.execute({
+        calls:[{type:'tool-call',id:`datahub-chart-${randomUUID()}`,name:SQL_TOOL,arguments:JSON.stringify(query)}],
+        agent:exec.agent,signal:exec.signal,toolSet:exec.toolSet
+      });
+      for (const context of outcome.additionalContexts) {
+        exec.deferContext(context.source?.kind === 'datahub-query-enhance' && exec.callId
+          ? {...context,source:{...context.source,parentCallId:exec.callId}}
+          : context);
+      }
+      const result = extractSqlResult(outcome.results[0]?.result);
       return buildChart(args,result,currentTurnText(events));
     }
   });

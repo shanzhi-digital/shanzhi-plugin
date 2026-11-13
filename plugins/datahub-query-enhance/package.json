@@ -1,0 +1,13 @@
+{
+  "name": "@local/datahub-query-enhance",
+  "version": "0.1.1",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "规范问数查询，发现数据价值，展示指标可信状态。",
+  "exports": { ".": "./index.js", "./client": "./client.js", "./locale/*.json": "./locale/*.json", "./icon": "./icon.svg" },
+  "files": ["index.js", "trust.js", "host-bridge.js", "event-projection.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "LICENSE"],
+  "scripts": { "test": "node --test trust.test.js host-bridge.test.js event-projection.test.js" },
+  "peerDependencies": { "@deepseek-ai/dsh-llm": "0.2.2-rc.1" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" }, "client": { "platform": "web", "immediately": true, "inject": ["@deepseek-ai/dsh-client-ui-conversation"] } }
+}

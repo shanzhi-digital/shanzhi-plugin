@@ -1,0 +1,4 @@
+- insert:
+    - id: datahub-query-enhance
+      name: '@local/datahub-query-enhance'
+      config: {}

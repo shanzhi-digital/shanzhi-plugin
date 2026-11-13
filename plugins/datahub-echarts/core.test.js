@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {canPresentResults,extractSqlResult,buildChart,finiteNumber,currentTurnText,cleanFollowUps} from './core.js';
-import {apply} from './index.js';
+import { readFile } from 'node:fs/promises';
+const indexSource = await readFile(new URL('./index.js', import.meta.url), 'utf8');
+const isolatedSource = indexSource.replace(/from '(\.\/[^']+)'/g, (_match, path) => `from '${new URL(path, import.meta.url).href}'`);
+const { apply } = await import(`data:text/javascript;base64,${Buffer.from(isolatedSource).toString('base64')}`);
 const user = (text) => ({type:'user/message',data:{content:[{type:'text',text}]}});
 const args={datasourceId:'3000017',sql:'SELECT activity_type FROM domain_b960408b',title:'活动',dimension:'activity_type',measures:['n'],chartType:'bar'};
 const result={queryKind:'SEMANTIC_SQL',datasourceId:args.datasourceId,semanticSql:args.sql,columns:[{name:'activity_type',type:'String'},{name:'n',type:'Int64'}],data:[{activity_type:'志愿服务',n:'3'}],rowCount:1,truncated:false,offset:0,limit:100};
@@ -103,17 +106,47 @@ test('跟问建议最多三条且去重清洗',()=>{
  assert.deepEqual(buildChart(bare,result).followUps,[]);
  assert.deepEqual(cleanFollowUps(['短','这是一个足够长的跟问问题吗？','x'.repeat(200)]),['这是一个足够长的跟问问题吗？']);
 });
-test('模拟查询管线绑定当前会话结果',async()=>{
+test('公开批量查询管线传递当前会话、准入集与额外上下文，并仅展示成功 SQL 结果',async()=>{
  let tool,query; const agent={id:'a'}; const signal=new AbortController().signal; const token=Symbol('parent');
- const ctx={systemPrompt:{section(){}},sessions:{get(id){assert.equal(id,'a');return {snapshotEvents(){return [{type:'turn/start'},user('按类别统计本月学生志愿情况')]}}}},tools:{register(t){tool=t},get(name,scope){assert.equal(scope,agent);return {}},async execute(input){query=input;return {isError:false,value:result}}}};
+ const toolSet={view(){return new Map()}}; const deferred=[];
+ const contexts=[{id:'summary-message',role:'user',source:{kind:'datahub-query-enhance',callId:'sql-call'},content:[{type:'text',text:'查询补充上下文'}]},{role:'user',source:{kind:'other-plugin'},content:[{type:'text',text:'统计口径'}]}];
+ let executionResult={isError:false,value:result,content:[]}; let executionError;
+ const exec={agent,signal,toolSet,token,callId:'datahub-chart-parent-call',rootCallId:'root',deferContext(context){deferred.push(context)}};
+ const expectedContexts=[{...contexts[0],source:{...contexts[0].source,parentCallId:exec.callId}},contexts[1]];
+ const ctx={systemPrompt:{section(){}},sessions:{get(id){assert.equal(id,'a');return {snapshotEvents(){return [{type:'turn/start'},user('按类别统计本月学生志愿情况')]}}}},tools:{register(t){tool=t},get(name,scope){assert.equal(name,'mcp__datahub-ask-data__execute_semantic_sql');assert.equal(scope,agent);return {}},async execute(input){query=input;if(executionError)throw executionError;return {results:executionResult===undefined?[]:[{call:input.calls[0],result:executionResult}],additionalContexts:contexts,concluded:false}}}};
  apply(ctx);
  for(const followUps of [undefined,null,[],['可以展开查看这些活动吗？'],Array(3).fill('可以展开查看这些活动吗？'),['短','  ','另一条完整的问题可以吗？'],'可以展开查看这些活动吗？']) {
-  await assert.rejects(tool.execute({...args,followUps},{agent,signal,token,rootCallId:'root'}),/3 条/);
+  await assert.rejects(tool.execute({...args,followUps},exec),/3 条/);
   assert.equal(query,undefined);
  }
- const plain=await tool.execute({datasourceId:args.datasourceId,sql:args.sql,title:'活动类别统计'},{agent,signal,token,rootCallId:'root'});
+ const plainArgs={datasourceId:args.datasourceId,sql:args.sql,title:'活动类别统计'};
+ const plain=await tool.execute(plainArgs,exec);
  assert.equal(plain.defaultView,'table');assert.deepEqual(plain.data,result.data);assert.deepEqual(plain.followUps,[]);
- const value=await tool.execute({...args,followUps:['  可以展开查看这些活动吗？ ','可以按月展示报名人数吗？','可以换成志愿时长指标吗？']},{agent,signal,token,rootCallId:'root'});
+ assert.deepEqual(Object.keys(query).sort(),['agent','calls','signal','toolSet']);
+ assert.equal(query.agent,agent);assert.equal(query.signal,signal);assert.equal(query.toolSet,toolSet);
+ assert.equal(query.calls.length,1);
+ const call=query.calls[0];
+ assert.deepEqual(Object.keys(call).sort(),['arguments','id','name','type']);
+ assert.equal(call.type,'tool-call');assert.equal(call.name,'mcp__datahub-ask-data__execute_semantic_sql');
+ assert.match(call.id,/^datahub-chart-[0-9a-f-]{36}$/);
+ assert.equal(typeof call.arguments,'string');
+ assert.deepEqual(JSON.parse(call.arguments),{datasourceId:args.datasourceId,sql:args.sql,limit:100,offset:0});
+ assert.deepEqual(deferred,expectedContexts);
+ assert.notEqual(deferred[0],contexts[0]);assert.notEqual(deferred[0].source,contexts[0].source);
+ assert.equal(deferred[0].id,contexts[0].id);assert.equal(deferred[0].role,contexts[0].role);assert.equal(deferred[0].content,contexts[0].content);
+ assert.equal(deferred[0].source.parentCallId,exec.callId);assert.equal(contexts[0].source.parentCallId,undefined);
+ assert.equal(deferred[1],contexts[1]);
+ const firstCallId=call.id;
+ const value=await tool.execute({...args,limit:20,offset:5,followUps:['  可以展开查看这些活动吗？ ','可以按月展示报名人数吗？','可以换成志愿时长指标吗？']},exec);
  assert.deepEqual(value.followUps,['可以展开查看这些活动吗？','可以按月展示报名人数吗？','可以换成志愿时长指标吗？']);
- assert.equal(query.name,'mcp__datahub-ask-data__execute_semantic_sql');assert.equal(query.agent,agent);assert.equal(query.signal,signal);assert.equal(query.parent,token);assert.equal(query.arguments.sql,args.sql);assert.deepEqual(value.data,result.data);
+ assert.deepEqual(value.data,result.data);assert.notEqual(query.calls[0].id,firstCallId);
+ assert.deepEqual(JSON.parse(query.calls[0].arguments),{datasourceId:args.datasourceId,sql:args.sql,limit:20,offset:5});
+ for(const failed of [{isError:true,value:result,content:[]},undefined,{isError:false,value:{columns:result.columns,data:result.data},content:[]}]) {
+  executionResult=failed;deferred.length=0;
+  await assert.rejects(tool.execute(plainArgs,exec),/未生成图表/);
+  assert.deepEqual(deferred,expectedContexts);
+ }
+ executionError=new Error('SQL 管线执行失败');deferred.length=0;
+ await assert.rejects(tool.execute(plainArgs,exec),error=>error===executionError);
+ assert.deepEqual(deferred,[]);
 });
