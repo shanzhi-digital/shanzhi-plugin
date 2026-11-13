@@ -1,0 +1,71 @@
+{
+  "name": "gongwen-skill",
+  "version": "2.15.0-local.3",
+  "description": "公文全流程处理专家 - GB/T 9704 格式检查/修复/内容优化/模板生成/版式注入",
+  "type": "module",
+  "main": "dsh/index.js",
+  "exports": {
+    ".": "./dsh/index.js",
+    "./dsh": "./dsh/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "chinese",
+    "document",
+    "government",
+    "format",
+    "GB/T 9704",
+    "docx",
+    "official-document",
+    "dsh",
+    "deepseek-harness",
+    "skill",
+    "cordis",
+    "config-panel"
+  ],
+  "author": "Jose AI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/linhut/gongwen-skill.git"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4",
+    "@deepseek-ai/dsh-tools": ">=0.1.2-alpha.1 || >=0.1.5-alpha.1 || >=0.1.7-alpha.1 || >=0.2.0-0",
+    "@deepseek-ai/schemastery": ">=3.18.0",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": ">=0.1.2-rc.1 || >=0.1.5-rc.1 || >=0.2.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": { "optional": true },
+    "@deepseek-ai/dsh-tools": { "optional": true },
+    "@deepseek-ai/schemastery": { "optional": true },
+    "@deepseek-ai/dsh-client-ui-settings-plugins": { "optional": true }
+  },
+  "files": [
+    "dsh/",
+    "engine/",
+    "gongwen/",
+    "rules/",
+    "prompts/",
+    "etc/",
+    "presets/",
+    "cordis.patch.yml",
+    "SKILL.md",
+    "pyproject.toml",
+    "requirements.txt",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "AGENTS.md",
+    ".claude-plugin/",
+    "!**/__pycache__/**",
+    "!**/*.pyc",
+    "!**/*.pyo"
+  ]
+}

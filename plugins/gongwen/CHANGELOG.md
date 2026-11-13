@@ -1,0 +1,639 @@
+<!--
+  (c) 2026 Jose AI (https://www.linhut.cn)
+  https://github.com/linhut/gongwen-skill
+  Licensed under the MIT License. See the LICENSE file for details.
+-->
+
+## v2.15.0-local.3
+
+### Changed
+- 普通生成、模板、格式优化和内容修订默认不追加 AI 声明；仅精确移除插件生成的独立声明段，保留“仅供参考”等正常正文内容。
+- 附件说明位于正文结语之后、署名和日期之前，单附件无编号、多附件逐项分行；联系附注位于日期下一行，左空二字并使用中文圆括号，保留正文办事要求。
+- CLI `md2docx` / `draft` 与 DSH `gongwen` 工具支持联系附注 `note` 参数，`draft` 透传该值。
+- 独立结语“特此通知”去除句号属于本地默认风格，不作为 GB/T 9704 禁止句号的规则解释。
+- 版记置于包括附件在内的整篇文档末尾，采用上粗、中细、下粗分隔线；重复注入更新已有版记。结构校验不代表已完成渲染后的页面底部视觉验收。
+- 同步 README、技能与包内预设的现行默认说明，不覆盖用户预设副本。
+
+## v2.15.0-local.2
+
+### Changed
+- 默认以 `draft` 完成生成、格式修复、适用版式注入和最终 `check`；DSH 工具的 `md2docx` 自动转入 `draft`。`generate` 保留 DocumentModel JSON 结构化入口，生成后同样优化并复检；`template` 输出明确标为模板。
+- 正式 DSH 流程禁止 `--no-verify`；保留用户指定的文种、模板和排版，缺必要信息一次询问、不编造，已有授权不反复确认。红头与版记仅适用时添加，最终注入之后复检。
+- 交付时 P0=0 仅表示格式校验通过，仍报告 P1/P2 和待人工审核事项，不宣称内容全部正确。
+- 停用依赖 `settingsScope` 的文档样式设置页，配置通过 `gongwen config` 管理；同步 README、技能与包内预设说明，本次不覆盖用户预设副本。
+
+### Fixed
+- 版式注入为发文机关、发文字号、签发人、抄送、印记段落分别写入 `GongwenLayout_org/doc_number/issuer/cc/imprint` 对应样式，解析器据此识别角色；检查器不再将版头版记误套正文规则，保留正文与抄送专属规则检查。
+- `optimize --verify --json` 的 `verify_details` 返回具体检查问题（含规则、位置和原因），便于报告剩余问题；验证未通过时不能仅依据文件已生成宣称格式校验通过。
+
+## v2.15.0 (2026-10-01)
+
+### Fixed
+- **npm peer 依赖在 DSH 0.2.0-rc.2 宿主上安装失败（P1，GitHub issue #2「0.2.0 rc-2装上就报错」）**：DSH 宿主升级到 0.2.0-rc.2 线后，其捆绑的 `@deepseek-ai/dsh-tools@0.2.0-rc.2` 与 `@deepseek-ai/dsh-client-ui-settings-plugins@0.2.0-rc.2` 均不满足 v2.14.0 声明的 peer 范围（`>=0.1.5-rc.3` / `>=0.1.2-rc.1`）。根因是 node-semver 的预发布逐线放行规则：范围里带预发布版本（如 `0.1.5-rc.3`）的比较器，只允许**相同 [major,minor,patch] 元组**的预发布版本参与匹配，0.2.0 线因此整体不可达 → pnpm 解析 peer 报 `ERR_PNPM_NO_MATCHING_VERSION`（与 issue #1 同根，属宿主升线后的复发性问题）
+  - `@deepseek-ai/dsh-tools` peer 改为多线锚定：`>=0.1.2-alpha.1 || >=0.1.5-alpha.1 || >=0.1.7-alpha.1 || >=0.2.0-0`（实测覆盖 0.1.2/0.1.5/0.1.7/0.2.0 全部已发布预发布线，与 npm 全部 30 个已发布版本匹配 16 个关键线）
+  - `@deepseek-ai/dsh-client-ui-settings-plugins` peer 改为：`>=0.1.2-rc.1 || >=0.1.5-rc.1 || >=0.2.0-0`
+  - **新增 `peerDependenciesMeta` 将 4 个 `@deepseek-ai/*` peer 全部标为 `optional: true`**：DSH 桌面端市场安装后这些宿主单例原就会被移除、运行时统一走宿主共享副本（issue #1 已核实的安装模型），optional 化后安装期不再因 peer 版本线漂移失败，未来宿主再升线也不受影响；运行时 import 仍解析到宿主提供的副本（版本由宿主保证）
+  - `doctor`（O2 peer 检查）版本解析升级：`_parse_version_tuple` 支持 `-alpha.N` / `-0` 预发布标记，新增 `_peer_branch_minima` 按 `||` OR 分支保守判定（安装版本 ≥ 任一分支下限即满足），避免对多线范围误报
+- **doctor O1 宿主版本检查兼容 0.2.0 线**：`_parse_version_tuple` 预发布段由仅识别 `-rc.N` 扩展为通用 `-<tag>N`（rc/alpha/裸数字），0.2.0-rc.2 正确判定 ≥ 0.1.2-rc.1，不再误报
+
+### Notes
+- 本版为 DSH 插件安装兼容性修复，CLI 功能无变化；纯 CLI 用户不受影响
+
+---
+
+## v2.14.0 (2026-09-26)
+
+### Added
+- **解析读取可见性（V2.14）**：文本框内容（`w:txbxContent`，公文红头/发文字号常承载于此）与修订追踪摘要（`w:ins`/`w:del`）正式纳入 DocumentModel（`textboxes` / `revisions` 字段），`parse --json` 结构化输出——此前两者在解析层静默丢失（文本框仅挂非 Pydantic 属性、修订因 python-docx 高层 API 不读 `w:ins` 包裹 run 而整体丢失）
+- **文本框内容检查规则 CHK-TBX001**：检测到文本框但内容为空时提示（红头/发文字号可能缺失）；无文本框的文档不触发，避免误报
+- **check/optimize 读取可见性提示**：文档含修订（含作者与增删数）或存在空文本框时，非 JSON 路径显式打印提示，不再静默忽略；`optimize --json` 新增 `textboxes` / `revisions` 字段供 Agent 感知解析降级
+- **未知公文类型显式警告**：check/optimize 对 `-t` 拼错类型不再静默回退 common 规则，打印警告并提示 list-types（发布前全功能测试发现）
+- **新增测试**：`tests/test_read_visibility.py`（文本框入模型、修订摘要、JSON 序列化、普通文档默认值、提示输出、CHK-TBX001、reviewers_count 回归等 7 用例，本地）
+
+### Fixed
+- **npm peer 依赖解析失败（P1，GitHub issue #1）**：`@deepseek-ai/dsh-tools` peer 下限由 `>=0.1.0` 修正为 `>=0.1.5-rc.3`。根因：该包在 npm 上仅发布 rc/alpha 预发布版本（latest tag = `0.0.1-rc.1`），而 npm semver 的预发布 tuple 规则使 `>=0.1.0`（无预发布比较器）无法匹配任何版本，导致 pnpm 安装报 `ERR_PNPM_NO_MATCHING_VERSION`；现对齐官方宿主配套版本（`@deepseek-ai/dsh-base ^0.1.5-rc.3` 传递提供的 dsh-tools）
+- **optimize-content tracked 模式 NameError（P1，发布前全功能测试发现）**：`_run_tracked_mode` 打印「审稿角色」时引用从未赋值的 `reviewers_count`（O10 重构遗留），文档已生成但崩溃 rc=1；现从 `args.reviewers` 取值（full 默认 6 / quick 3），rc 恢复 0
+- **SKILL.md 标题与对外展示名统一**：H1 由「公文文档格式化 Skill（GB/T 9704）」改为「公文全流程处理专家（GB/T 9704）」，三副本（根 / `.dsh/skills/gongwen-skill/SKILL.md` / `.dsh/skills/gongwen-skill.md`）已同步
+- **AGENTS.md 尾部重复行清理**：删除重复的「内容由AI生成，仅供参考」一行
+
+### Changed
+- **README 下载量徽章动态化**：`Downloads-0` 硬编码徽章改为 PyPI 动态下载量徽章（`img.shields.io/pypi/dm/gongwen-skill`）
+
+## v2.13.0 (2026-09-11)
+
+### Added
+- **政策联网检索 `policy-search`**：按主题检索国务院政策文件库（gov.cn，t=zhengcelibrary）→ web 引擎兜底；`--json` 结构化输出供 agent 消费（含 `gov_empty` 诊断字段）；抓取复用 `fact_check._safe_fetch_url`（SSRF 防护）+ `netcheck` DoH 兜底；wizard 新增 F 路径「政策检索」（只读直接执行，dry-run 支持）
+- **渲染验收 `render`**：docx 转逐页图片供版面可视化检查（分页/表格劈裂/签章区），复用 `engine/docx_to_image` 完整链路（LibreOffice/docx2pdf → pdftoppm/PyMuPDF）；`--pages/--dpi/--format/--json`，只读命令
+- **对外展示名承载层**：`.claude-plugin/plugin.json` + `marketplace.json`（`displayName: 公文全流程处理专家`）+ `AGENTS.md`（Codex 等指令型 Agent 说明），并纳入 `package.json` files 与 `MANIFEST.in` 打包声明
+- **`npx skills add linhut/gongwen-skill` 安装渠道**：README 新增方式零一行安装（Claude Code/Codex/Cursor 等通用 harness）
+
+### Changed
+- **对外展示名统一为「公文全流程处理专家」**：原称谓「公文全流程处理工具」在全部面向人与模型可见的文案层被替换，覆盖 `SKILL.md`（三副本 frontmatter `description`）、`dsh/index.js`（`GONGWEN_GUIDANCE` 入口描述 / 工具描述 / `export const description` / 文件头注释）、CLI `--version` 与命令帮助描述（`gongwen/cli/app.py`）、`README.md`、`package.json` 与 `pyproject.toml` 的 `description`、`doctor` 诊断标题（`gongwen/cli/doctor_cmds.py`）、`gongwen/_legacy.py` / `gongwen/__init__.py` / `cordis.patch.yml` / `dsh/client.js` / `etc/dsh-config-defaults.json` 中的称谓注释
+- **机器标识与用户文档内容一律不变**：包名 `gongwen-skill`、命令名 `gongwen`、`SKILL.md` frontmatter `name`、DSH 插件 id/name/ns（`cordis.patch.yml`、`dsh/index.js`）、以及所有写入用户 `.docx` 的署名字符串保持原样；`CHANGELOG` 历史条目与 `docs/design/` 历史记录不改
+- **展示名单一事实来源**：`gongwen/__init__.py` 新增 `DISPLAY_NAME` 常量，CLI `description` / `--version` / `doctor` / `repair` 标题统一引用，消除多处硬编码中文名
+- **doctor 新增「展示名一致性」检查**：校验 SKILL.md frontmatter description、`.claude-plugin/` 两个 JSON 的 `displayName`、`package.json` / `pyproject.toml` description、`dsh/index.js` 插件描述共 6 处承载点与 `DISPLAY_NAME` 一致（文件缺失跳过，不误报）
+- **doctor 新增「DSH 宿主版本」「DSH peer 依赖」检查**：探测本机 `@deepseek-ai/dsh` ≥ 0.1.2-rc.1，peer 下限以 `package.json` peerDependencies 为单一来源；无 DSH 宿主时一致跳过避免误报（asar 布局兼容）
+- **CLI 启动提速约 -72%**：`app.py` 顶层重导入惰性化（`review_cmds` 4 命令经 `_lazy_command` 首次调用时导入、`pagenum` 默认值内联），`--version` 926ms→244ms、`--help` 830ms→234ms
+- **架构导入统一**：28 处旧式顶层导入（`from optimizer/config/fact_check` 等）统一为 `from engine.xxx`，消除对 `_bootstrap` sys.path hack 的运行时依赖
+- **DSH 设置面板精简 39→5 字段（P2-31）**：`dsh/client.js` FIELDS 只保留默认类型+页边距，`dsh/index.js` schema 同步；低频排版参数回归 CLI（`config --set` / `--config-overrides`）
+- **DSH 插件移除运行时技能注册（P2-31）**：`dsh/index.js` 取消 `ctx.skills.register`（与文件系统技能 `~/.dsh/skills/gongwen-skill/` 完全重复），技能发现统一走方式一
+- `AGENTS.md` 命令速查表标注「完整操作指南以 SKILL.md 为准」，避免双表维护漂移
+- **`.gitattributes` 统一文本换行**：`*.js/*.py/*.md/*.json/*.yml/*.yaml` 等强制 LF，消除 Windows 检出时的 CRLF 噪音 diff
+
+### Fixed
+- `tests/test_wizard.py`：PATH_DEFS 断言更新为 A–F 并校验 F 路径映射（policy-search）
+
+## v2.12.0 (2026-09-08)
+
+### Added
+- **DSH Agent 预设「公文全流程处理专家」**：新增 `presets/`（`preset.yml` + `agent.cordis.yml`），`dsh/index.js` 在 apply() 时自动安装到 `~/.dsh/.agent-presets/gongwen-skill/`，DSH Web 新建会话可直接切换到该预设开箱即用；内置公文专家 Persona（25 类能力、A/B/C/D/E 路径判定、硬性规则）、完整工具链（fs/shell/jobs/skills/goals/planning/compaction/delegation）；已验证 roster 识别 + standingKeyFor 挂载通过
+- **DSH 设置平级菜单「文档样式配置」**（取代原「插件配置 → gongwen-skill」卡片）：
+  - `dsh/client.js`：新增 `settings.section` 注册（id=`gongwen-styles`，order=20，label=`文档样式配置`），在「系统设置」侧边栏与通用设置/模型/插件平级；页面含默认公文类型下拉（25 种）与完整排版参数（39 字段）；移除原 `settings.plugin.item` 卡片注册
+  - `dsh/index.js`：`GONGWEN_GUIDANCE` 入口描述同步为「系统设置 → 文档样式配置」
+  - README DSH 章节同步（配置入口、兼容性自查表、架构边界说明）
+
+### Changed
+- **DSH 插件瘦身（架构边界回归「CLI 唯一业务入口」）**：移除设置面板中的「模板样式管理」与「通过文档新增样式模板」两个 GUI 区块及其配套的 host webServer 路由（`/plugins/gongwen/api/*`，约 580 行）——模板学习/管理回归 CLI（`style-learn`/`style-list`/`template`），设置面板只保留 39 字段排版参数配置；`dsh/index.js` 891→617 行、`dsh/client.js` 781→475 行，不再依赖 webServer 基础设施
+
+### Compatibility
+- **DSH 宿主版本要求：支持 DSH ≥ 0.1.2-rc.1**。本版 DSH 插件改用官方 `settings.section` 平级菜单 + `ctx.tools.register(defineTool(...))` API，需要宿主提供对应服务；**旧版宿主（installSettingsSection 时代）不兼容**——升级 DSH 到 ≥ 0.1.2-rc.1，或改用纯 Skill 文件系统方式（方式一，无需 DSH 插件）。
+- **peer 适配（以 DSH 0.1.2-rc.1 开发环境为准）**：`@deepseek-ai/dsh-client-ui-settings-plugins` 下限由 `>=0.1.3-alpha.1` 下调至 `>=0.1.2-rc.1`——`settings.section` 在 0.1.2-rc.1 已提供，原下限是 `settings.plugin.item` 时代（v2.11.0）遗留；实测与开发环境安装的 0.1.2-rc.1 匹配，其余 peer（cordis ≥4 / dsh-tools ≥0.1.0 / schemastery ≥3.18.0）均满足
+- 设置命名空间内嵌排版参数与 `~/.gongwen-skill/dsh-config.json` 双向同步：首次加载自动迁移旧配置（仅当设置面板尚无用户覆盖时）。
+
+---
+
+## v2.11.0 (2026-09-06)
+
+### Added
+- **区分主持词/讲话稿两种朗读件类型**：新增 `host_speech`（主持词）规则文件 `rules/official/host_speech.yaml`；`list-types` 现支持 25 种类型；`-t` 类型识别：`主持词` → `host_speech`、`讲话稿` → `speech`
+- **GitHub Packages scoped 发布**：publish-npm 发布 `@linhut/gongwen-skill` 到 `npm.pkg.github.com`（GitHub Packages 仅支持 scoped 包；原非 scoped 名 E404）
+
+### Changed
+- **针对 DSH 新版本（官方最新版 DeepSeek Harness / Bluebook · Developer Guide）进行 DSH 插件优化整改**（仅 DSH 部分，skill 功能不变）：
+  - `dsh/index.js`：修复 ESM 环境下 `require("schemastery")` 导致的设置面板注册静默失败（改为官方 `import Schema from "@deepseek-ai/schemastery"`）；新增官方模型工具注册 `ctx.tools.register(defineTool({...}))`（工具名 `gongwen`，schema 自动流入系统提示词）；settings 改用官方 `ctx.settings.register("gongwen-skill", schema)` + `scope.watch` 回写 `~/.gongwen-skill/dsh-config.json`（保留 CLI 兼容，首次加载自动迁移旧配置）；移除自建 REST API 路由（WebRoute 官方定义无 `method` 字段，配置读写改由官方 settings 桥承担）；`inject: ["tools"]` 硬依赖 + systemPrompt/settings/skills 可选服务容错
+  - `dsh/client.js`：配置面板迁移至官方 `settings.plugin.item` keyed slot（命名空间 `gongwen-skill`），经 `ctx.settingsScope` 读写官方 settings 文档（revision 设栅）；样式改用 `--dsw-alias-*` 语义 token，去除硬编码颜色
+  - `package.json`：`dsh.client.inject` 收敛为官方 `@deepseek-ai/dsh-client-ui-settings-plugins`（提供 `settings.plugin.item` slot 声明）；新增 peerDependencies（`@deepseek-ai/cordis`/`@deepseek-ai/dsh-tools`/`@deepseek-ai/schemastery`/`@deepseek-ai/dsh-client-ui-settings-plugins`）
+  - README DSH 章节同步（兼容性自查表新增官方 API 对照行、架构边界补充模型工具与设置卡片说明、配置化章节说明双向同步）
+- **讲话稿（speech）规则按筹委会最终版定稿更新**：页边距改国标默认（上3.7/下3.5/左2.8/右2.6cm）；正文改为仿宋_GB2312 18pt 不加粗、行距 30pt；一级标题黑体 18pt、二级标题楷体_GB2312 18pt；署名/日期改楷体_GB2312 18pt 居中、行距 35pt
+- **主持词（host_speech）新增独立样式**：页边距沿用普通公文（2.8/2.8/2.7/2.7cm）；标题 24pt/35pt；主持人信息/日期楷体_GB2312 18pt 居中、行距 30pt；正文 18pt 不加粗、行距 30pt，议程引导句可局部加粗
+- **README/SKILL 同步**：类型数 24→25、讲话稿/主持词分别列出样式说明与差异
+
+### Fixed
+- **GitHub Packages E404**：非 scoped 包名无法发布到 GitHub Packages（v2.1.0~v2.10.0 均受影响）；现发布前 `npm pkg set name="@linhut/gongwen-skill"` 再 publish，并关联回本仓库
+
+---
+
+## v2.10.0 (2026-09-04)
+
+### Added
+- **测试补强（整改 A / P1-1）**：新增 `tests/test_checker.py`/`test_optimize.py`/`test_content_cmds.py`/`test_json_output.py` 26 用例，覆盖 check/optimize/content 核心路径与 `--json` 输出（tests/ 本地-only，不同步仓库）
+- **`parse`/`md2docx`/`rule-export` 统一 `--json`（整改 B / P1-2）**：Agent 高频命令补齐结构化输出，向后兼容（不带 `--json` 保持原行为）
+- **CHK-L003 语义类规则静默跳过**：`language.*` 字段不再刷「未支持检查字段」告警（语言规范类由人工/LLM 审校覆盖，规则定义保留）
+- **`optimize --json` 新增 `verify_executed`/`verify_passed` 明确字段（P2-3）**：`verify_passed = (verify_p0 == 0)` 与退出码语义一致，消除旧 `verified` 字段命名歧义（旧字段保留向后兼容）
+- **README 新增 Windows 控制台编码说明（P2-5）**：原生 cmd GBK 乱码排查（chcp 65001 / Windows Terminal / PYTHONIOENCODING=utf-8）
+
+### Changed
+- **`main()`/命令注册迁出 `_legacy.py`（整改 C / P0-1）**：29 个 add_parser 注册 + 命令分组/格式化器迁至 `gongwen/cli/app.py`；`_legacy.py` 1320→936 行，仅保留 10 个核心命令实现与兼容转发；入口 `from gongwen.cli.app import main`；迁移前后 29 命令 help/version 快照零差异
+
+### Fixed
+- `tests/test_netcheck.py` 既有 F841（未使用变量）清理
+- **8 处静默降级 pass 补日志（P2-4）**：md2docx_render 3 处 / draft_cmds 1 处 / wizard_cmds 1 处 / font_cmds 3 处，异常不再无声吞掉（新增 3 个模块 logger）
+- **清理本地 dist/ 与 build/ 残留（P2-2）**：删除 2.7.0/2.8.0 旧构建产物（gitignore 忽略，不影响发布流程）
+
+### Notes
+- 审计整改 D 决策（2026-09-04）：remote token 保持现状（已查证未进入 git 历史，风险记录在本地审计报告）；CI 接受现状（本地跑测试作发布门禁），详见 `docs/design/2026-09-04-project-audit-report.md` §6（本地存档）
+
+---
+
+## v2.9.0 (2026-09-04)
+
+### Added
+- **`optimize --verify` 单命令闭环**：修复后自动复检输出文件，存在 P0 时退出码非 0（Agent 可感知），`--json` 结构化输出（`verified`/`verify_p0` 等字段）
+- **`draft` 一站式生成**：Markdown 草稿 → 国标成品（md2docx + optimize + 校验四步合一），`--json` 输出完整执行轨迹
+- **`wizard` 交互引导补 E 路径**：A/B/C/D/E 五路径菜单 + `--answers` 非交互 + `--dry-run` 只打印命令
+- **`optimize-content --preset` 参数收敛**：`quick|full|review` 三档预设映射参数组合，显式参数优先
+- **`optimize-content --precheck` 预检**：逐段比对 changes.json 与原文一致性的三级递进匹配（精确/归一化/去空格），`--json` 输出、不匹配项退出码 1
+- **规则加载共享缓存**：`load_rules_merged` 模块级缓存（mtime 失效 + deepcopy 隔离），重复调用零解析开销
+- **`--help` 按场景分组**：6 组（生成/格式/内容/审校/版式/运维）29 命令全覆盖，单命令 `--help` 不变
+- **统一 Pipeline 编排层（O9）**：新增 `engine/core/pipeline.py`（PipelineContext + Pipeline 阶段注册/顺序执行），`full-review` 重构为 3 阶段试点（一次解析、多次操作、一次生成，source_path 全程携带）
+- **DSH 插件位置参数修复（O12）**：`POSITIONAL_ARGS` 补 `draft`/`rule-import`/`font` 声明，修复插件转发构造 `--input`/`--key`/`--action` 导致的调用失败
+
+### Changed
+- **内容优化引擎阶段化（O10）**：`cmd_optimize_content`（原 ~800 行）内联块机械抽取为 `_run_comment_mode`/`_run_tracked_change_mode`/`_run_tracked_mode` 三个阶段函数，主函数变编排者；输出/退出码/批注与重构前一致
+- **SKILL.md 命令计数修正（O11）**：命令速查表计数 26→29（实测 29 命令全覆盖），三处副本字节级同步（修复 CRLF/LF 行尾差异）
+- **README 能力概述 25 项→29 项命令能力**；新增「架构边界（O12 · DSH 插件）」小节（CLI 唯一业务入口）
+
+### Fixed
+- 清理 `doctor_cmds.py` 既有 15 处 F541（无占位符 f-string），CI lint 门槛保持绿色
+- 修复 `.dsh/skills` 副本行尾符不一致导致的 doctor「SKILL.md 同步」误报
+
+### Notes
+- 工具链仅支持 OOXML .docx；旧版 .doc（OLE2/WPS）需经 WPS COM `SaveAs(dst, 12)` 转换后使用（README/SKILL 已注明）
+
+## v2.8.0 (2026-09-03)
+
+### Added
+- **DNS 污染诊断（安全 DNS / DoH）**：`check-update` 在 GitHub 渠道不可达时自动触发 DNS 污染诊断，对比系统解析与安全 DNS（DoH）真实 IP，输出污染判定、对比表与可直接粘贴的 hosts 条目建议
+- **`doctor` 新增「网络/DNS 诊断」检查项**：默认联网检测 GitHub/PyPI 关键域名是否疑似 DNS 污染（系统解析落在 198.18.0.0/15 等保留/Fake-IP 段时判定疑似污染），`--offline` 参数可完全跳过网络查询
+- **新增 `gongwen/cli/netcheck.py` 模块**：DoH 解析（内置阿里 `dns.alidns.com` / 腾讯 `doh.pub` / `1.12.12.12` / Google 备用，多端点自动降级）+ 系统解析对比 + 污染判定 + hosts 建议生成；环境变量 `GONGWEN_DOH` 可覆盖为自定义 DoH 端点
+- **`check-update --json` 输出新增 `dns_diagnosis` 字段**：含 `polluted` / `detail` / `hosts_suggestions` 等，便于 Agent 解析
+- **自动直连兜底（DNS 污染时零操作下载）**：`font install` 下载字体、`check-update`/`helpers` 查询 PyPI 常规请求失败时，自动用 DoH 真实 IP + TLS SNI 直连重试（`netcheck.download_with_doh_fallback` / `_DoHHTTPSConnection`），证书校验仍针对真实域名，安全不降级
+
+### Notes
+- 诊断只做建议，不修改 hosts、不改变版本判定逻辑；自动直连仅作为下载/查询失败的兜底路径（YAGNI）
+- DoH 查询经第三方公共 DNS 服务（阿里/腾讯），仅诊断/兜底失败时发起少量查询；可设置 `GONGWEN_DOH` 指向私有端点
+
+## v2.7.0 (2026-09-03)
+
+### Added
+- **新增 `wizard` 向导式交互命令**：`python -m gongwen wizard` 以 A/B/C/D 路径菜单引导用户（A 格式优化 `optimize` / B 内容优化 `optimize-content` / C 生成模板 `template` / D 一键格式修复 `fix-common`），交互收集参数后一键执行
+- **双模式交互**：终端 input() 交互（公文类型支持序号 / id / 中文名智能匹配）+ `--answers` 扁平 JSON 非交互（Agent 场景，顶层带 `path`，如 `{"path":"A","input":"a.docx","apply":true}`）
+- **安全默认**：A/B/D 修改类路径先预览再 y/n 确认；非交互模式不写 `apply` 时仅预览不执行；`--dry-run` 只打印将执行的命令（A/B 同时打印预览+执行两条）
+- **执行机制**：`subprocess` 调用 `sys.executable -m gongwen <子命令>`，输出流式透传，Agent 可直接解析子命令原始输出
+- **文档同步**：SKILL.md「用户交互指引」升级为向导式三步流程并新增「向导式交互」小节（命令速查 24→25 个）；README 能力表与命令行速查补充 wizard 用法
+
+## v2.6.1 (2026-09-02)
+
+### Changed
+- **check-update 改为 PyPI 权威判定 + 安装形态自动检测**：以 PyPI（pip 包发布源）为唯一权威判定渠道（pip install -U 即从 PyPI 拉取），GitHub 降为 PyPI 不可达时的备用渠道（git 用户/CI 触发源）；GitCode/AtomGit 保持国内拉取镜像提示（不参与版本判定）
+- **更新命令按安装形态精准给出**：运行时自动检测安装形态（pip 包 / git·skill 目录），pip 安装提示 `pip install --upgrade gongwen-skill`，git/skill 目录提示 `cd <gongwen-skill目录> && git pull && git fetch --tags`；--json 输出新增 authoritative_channel、install_type 字段
+- **文档同步**：SKILL.md/README/RELEASE/_legacy 的渠道描述统一为"PyPI 权威 + GitHub 备用"，SKILL.md 版本自检节新增手动回退命令
+
+## v2.6.0 (2026-09-02)
+
+### Added
+- **check-update 判定渠道精简为 PyPI + GitHub 双权威源**：对齐 EasyTier 单权威源 + 加速代理设计，GitCode/AtomGit 不再参与版本判定（零增量镜像），降为 GitHub 不可达时的国内拉取镜像提示；--json 输出新增 mirrors 字段
+- **GitHub 国内访问优化**：并发查询 + 分级超时（PyPI 10s / GitHub 8s 快速降级），GitHub 不可达时提示 GitHub520 hosts 方案与国内镜像地址
+- **发布流程修复（三平台 Release 统一编号）**：ci.yml 新增 release job，tag 推送自动创建 GitHub Release（编号 = tag）；RELEASE.md 发布流程新增 GitHub Release 自动创建 + GitCode/AtomGit Release 同步（编号与 tag 统一）
+- **非必要文件不同步原则写入发布流程**：RELEASE.md 明确临时/调试文件（tmp_*、_gw_* 等）不提交、不入库、不同步三仓库
+
+### Changed
+- check-update 头部与末尾文案同步为 PyPI + GitHub 判定；--json 的 channels 字段只含 PyPI/GitHub
+- README / RELEASE.md 文档同步更新（判定渠道、镜像提示、Release 统一编号说明）
+
+### Fixed
+- 历史遗留：v2.0.0~v2.5.0 在 GitHub/GitCode 从未创建 Release 对象（仅 tag），已补建且编号与 tag 统一
+## v2.5.0 (2026-09-01)
+
+### Added
+- **样式学习引擎修复**：style-learn 多 section 文档只学主文档（不再把横向附件页当正文页）；页边距 mm→cm 换算修复（26.9mm 不再写成 26.9cm）；角色判定增强（识别红头版头/发文字号/整段日期/落款机关名）；解析 styles.xml 样式链（basedOn + docDefaults），run 未指定 eastAsia 时继承段落样式字体，修复落款误学 Times New Roman
+- **模板规则断链打通**：manager 新增 _sync_style_expected，将配置段权威样式值（doc_title/body/signature/date/table/page_setup 等）同步到 CHK expected 与 FIX value（标量覆盖 + 复合 dict 保守合并），使 style-learn 模板 / user_rules / config-overrides 覆盖配置段后 check/optimize 期望值自动跟随
+
+### Fixed
+- **style-learn 学错横向附件页**：多 section 文档（正文纵向 + 附件横向）此前学到 297×210mm 横向纸张与附件页边距
+- **样式继承未解析**：run 无显式 eastAsia 时直接回退 ascii=Times New Roman，现按段落样式链（basedOn → docDefaults）解析正确中文字体
+- **模板样式不生效**：style-learn 生成的模板仅覆盖配置段，但 CHK expected/FIX value 硬编码在规则 YAML，导致 -t 模板时检查/修复仍用默认值——现已打通
+
+## v2.4.0 (2026-09-01)
+
+### Added
+- **表格样式检测与修复全链路**：新增 8 条表格样式检查规则（CHK-C051~C058：表头字体/字号/加粗/对齐/底色、表体字体/字号、单元格左右边距）与 set_table_style 修复动作（FIX-C055），对齐 rules/official/_common.yaml table 配置块——此前该配置为死配置，无 CHK 规则也从不被检查
+- **模型新增表格样式字段**：TableCell.fill（表头底色 w:shd）、Table.cell_margin（单元格边距 w:tblCellMar），parser 解析、generator 原位更新/新建两路径写出
+- **md2docx 表格样式应用**：渲染时读取 table 配置块，表头写入 D9E2F3 底色 + 单元格边距 80twips + 数字列右对齐（与 optimize 智能对齐一致）
+
+### Fixed
+- **表格单元格解析丢失修复**：_parse_table 原用 id(cell._element) 去重，lxml 代理对象 id 被 GC 复用导致非合并表格也误丢约 58% 单元格（实测 88 个误丢 51 个），改用 lxml 元素对象做 key——修复后表格内容/样式修复可完整覆盖全部单元格
+- **署名与开头样式修复**：主送机关延迟插入（标题后、防误判标题）、recipients 顺序/重复去重、导语段误判排除、正文内联落款识别（避免与 --signer/--date 重复落款、补齐署名前 2 空行）
+- **生成文档作者元数据统一为 Jose AI**
+
+## v2.3.0 (2026-08-31)
+
+### Added
+- **doctor 自检新增「DSH 技能 frontmatter」检查项**（21 项 → 22 项）：按 DSH 最新技能规范校验 SKILL.md frontmatter——`name` 必填且为 kebab-case、与 `.dsh/skills/<name>` 目录/文件名一致；`description` 必填非空且足够自描述（模型在会话目录只能看到它）；`whenToUse` 建议存在；`user-invocable`/`disable-model-invocation` 若存在必须为布尔值；frontmatter 必须 `---` 包裹且 YAML 可解析
+
+### Changed
+- **技能名动态化**：新增 `_get_skill_name()` 从 SKILL.md frontmatter 读取技能名，`_check_skill_sync`/`cmd_repair` 不再硬编码 `gongwen-skill`，技能改名后检查与修复仍准确
+- **纯 pip 环境不再误报**：frontmatter 目录一致性校验仅在 `.dsh/skills` 存在时执行（非 DSH 环境跳过）
+
+### Fixed
+- **SKILL.md 编码读取修复**：读取编码 `utf-8` → `utf-8-sig`（自动剥离 BOM，兼容带/无 BOM）；修复 Windows 下默认 locale 编码（cp936/GBK）读 UTF-8 无 BOM 的 SKILL.md 抛 `UnicodeDecodeError` 的隐患
+
+## v2.2.0 (2026-08-28)
+
+### Added
+- **内容要素检查规则真正生效**：修复 37 条 `content.*` 规则（通知事项/会议要素/请示理由等）此前"定义但从不执行"的问题，新增 `_check_content_field` 按字段名映射要素关键词做宽松检查，消除每次 check 的"未支持检查字段"告警
+- **版头检查规则生效**：修复 `header.*` 规则（CHK-CM002 令号检查、CHK-R003 主送机关检查）此前无分发分支的问题，新增 `_check_header_field`
+- **成文日期"右空四字"**：md2docx 渲染日期段新增右缩进 4em（GB/T 9704 规范），消除 CHK-C017 长期存在的日期右空四字检查项
+
+### Changed
+- **signature 段落选择器修正**：`_select_paragraphs` 的 `signature` target 不再包含 `date` 段落——修复 FIX-C013（署名居中）与 FIX-C013b（18pt）误把成文日期强制居中/放大字号的问题，日期段独立按"右对齐 + 右空四字 + 16pt"处理
+- **页码重复注入幂等化**：`_inject_even_page_footer_direct` 重写为幂等版，多次注入仅保留一个 even footerReference 与完整关系，杜绝 Word 打开报"文档损坏"（BUG-1）
+- **加粗+链接/代码组合不再整段加粗**：markdown_converter 单片段按自身 bold 标志处理，重建片段继承原 run 字体字号（BUG-2）
+- **标题启发式误判修复**：黑体/楷体/仿宋加粗正文句不再误判为标题（新增 `_SENTENCE_END` 句末标点保护，Level 1/2/3 三级判定）
+- **CHK-C030 整段加粗误报修复**：忽略纯标点 run、单句段落不报，多句整段加粗仍正确检出
+
+### Fixed
+- `is_title` vs `is_heading` 属性引用错误：`_check_ending`/`_check_content_field` 此前用不存在的 `is_title` 属性，导致标题段被误纳入正文统计
+- 一是/二是 领句段改用仿宋_GB2312（原误用楷体触发标题误判/正文字体误报）
+- 令号正则 `\d` 被 JS 转义破坏（`d`），导致含令号命令误报 CHK-CM002
+
+## v2.1.0 (2026-08-20)
+
+### Added
+- **格式规则完善**：为 24 种公文类型新增 30+ 条 check/fix 规则，提升规则覆盖率
+  - `news.yaml`：从 0 条规则扩展至 5 条（导语段/稿源信息/标题风格/标题字数/听取通报段检查）
+  - `notice.yaml`：新增标题格式和通知事项检查
+  - `communique.yaml`：新增公报签署和标题格式检查
+  - 12 个原只有 2 条规则的类型各新增 1 条检查规则（bill/bulletin/instruction/meeting/minutes/opinion/regulation/reply/report/resolution/summary/work_plan）
+- **版本发布清单**：RELEASE.md 扩展版本号检查点从 4 处代码→9 处（含文档/提示词/DSH 桥接）
+- **pre-commit hook**：`.githooks/pre-commit` 自动检查 4 处代码版本号一致性，阻止版本漂移的提交
+- **动态 PyPI 徽章**：README.md 的 PyPI 徽章改为动态版本号（`https://img.shields.io/pypi/v/gongwen-skill`），自动显示最新版本
+
+### Changed
+- RELEASE.md 全面更新：修复 12 处残留 1.12.x 引用，更新 npm 发布状态，新增 pre-commit hook 说明
+- 规则文件统一添加 `template_name` 和 `document_type` 字段（news.yaml 补齐）
+
+## v2.0.0 (2026-08-20)
+
+### Major
+- **大版本重置**：从 1.12.x 序列重置为 **2.0.0**，清理历史版本号膨胀
+
+### Architecture
+- Migrate all legacy `from core.xxx` imports to `from engine.core.xxx` for proper Python packaging (files: `_legacy.py`, `content_cmds.py`, `review_cmds.py`, `helpers.py`, `misc_cmds.py`, `live_edit.py`)
+- Remove unused `_ENGINE_DIR` import side-effect pattern in `_legacy.py`; use explicit `import gongwen._bootstrap` instead
+
+### Performance
+- Reduce verbose logging: change `_dedup_extend` rollup messages from `logger.info` to `logger.debug`, eliminating 50+ lines of noisy "同键覆盖" logs per command
+
+## v1.12.74 (2026-08-20)
+
+### Changed
+- DSH 插件规范严格遵守官方文档（https://dsh.hicyou.com/zh/docs/user-guide/plugins）
+  - `dsh` 字段仅保留 `dsh.bundle.patch`，移除不合规的 `dsh.client` 声明
+  - `exports` 新增 `"./cordis.patch.yml"` 导出，使 bundle patch 文件可通过模块解析访问（与官方 `dsh-base` 一致）
+  - `dsh.bundle` 声明保持 `./cordis.patch.yml`，`cordis.patch.yml` 已列入 npm 包 files 白名单
+- DSH skill 自动激活：`dsh/index.js` 的 `apply(ctx)` 中调用 `ctx.skills.register()`，插件安装并加载后自动注册 `gongwen-skill` 到 DSH 技能目录，AI 无需手动导入即可自动发现并触发使用；`resourceBase` 指向项目根目录，支持按路径加载规则/模板等资源
+- SKILL.md 标准 Anthropic Agent Skills 格式（YAML frontmatter：name/description/whenToUse/user-invocable），跨平台兼容 WorkBuddy、Thelagnet、Claude Code、AtomCode 等
+
+### Fixed
+- 修复 DSH 插件被识别为"没有 dsh.bundle 声明/不是合法 bundle"的问题：补齐 `exports["./cordis.patch.yml"]` 并移除合同外字段 `dsh.client`
+
+## v1.12.73 (2026-08-19)
+
+### Added
+- `doctor` 命令：全面诊断 21 项（Python 版本/核心依赖/版本号一致性/必需目录/字体文件/DSH 插件文件/SKILL.md 同步/Git 工作区/代码风格/npm 包），支持 `--json` 结构化输出
+- `repair` 命令：自动修复常见问题（安装缺失 Python 依赖/安装缺失字体/同步 SKILL.md 到 .dsh/skills/ 副本）
+- 汲取教训：npm install 中断后 `--offline` 仍显示 "up to date" 但实际文件残缺，doctor 逐一检查不依赖"看起来正常"的状态
+
+### Fixed
+- 字体下载 URL 中文字符编码问题：`urllib.parse.quote()` 百分号编码，修复 Windows 下 ASCII 编码失败
+- 源代码风格违规：`gongwen/cli/doctor_cmds.py` 中 E501 行超长和 E741 歧义变量名
+
+### Changed
+- DSH 系统提示词（GONGWEN_GUIDANCE）新增 `doctor`/`repair` 关键词
+- SKILL.md 命令速查附录新增「诊断与修复」分组（doctor、doctor --json、repair）
+- README 能力表新增「自我诊断」行
+- npm 包检查增强：`shutil.which()` 三级回退探测 npm/pnpm/yarn，未检测到时明确跳过说明
+
+## v1.12.72 (2026-08-19)
+
+### Changed
+- RELEASE.md 完全重写：基于 gongwen-skill 实际发布流程重新组织，新增版本号更新点（4 处代码+文档）、发布前检查清单、三仓库镜像同步策略、tests/ 本地策略说明、常见问题与回滚指南
+- 修复版本漂移：`gongwen/__init__.py` 和 `gongwen/_legacy.py` 的 `__version__` 从 1.12.69 同步至 1.12.72，与 `pyproject.toml` 和 `package.json` 一致
+
+### Fixed
+- CI 中配置 NPM_TOKEN secret，npm 自动发布功能恢复正常
+
+### Removed
+- 移除旧版 RELEASE.md 中与 gongwen-skill 实际流程不符的 dsh-manager 发布内容
+
+## v1.12.71 (2026-08-19)
+
+### Changed
+- 功能入口全面优化：DSH 系统提示词（GONGWEN_GUIDANCE）覆盖全部 24 个命令，新增「样式学习」关键词，AI 首次加载即可发现 style-learn
+- SKILL.md 新增「路径 E - 样式学习」路由、路径判断规则表、五种处理方式决策树，以及「附录：全部命令速查」分组表（24 命令按 6 类归类，附最小用法）
+- README 快速开始新增 style-learn 示例；纯对话 LLM 指引表、能力表同步加详样式学习说明
+- 新增 post-commit 钩子：每次提交自动同步根 SKILL.md 到 `.dsh/skills/` 副本，解决 DSH 技能注册加载旧版描述的问题
+- `.npmignore` 显式排除 `assets/`（12MB 字体）与 `logo/`（宣传图），npm 包保持 471.8 kB 轻量；npm pack 验证通过
+
+### Fixed
+- `.dsh/skills/` 中 SKILL.md 副本过时（停留在 8-18 旧版，缺失路径 E 与命令附录），已同步至最新版
+
+## v1.12.70 (2026-08-19)
+
+### Fixed
+- DSH 插件 bundle 加载失败：移除 cordis.patch.yml 中非标准 `client: true` 字段，与官方插件注册模式一致
+- 替换 README 封面图为横屏新宣传图（2250×1145）
+
+### Changed
+- logo/ 目录更新：移除旧方形封面图，新增横屏/竖屏宣传图各一张
+
+# Changelog
+
+## v1.12.69 (2026-08-06)
+
+### Added
+- 项目级审计与架构代码优化（ruff 0 错误/542 测试通过/56% 覆盖率）
+- 修复 37 个 F821 未定义名称（真实运行时 bug）
+- 修复 256 个 ruff 错误至 0（F401/F821/F841/F541/F811/E402/F823/F403）
+- 修复 _generator_helpers.py/generator.py 循环依赖（正确提取 4 个辅助函数）
+- 修复 style_helpers.py/_legacy.py 循环导入
+- 添加 backward-compatible 函数 re-export（verify_output_fresh 等）
+- 修复 tracked_annotator.py logger 引用前赋值（F823）
+
+### Changed
+- 优化 _generator_helpers.py 导入结构（新增 lxml/font_utils/models 依赖）
+- 更新 CI 配置使测试步骤在 tests/ 缺失时优雅跳过
+
+## v1.12.68 (2026-08-17)
+
+### Changed — 阶梯2/3/4 全部完成
+
+**2a: modifier.py convert_markdown 提取**
+- `engine/core/document/markdown_converter.py`（447行）：Markdown 转换功能独立模块
+- modifier.py: 1599→1188 行（-411行）
+
+**2b: generator.py _add_table/_add_page_number_field 提取**
+- `engine/core/document/_generator_helpers.py`（296行）：表格和页码域辅助函数
+- generator.py: 1104→835 行（-269行）
+
+**3: cmd_optimize_content 提取**
+- `gongwen/cli/content_cmds.py`（831行）：内容优化命令独立模块
+- _legacy.py: 1702→924 行（-778行，累计-70%）
+
+**4: ARCH-03 彻底修复**
+- engine/ 下 33 个文件的 `from core./utils./config import` 改为 `from engine.core./engine.utils./engine.config import`
+- engine/ 已成为正规 Python 包，不再依赖 sys.path.insert
+- _bootstrap.py 保留 sys.path.insert 仅作为向后兼容回退
+
+### Summary
+- _legacy.py: 3096→924行（-70%）
+- 新增 3 个独立模块（markdown_converter + _generator_helpers + content_cmds）
+- 6 个 cli 子模块 + 3 个 engine 子模块
+- 542/542 测试通过
+
+## v1.12.67 (2026-08-17)
+
+### Changed — 覆盖率 55% → 56%，modifier.py 44% → 50%
+- **test_modifier.py**（44用例）：modifier.py 全函数测试——modify_font/size/alignment/bold/margins/line_spacing + detect_paragraph_type + should_bold_first_sentence + clean_path_b_markers + parse 辅助函数
+- **三仓同步**：v1.12.64-v1.12.66 全部推送到 GitHub/GitCode/AtomGit，含测试文件
+- 总用例 498 → 542
+
+## v1.12.66 (2026-08-17)
+
+### Changed — 覆盖率从 41% → 55%
+- **test_main_function.py**（21用例）：main() 直接调用测试，覆盖所有子命令入口
+- **test_optimize_content_main.py**（6用例）：cmd_optimize_content 的 tracked/inline/comment-mode/默认/错误模式测试
+- **test_zero_coverage_modules.py**（14用例）：tracked_changes/structure_analyzer/ai_structure_analyzer/ooxml_workflow/chat_review 模块导入和纯函数测试
+- **_legacy.py 覆盖率 4% → 34%**
+- 总用例 457 → 498
+
+## v1.12.65 (2026-08-17)
+
+### Changed — 阶梯2：_legacy.py 大规模拆分
+- **`_legacy.py` 从 3096 行 → 1702 行（-45%）**，拆分到 6 个子模块：
+  - `gongwen/cli/helpers.py`（198行）：辅助函数（detect_doc_type/build_output_name/parse_config_overrides 等）
+  - `gongwen/cli/font_cmds.py`（254行）：font 子命令 + 字体安装/检查/下载
+  - `gongwen/cli/update_cmds.py`（150行）：check-update 子命令
+  - `gongwen/cli/style_helpers.py`（406行）：样式辅助函数（_validate_changes_schema/_infer_paragraph_roles 等）
+  - `gongwen/cli/review_cmds.py`（269行）：full-review/bold-first/fix-common/handoff 命令
+  - `gongwen/cli/misc_cmds.py`（262行）：rule-export/rule-list/rule-import/table-signs/audit/style-learn/style-list/review 命令
+- `gongwen/cli/__init__.py` 修复循环导入（lazy import）
+- `_legacy.py` 通过 re-import 保持 100% 向后兼容
+
+## v1.12.64 (2026-08-17)
+
+### Added
+- **ARCH-03 修复**：`gongwen/_bootstrap.py` 统一管理 sys.path hack，消除 3 处重复
+- **md2docx bug 修复**：`doc_type` 变量在规则加载前被引用导致 UnboundLocalError
+- **第二轮测试补强**（+150 用例，307→457）：
+  - test_optimizer.py(11): 优化器纯函数测试
+  - test_fact_check.py(18): 实体提取/核验测试
+  - test_tracked_annotator.py(14): 修订标注测试
+  - test_editor.py(15): 内容修订引擎测试
+  - test_auto_optimizer.py(18): 自动优化器测试
+  - test_docx_to_image.py(4): 模块导入测试
+  - test_cli_integration.py(19): CLI 子进程集成测试
+  - test_cli_integration2.py(12): CLI 第二轮集成测试
+  - test_legacy_api.py(28): _legacy.py 直接 API 调用测试
+
+### Changed
+- 覆盖率 24% → 41%（_legacy.py: 5% → 12%）
+- `live_edit.py` 消除 sys.path.insert（已通过 _bootstrap 统一管理）
+- `conftest.py` 消除 sys.path.insert
+- 测试用例仅本地保留，不推送 pip/GitHub
+
+## v1.12.63 (2026-08-17)
+
+### Added
+- **字体管理 `font` 命令**：`python -m gongwen font install/check/list`，安装公文标准字体
+- **字体文件内置**：`assets/fonts/` 包含 3 个 TTF 字体文件，git clone 用户直接可用
+- **GitHub 下载 fallback**：pip install 用户自动从远程仓库下载字体
+- **跨平台字体安装**：Windows/macOS/Linux 三平台支持
+- **9 个新测试文件**：+143 用例（164→307），覆盖率 24%→33%
+
+## v1.12.62 (2026-08-17)
+
+### Fixed
+- P1-2: inject.py 6处硬编码 Pt(33) 改为从规则读取
+- P1-3: pyproject.toml package-data 加 etc/*.json
+- P2-1: 16个文件 52处 except:pass 改为 logger.warning
+- P2-2: 统一解析函数到 utils/parse.py
+- P2-3~6: 删除 skills/ + setup.py + dist/ + engine/sessions/
+- P2-7: Changelog URL main→master
+- P2-8: MANIFEST.in 加 etc/*.json
+- P2-10: RuleEngine mtime 扩展到三层目录
+- P2-12: engine/__init__.py 修复包发现
+- 清理 12 个非必要文件（审计报告/发布计划/社区规范/截图/Makefile）
+
+## v1.12.61 (2026-08-17)
+
+### Added
+- **DSH 插件配置化排版参数**：支持通过 `~/.gongwen-skill/dsh-config.json` 管理页边距、行距、字体、字号、默认模板版本等排版参数，Agent 调用时自动注入
+- **`--config-overrides` CLI 参数**：`template`/`check`/`optimize`/`md2docx` 四命令支持通用规则覆盖 JSON
+- **`RuleEngine.set_config_overrides()`**：规则引擎支持运行时配置覆盖，优先级最高（official < custom < user < DSH config < CLI）
+- **`apply_config_overrides()`**：`engine/core/rules/manager.py` 新增深度合并函数
+- **DSH 插件 AI 工作指引**：`dsh/index.js` 的 `setup()` 注入 systemPrompt section
+- **DSH 插件 `config` 命令**：支持 `init/show/get/set/reset` 五种操作管理配置
+- **`etc/dsh-config-defaults.json`**：默认配置模板
+- **`tests/test_config.py`**：17 用例测试配置覆盖功能
+- **`engine/__init__.py`**：使 `engine/` 成为合法 Python 包，修复 setuptools 打包发现
+
+### Fixed
+- **`inject.py` 硬编码 `Pt(33)` 行距**：6 处改为从规则体系动态读取 `_get_line_spacing_pt()`，与配置化设计一致
+- **`pyproject.toml` Changelog URL**：`main` → `master`（实际主分支）
+- **`pyproject.toml` package-data**：添加 `etc = ["*.json"]`，修复 pip 安装后 `dsh-config-defaults.json` 缺失
+- **`pyproject.toml` packages.find**：添加 `etc*` 到 include 列表
+- **`MANIFEST.in`**：添加 `recursive-include etc/ *.json`
+- **`RuleEngine._rules_mtime`**：mtime 扫描扩展到 official + custom + user 三层目录
+- **`_legacy.py` md2docx 重复解析函数**：`_parse_margin`/`_parse_cm` 改为委托 `engine/utils/parse.py` 统一实现
+- **40 处 `except: pass` 吞异常**：全部改为 `logger.warning` + 降级路径
+
+### Removed
+- **`setup.py`**：冗余文件，`pyproject.toml` 已完全覆盖
+- **`skills/` 空目录**：与 `.dsh/skills/` 并行的空残留
+- **`dist/` 旧构建产物**：v1.12.60 的 .whl 和 .tar.gz
+- **`engine/sessions/` 残留文件**：27 个开发时会话 JSON
+
+## v1.12.60 (2026-08-16)
+
+### Fixed
+- **发布链路修复（全量审计）**：`pyproject.toml` 恢复合法的 `[tool.setuptools.packages.find]` include/exclude 键（非法 `packages` 键导致 `python -m build --wheel` 直接失败，PyPI 发布被阻断）
+- **wheel 内容缺失修复**：`rules/official/*.yaml`（25 个）+ `prompts/*.md` 经 package-data 打入 wheel（此前 pip 安装零规则文件，list-types/check 静默失效）
+- **`_load_style_prompt` 路径回归修复**：v1.12.57 拆包后 `__file__.parent` 指向 `gongwen/`，改为 `parent.parent` 回到仓库根 `prompts/`，风格提示词恢复加载
+- **`docx_to_image.py` tmp 路径同步**：临时 PDF 从 `engine/tmp`（安装目录可能只读）迁移到 `config.TMP_DIR`（B8 一致性）
+- **CI lint 门槛达标**：修复 101 处 pycodestyle 违规（26 个文件），CI lint job 不再误挂
+- **文种数量口径统一**：SKILL×3 frontmatter + README 从 22/25 统一为实际 24 类（list-types 实证）
+- **CHANGELOG 缺口补记**：补记 v1.12.54/v1.12.55 条目（此前 53→56 跳号）
+
+## v1.12.59 (2026-08-16)
+
+### Fixed (P0)
+- **DSH 插件桥接真实 bug**：`dsh/index.js` 调用入口从 `python gongwen.py`（已不存在的旧入口）改为 `python -m gongwen`（v1.12.57 重构后的正确入口）
+- **DSH 插件桥接安全/健壮性**：用 `node:child_process.spawn` 数组参数替代 `execSync` 字符串拼接，避免 shell 引号注入；加 `PYTHONIOENCODING=utf-8`/`PYTHONUTF8=1` 防 Windows GBK 乱码；尊重 `ctx.cwd` 让 DSH Agent 调用走当前工作目录
+
+### Changed
+- **package.json 配置修复**：版本号同步 1.12.57→1.12.59；`files` 数组从失效的 `skills/` 改为 `.dsh/` + `engine/` + `gongwen/` + `rules/` + `prompts/` + `pyproject.toml` + `requirements.txt`；`keywords` 新增 `skill` 和 `cordis`
+- **README/SKILL.md/usage-prompts.md/kdocs-integration.md 全量 CLI 入口同步**：18+47+47+47+22+22 = 203 处 `python gongwen.py` → `python -m gongwen`，消除 v1.12.57 重构遗留的文档失效
+
+### Added
+- **README DSH 集成章节重大补全**：参考 dsh-archive-manager 项目风格，加入四种 DSH 安装方式（方式零：纯 CLI；方式一：Skill 文件系统；方式二：npm Cordis 插件 bundle；方式三：本地 link 开发模式）
+- 明确告知 DSH Cordis 模块化架构与 `~/.dsh/profiles/web/package.json` 中 `dsh.profile.bundles` 配置点
+- 给出"DSH Web Profile 一键安装命令" `dsh plugin --profile web add -w gongwen-skill`
+- 新增"适用场景对照表"帮助用户按需求选择安装方式
+- README `DSH 兼容性自查表`：补 `Cordis 插件包` 和 `PyPI 上架` 一行，并把过时的 `CLI: python gongwen.py` 修正为 `python -m gongwen`
+
+## v1.12.58 (2026-08-16)
+
+### Fixed (P0)
+- **CI 监测失效修复**：`.github/workflows/ci.yml` 主分支触发器从 `main` 改为 `master`（项目实际主分支是 `master`，原配置导致 171 次提交从未触发自动测试/发布）
+- PyPI 发布从 `PYPI_API_TOKEN` 改为 **OIDC trusted publishing**（PEP 740），与 README 宣称一致；无需手动管理 token
+
+### Added (P1)
+- **测试覆盖扩展 +48 用例**：99 → 147（+48 个）全绿
+  - `tests/test_commands_smoke.py`：24 个 `argparse --help` 入口 + 7 个关键参数断言（锁住所有子命令注册，防止重构 silently 丢命令）
+  - `tests/test_optimize_e2e.py`：`check --json` / `optimize --apply` / `fix-common` / `bold-first` / `audit` 端到端
+  - `tests/test_inject_e2e.py`：`header` / `footer` / `pagenum` 端到端 + 必填参数缺失校验
+  - `tests/test_optimize_content_e2e.py`：tracked / inline 模式 + 缺 --changes 报错 + 无效 --mode reject
+- **PEP 561 类型标记**：新增空 `engine/py.typed` 和 `gongwen/py.typed`，pyproject + MANIFEST 同步包含，下游 IDE/mypy 可识别为 typed package
+- CI Python 矩阵补 3.14（与 pyproject classifier 一致）
+- CI 加 `pytest --cov=gongwen --cov=engine --cov-fail-under=50` 覆盖率门槛
+
+### Changed (P1)
+- **logger 输出从 stdout 改到 stderr**：修复 `logger.py` 把 INFO 日志喷到 stdout 污染 `--json` / 管道输出的问题；`check --json` 等结构化输出现在是纯净 JSON
+
+### Docs (P2)
+- README 能力一览表补齐 `fix-common`（路径 D 一键修复）和 `handoff`（会话交接）两行
+- AUDIT_REPORT.md：新增完整 P8 标准审计报告（340 行，22 KB），含 P0/P1/P2 优先级清单
+- requirements.txt 加注释化交叉引用说明（依赖以 pyproject.toml 为权威，避免版本下限漂移）
+
+### Notes
+- P1-1 (`_legacy.py` 2400 行按 5 子包拆分) + P2-2 (≥500 行单文件拆分) 推迟到 v1.12.59 单独 PR 处理，避免此次改动量过大难 review；测试覆盖已就位，回归网完整
+- P1-4 (42 处 `except+pass`) 核查后确认均为合理容错（字段读取兜底/临时文件清理/`raise` 配对），不引入噪声日志
+- P2-7 (`live_edit.py` 当前无 CLI 入口) 添加 docstring 注释保留为 Agent 交互编辑预留 API
+
+## v1.12.57 (2026-08-15)
+
+### Added
+- PyPI 打包支持 (`pyproject.toml` + `MANIFEST.in`)，发布到 PyPI，支持 `pip install gongwen-skill`
+- GitHub Actions CI/CD (`.github/workflows/ci.yml`)，自动测试 + 自动发布到 PyPI
+- 社区贡献基础 (`CONTRIBUTING.md` + `CODE_OF_CONDUCT.md` + Issue/PR 模板)
+- DSH npm 插件包 (`package.json` + `dsh/index.js` + `cordis.patch.yml`)
+- README 徽章更新（CI/PyPI/DSH/Downloads）
+- `.gitignore` 更新（排除 `.codegraph/` 和临时报告）
+
+## v1.12.56 (2026-08-08)
+
+### Added
+- DSH (DeepSeek Harness) 技能集成支持
+  - 创建 `.dsh/skills/gongwen-skill/` 目录结构，DSH 文件系统可自动发现
+  - 同时提供 **目录技能** (`.dsh/skills/gongwen-skill/SKILL.md`) 和 **单文件技能** (`.dsh/skills/gongwen-skill.md`) 双格式兼容
+  - SKILL.md frontmatter 增强：增加 `whenToUse`、`user-invocable`、`metadata` 字段
+  - README.md 增加 "DeepSeek Harness (DSH) 集成" 章节
+  - 提供 DSH 技能发现方式说明、快速安装指南、兼容性检查表
+  - 明确说明 DSH 技能市场基于本地文件系统，无中心化商店
+
+## v1.12.55 (2026-08-07)
+
+### Changed
+- 表格虚线边框优化（dashed 表线，便于裁剪打印）
+  - `generator._add_table` 显式写入 `tblBorders`（`w:val=dashed`，六边），直接格式覆盖 Table Grid 实线样式
+  - 移除残留 `tblBorders`，避免实线叠加
+
+## v1.12.54 (2026-08-05)
+
+### Fixed
+- 0 处批注时验证逻辑短路（FIX-V153-01），optimize-content tracked + full-review 两路径不再误报
+- 结语检查按文种差异化（FIX-V153-02）：`_ENDING_TAIL_SIZE`（批复/函收窄为 3 段）、排除落款/日期/批注段、`original_text` 可为空
+
+### Added
+- 新增 `ending.check` 结语检查（`_check_ending` + `_infer_doc_type_from_rule`，5 文种映射，修复 CHK-RPT/CHK-RP 前缀误判）
+- 新增 CHANGELOG.md（v1.12.50~v1.12.53 变更记录，FIX-V153-03）
+
+## v1.12.53 (2026-08-05)
+
+### Fixed
+- `_atomic_save` os.replace 增加重试（FIX-A001），解决 Windows 文件锁导致 md2docx 页码注入失败
+- 批注锚定增加内容段落映射（FIX-A002），跳过无文本 run 的空段，解决锚定偏移
+- 批注完整性验证逻辑拆分（FIX-A003），修订/批注独立判断，避免误报
+- prompts/usage-prompts.md 和 README.md 行距 28.95→33 同步（FIX-B001）
+
+### Added
+- 结语检查 `ending.check` 实现（FIX-V153-02）：5 种文种（通知/请示/报告/批复/函）结尾格式检查从"跳过"变为实际触发
+- 0 处批注时验证逻辑短路（FIX-V153-01），optimize-content / full-review 不再误报
+
+## v1.12.52 (2026-08-04)
+
+### Fixed
+- `inject.py`: `inject_page_number` 打开文件前增加重试机制（5×0.2s），解决 `generate_docx` 后文件句柄未释放导致的 `PermissionError`
+- `template_builder.py`: `body_config` fallback 行距 28.95→33（与 YAML 配置一致）
+- `generator.py`: 注释中 28.95pt→33pt 同步
+
+## v1.12.51 (2026-08-04)
+
+### Fixed
+- 页边距/行距死循环修复（FIX-C003, FIX-C015）
+- 批注注入失败修复（_anchor_comment 修复）
+- 验证代码误报修复（W变量 f-string 修复）
+- 座签 BOM 污染字号修复
+- md2docx 页码注入修复
+- 批注不搜 delText 修复
+- md2docx BOM/#号清理
+- subprocess encoding 统一
+
+## v1.12.50 (2026-08-03)
+
+### Added
+- 省筹委会排版规范适配（页边距 2.8/2.8/2.7/2.7cm，行距 33pt）
+- 8色批注/修订方案
+- 事实核验独立批注作者
