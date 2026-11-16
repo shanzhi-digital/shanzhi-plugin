@@ -104369,7 +104369,7 @@ function Plot({ value, type }) {
 }
 function ResultTable({ value }) {
   const columns = value.columns;
-  const cellStyle = (column) => ({ padding: "12px 10px", textAlign: /(?:number|int|decimal|float|double|numeric|real)/i.test(column.type || "") ? "right" : "left", whiteSpace: "nowrap", borderBottom: `1px solid ${BORDER}`, fontVariantNumeric: "tabular-nums" });
+  const cellStyle = (column) => ({ padding: "12px 10px", textAlign: "center", whiteSpace: "nowrap", borderBottom: `1px solid ${BORDER}`, fontVariantNumeric: "tabular-nums" });
   return h(
     "div",
     { style: { overflowX: "auto" } },

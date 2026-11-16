@@ -21,7 +21,7 @@ function Plot({value,type}){
 }
 function ResultTable({value}){
  const columns=value.columns;
- const cellStyle=column=>({padding:'12px 10px',textAlign:/(?:number|int|decimal|float|double|numeric|real)/i.test(column.type||'')?'right':'left',whiteSpace:'nowrap',borderBottom:`1px solid ${BORDER}`,fontVariantNumeric:'tabular-nums'});
+ const cellStyle=column=>({padding:'12px 10px',textAlign:'center',whiteSpace:'nowrap',borderBottom:`1px solid ${BORDER}`,fontVariantNumeric:'tabular-nums'});
  return h('div',{style:{overflowX:'auto'}},
   h('table',{style:{borderCollapse:'collapse',width:'100%',fontSize:13,lineHeight:'20px'}},
    h('thead',null,h('tr',null,...columns.map(c=>h('th',{key:c.name,scope:'col',style:{...cellStyle(c),fontWeight:600}},c.title||c.name)))),
