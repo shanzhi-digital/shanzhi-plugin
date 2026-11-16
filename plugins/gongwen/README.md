@@ -24,6 +24,10 @@ Licensed under the MIT License. See the LICENSE file for details.
 
 ---
 
+## 本仓库适配版
+
+本目录维护的 DSH 插件包版本为 **`2.15.0-local.3`**（以 [package.json](./package.json) 为准），基于上游公文工具版本 `2.15.0` 增加本地适配。上游 PyPI/npm 包和本目录适配版是不同的安装来源；安装上游 `2.15.0` 不代表已获得这里的本地修复。下文保留上游完整使用文档，本地默认行为见「本地版默认行为」，本仓库安装方式见「作为 DSH Cordis 插件安装」。
+
 ## ✨ 能力一览
 
 | 能力 | 命令 | 说明 |
@@ -181,6 +185,9 @@ python -m gongwen style-list            # 列出已学习的模板
 - 联系人、联系电话等联系附注放在成文日期下一行，左空二字，用中文圆括号；正文中的报送时限、办理方式等办事要求仍保留在正文。可通过 CLI `md2docx` / `draft` 的 `--note "联系人：张某，联系电话：……"` 或 DSH `gongwen` 工具的 `note` 参数传入，`draft` 继续透传该值。
 - 本地默认风格将独立结语“特此通知。”统一为“特此通知”；这是本地风格选择，不能解释为 GB/T 9704 禁止结语使用句号。
 - 版记放在包括附件在内的整篇文档末尾，采用上粗、中细、下粗分隔线；重复注入更新已有版记，避免重复追加。结构与格式检查不等于已验收渲染后的页面底部位置，交付时不得据此声称已完成视觉底部验收。
+- 发文字号中的年份括号统一为六角括号 `〔〕`，保留原有数字；不将正文中的普通括号一并替换。
+- DSH 的 `draft` 和 `md2docx` 均执行生成、格式修复、适用版式注入及最终检查；`generate` 的结构化生成结果也会继续修复和复检。正式交付禁止跳过验证，只有 `delivery.verified=true` 才表示最终格式检查通过；失败会返回待修订状态，P1/P2 仍须报告。模板和预览结果不能视为完整成品。
+- DSH 文档样式设置页已停用，排版配置通过 `gongwen config` 管理。Windows 桌面宿主未继承 Python 的 PATH 时，桥接器会查找本机用户目录下已安装的 Python；仍需事先安装 Python 3.10+ 及本插件依赖。
 
 ### 🖥️ Windows 控制台编码（GBK 乱码排查）
 
@@ -424,7 +431,15 @@ ln -s ~/skills/gongwen-skill/.dsh/skills/gongwen-skill  ~/.dsh/skills/gongwen-sk
 
 ### 方式二：作为 DSH Cordis 插件安装（注册到 Web Profile）
 
-把本仓库当作 npm 包安装到 DSH Web Profile，让 DSH 的 Web UI 通过 `gongwen-skill` 调用桥接器执行 Python CLI。
+本仓库适配版应安装 **`plugins/gongwen` 目录**，由 [package.json](./package.json) 暴露 `dsh/index.js` 和 bundle patch，[cordis.patch.yml](./cordis.patch.yml) 挂载 `gongwen-skill`。不要把整个插件集根目录当作该插件安装。
+
+1. 克隆本插件集到长期保留的位置，在 DSH 对话中让 Agent 通过插件管理器安装 `plugins/gongwen`（目录链接）；保留该目录，删除或移动目录会使链接失效。
+2. 在该插件目录安装 Python 依赖，例如在插件集根目录执行 `python -m pip install -r plugins/gongwen/requirements.txt`。Python 要求 3.10+；npm 插件安装不会替你安装 Python 依赖。
+3. 首次安装或升级后刷新页面；桌面端如未生效则重启应用。工具名为 `gongwen`，bundle 名为 `gongwen-skill`。
+
+也可使用下方「本地源码链接」的 CLI 方式，将绝对路径指向本仓库的 `plugins/gongwen`。排版配置通过 `gongwen config` 维护，不需要进入已停用的文档样式设置页。
+
+**以下保留上游 npm 安装方式**，用于安装上游发行包；它不会自动选择本仓库的 `2.15.0-local.3` 或带上本地修复。让 DSH Web UI 通过 `gongwen-skill` 调用桥接器执行 Python CLI：
 
 ```bash
 # 1️⃣ 用 DSH 官方 CLI 一键挂载（推荐：自动改 package.json + 重建 bundle）
@@ -440,7 +455,7 @@ npm i gongwen-skill -w
 pnpm add -w gongwen-skill
 ```
 
-安装后请确认 `~/.dsh/profiles/web/package.json` 中的 `dsh.profile.bundles` 数组已包含 `gongwen-skill`：
+安装后请确认 `~/.dsh/profiles/web/package.json` 中的 `dsh.profile.bundles` 数组已包含 `gongwen-skill`。以下以本仓库目录链接安装为例，路径请替换为本机实际绝对路径；若选择上游 npm 安装，保留安装器写入的上游依赖版本：
 
 ```jsonc
 {
@@ -449,7 +464,7 @@ pnpm add -w gongwen-skill
   "dependencies": {
     "@deepseek-ai/dsh-base": "...",
     "@deepseek-ai/dsh-web-app": "...",
-    "gongwen-skill": "^2.12.0"
+    "gongwen-skill": "link:/absolute/path/to/shanzhi-plugin/plugins/gongwen"
   },
   "dsh": {
     "profile": {
@@ -472,11 +487,11 @@ pnpm add -w gongwen-skill
 如果你在本地开发 gongwen-skill 插件，可以用 link 方式让 DSH 直接加载仓库源码：
 
 ```bash
-# 把本地仓库以 link 方式挂到 DSH Web Profile
-dsh plugin --profile web add -w "link:/path/to/gongwen-skill"
+# 把本仓库的公文插件目录以 link 方式挂到 DSH Web Profile（替换为实际绝对路径）
+dsh plugin --profile web add -w "link:/absolute/path/to/shanzhi-plugin/plugins/gongwen"
 
 # 同样：检查 ~/.dsh/profiles/web/package.json
-#  - dependencies 出现 "gongwen-skill": "link:/path/to/gongwen-skill"
+#  - dependencies 出现 "gongwen-skill": "link:/absolute/path/to/shanzhi-plugin/plugins/gongwen"
 #  - dsh.profile.bundles 包含 "gongwen-skill"
 ```
 
@@ -484,7 +499,7 @@ dsh plugin --profile web add -w "link:/path/to/gongwen-skill"
 
 > 规则：**CLI（`python -m gongwen`）是唯一业务逻辑入口**，DSH 插件（`dsh/`）只做 UI 代理与结果展示。
 
-- 插件通过 `spawn("python", ["-m", "gongwen", ...])` 子进程转发命令，**不直接 import 引擎、不操作 docx**，避免双入口行为分裂
+- 插件通过子进程执行选定的 Python 解释器及 `["-m", "gongwen", ...]` 参数，**不直接 import 引擎、不操作 docx**，避免双入口行为分裂；优先定位插件包内 Python 源码，保留本地修复
 - `dsh/index.js` 的 `POSITIONAL_ARGS` 声明各命令的位置参数（如 `draft: ["input"]`）；新增/调整 CLI 命令位置参数时**必须同步更新该表**，否则插件转发会构造出 `--input` 而 CLI 只接受位置参数
 - 插件保持薄层：业务逻辑全在 CLI / engine，改动引擎不影响插件；改动 CLI 参数形态时需同步检查 `dsh/index.js` 转发（doctor 自检覆盖 DSH 文件存在性）
 - **模型工具注册**：插件通过官方 `ctx.tools.register(defineTool({...}))` 注册名为 `gongwen` 的模型工具，工具 schema 自动流入 DSH 系统提示词组装；`defineTool` 校验模型生成的参数后调用 `runCli()` 透传 Python CLI（详见上方「DSH 插件配置化」）
