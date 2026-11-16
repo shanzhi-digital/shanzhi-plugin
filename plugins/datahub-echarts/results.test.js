@@ -187,6 +187,10 @@ test('tool schemas and delivery guidance support one overall follow-up group', (
     assert.equal(tool.parameters.properties.followUps.minItems, 3);
     assert.equal(tool.parameters.properties.followUps.maxItems, 3);
   }
+  assert.match(prompt, /最终业务表格结果交给插件展示。插件成功展示后/);
+  for (const tool of registered.values()) {
+    assert.match(tool.description, /最终业务表格结果/);
+  }
   assert.match(prompt, /正文仅补充结论、统计口径和建议/);
   assert.match(prompt, /不再重复输出完整 Markdown 表格/);
   assert.match(prompt, /不要在正文另列跟问建议/);

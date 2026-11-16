@@ -9,7 +9,7 @@ const text = (value) => [{type:'text', text: JSON.stringify(value)}];
 export function apply(ctx) {
   ctx.systemPrompt.section({name:'datahub-echarts', order: 950,
     text:[
-      '每次问数取得用于回答用户的最终业务行列结果后，都应调用 query_result_chart 展示真实结果，默认生成表格，无需用户额外要求问表、表格或图表。列数据源、读取模型和字段等准备操作不生成卡片；用户明确只要文字、不用表格时尊重其要求。唯一表格来源可省略 sourceCallId，多个来源选择本次最终业务查询调用 ID；不要复制或编造数据行，不要为展示重复查询。支持 DataHub、其他数据库 MCP、API 或已解析成 JSON 行列的 CSV 工具结果。',
+      '每次问数取得用于回答用户的最终业务表格结果后，都应调用 query_result_chart 展示真实结果，默认生成表格，无需用户额外要求问表、表格或图表。列数据源、读取模型和字段等准备操作不生成卡片；用户明确只要文字、不用表格时尊重其要求。唯一表格来源可省略 sourceCallId，多个来源选择本次最终业务查询调用 ID；不要复制或编造数据行，不要为展示重复查询。支持 DataHub、其他数据库 MCP、API 或已解析成 JSON 行列的 CSV 工具结果。',
       'query_result_chart 不执行 SQL；SQL 只作为来源说明，图表使用来源工具返回的真实行列值。嵌套结果用 resultPath（JSON Pointer，例如 /result）选择唯一表格；来源须在当前会话当前回合内成功完成。',
       '需要查询 DataHub 时先按数据源技能核实公开视图、字段和统计口径；已有结果用 query_result_chart，尚未查询时也可用兼容入口 datahub_chart 执行最终语义 SQL 并渲染。',
       '交付时的呈现规则：',
@@ -18,13 +18,13 @@ export function apply(ctx) {
       '- 普通问数默认表格，省略 chartType，即使提到占比、趋势、排名也不自动出图。用户明确要求画图或图表时才传 chartType：占比 pie，时间趋势 line，其余类别对比 bar；明确要求表格或不要图表时保持表格。',
       '- dimension、measures 可省略，插件按用户原话与真实列自动识别，保留手动切换图表的能力；用户点名了指标时可显式传入。',
       '- 纯文本明细、只有一个数值、或结果为空时不必强作图，省略这些字段并交付真实表格。',
-      '- 插件成功承载结果数据后，正文仅补充结论、统计口径和建议，不再重复输出完整 Markdown 表格，也不要在正文另列跟问建议；插件展示失败时才允许用普通表格兜底。',
+      '- 最终业务表格结果交给插件展示。插件成功展示后，正文仅补充结论、统计口径和建议，不再重复输出完整 Markdown 表格，也不要在正文另列跟问建议；插件展示失败时才允许用普通表格兜底。',
       '- 同次交付包含多份结果时，每份使用简短的中文业务标题；中间结果可省略 followUps，最后一份结果提供覆盖整体的 3 条 followUps。单份结果也应提供 3 条 followUps。',
       '- followUps 站在用户视角写成完整问句（不是短语），基于真实结果提出下一步问题，例如追问排名首位/末位的明细、换成另一个维度或指标、补一个时间范围；三条之间不要重复、不要与刚才的问法雷同。'
     ].join('\n')});
   ctx.tools.register({
     name: 'query_result_chart',
-    description: '问数取得最终业务行列结果后调用，默认生成表格卡片并提供图表切换和跟问，无需用户明确要求表格。只读取当前会话当前回合已成功完成的查询结果，不执行 SQL，不接收模型自填数据；不用于列数据源、读模型和字段等准备操作。',
+    description: '问数取得最终业务表格结果后调用，默认生成表格卡片并提供图表切换和跟问，无需用户明确要求表格。只读取当前会话当前回合已成功完成的查询结果，不执行 SQL，不接收模型自填数据；不用于列数据源、读模型和字段等准备操作。',
     parameters: { type: 'object', additionalProperties: false, properties: {
       sourceCallId: { type: 'string', description: '当前回合已完成查询工具的真实调用 ID。只有一个可识别表格来源时可省略；有多个时按错误返回的候选 ID 指定。' },
       resultPath: { type: 'string', description: '可选 JSON Pointer，在工具返回 JSON 中选择表格对象或对象数组，如 /result；默认使用根结果。' },
@@ -45,7 +45,7 @@ export function apply(ctx) {
   ctx.tools.register({
     name:'datahub_chart',
     description:[
-      '执行尚未执行的最终 DataHub 语义 SQL，并将真实业务结果默认为表格卡片。',
+      '执行尚未执行的最终 DataHub 语义 SQL，并将最终业务表格结果展示为表格卡片。',
       '已有成功查询结果时必须使用 query_result_chart 复用，不要走此入口重复查询；明确要求绘图时才指定 chartType。'
     ].join(''),
     parameters:{type:'object',additionalProperties:false,properties:{
