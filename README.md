@@ -10,6 +10,7 @@
 | [问知文档](plugins/datahub-knowledge-docs/README.md) | `@local/datahub-knowledge-docs` | 0.3.0 | 找文档时显示确认匹配的文件，问知识时显示检索来源，支持在右侧预览原文 |
 | [问数增强](plugins/datahub-query-enhance/README.md) | `@local/datahub-query-enhance` | 0.1.1 | 引导读取公共查询规范、设置中文结果列名、输出数据洞察，并自动显示指标可信状态 |
 | [公文全流程处理专家](plugins/gongwen/README.md) | `gongwen-skill` | 2.15.0-local.3 | 上游公文工具的本地适配版本，提供生成、检查、修复、模板与版式处理及 DSH 集成 |
+| [数据源](plugins/dsh-datasource/README.md) | `dsh-sql` | 0.7.0-local.3 | 本地定制 dsh-sql：问题列表与填写问题子页、确认时自动保存并后台分析、表与关系分别确认，跟随官方主题；保留连接管理、三个只读 SQL 工具及受绑定会话限定的结构化回填工具 |
 
 ## 安装与升级
 
