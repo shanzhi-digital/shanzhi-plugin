@@ -1,0 +1,4 @@
+- insert:
+    - id: datahub-onboarding
+      name: '@local/datahub-onboarding'
+      config: {}
