@@ -11,7 +11,7 @@ const css = `
 .dho-input[readonly]{color:var(--dsw-alias-label-secondary,#79746c);background:var(--dsw-alias-bg-layer-2,#f5f4f1);overflow:hidden;text-overflow:ellipsis}
 .dho-keyline{display:flex;justify-content:space-between;gap:12px;align-items:baseline}.dho-saved{font-size:12px;color:var(--dsw-alias-label-secondary,#79746c)}
 .dho-actions{display:flex;flex-wrap:wrap;gap:9px;margin:14px 0 18px}.dho-button{padding:7px 15px;border:1px solid var(--dsw-alias-border-l3,#b9b4aa);border-radius:6px;background:var(--dsw-alias-bg-layer-2,#f5f4f1);color:inherit;font:inherit;cursor:pointer}
-.dho-button.primary{background:var(--dsw-alias-brand-primary,#315efb);border-color:transparent;color:#fff}.dho-button.danger{color:var(--dsw-alias-label-error,#a33232)}
+.dho-button.primary{background:var(--dsw-alias-button-primary-fill,#315efb);border-color:transparent;color:var(--dsw-alias-label-primary-foreground,#fff)}.dho-button.danger{color:var(--dsw-alias-label-error,#a33232)}
 .dho-button:disabled{opacity:.5;cursor:not-allowed}.dho-button:focus-visible,.dho-input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#315efb);outline-offset:2px}
 .dho-notice{padding:10px 12px;margin:0 0 14px;border-radius:6px;background:var(--dsw-alias-bg-layer-2,#f5f4f1);color:var(--dsw-alias-label-secondary,#66615a);white-space:pre-wrap;overflow-wrap:anywhere}
 .dho-notice.error{background:var(--dsw-alias-bg-danger,rgba(180,45,45,.1));color:var(--dsw-alias-label-error,#923b3b)}
