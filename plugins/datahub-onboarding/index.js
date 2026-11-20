@@ -54,6 +54,7 @@ export function registerOnboardingService(ctx, config, dependencies = {}) {
       const saveBoundOrigin = value => writeBoundOrigin(settings, entryId, value);
       this.controller = new OnboardingController({
         origin,
+        readOrigin: () => readAccountOrigin(hostCtx.get('deepseekAccount')),
         boundOrigin: config.boundOrigin?.get?.(),
         credentials: credentialAdapter(hostCtx),
         mcpManager: hostCtx.mcpManager,

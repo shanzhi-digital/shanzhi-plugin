@@ -41,6 +41,7 @@ export class OnboardingController {
     this.probe = options.probe;
     this.persistBoundOrigin = options.saveBoundOrigin;
     this.hasLegacy = options.hasLegacy ?? (() => false);
+    this.readOrigin = options.readOrigin ?? (() => options.origin);
     this.logger = options.logger ?? { warn() {} };
     this.origin = normalizeOrigin(options.origin);
     this.boundOrigin = normalizeOrigin(options.boundOrigin);
@@ -96,6 +97,7 @@ export class OnboardingController {
   }
 
   context(signal, expectedOrigin) {
+    this.syncEnvironment();
     throwIfAborted(signal);
     if (!this.origin) throw new OnboardingError(this.environmentInvalid ? 'INVALID_ORIGIN' : 'ENVIRONMENT_REQUIRED');
     if (expectedOrigin !== undefined && expectedOrigin !== this.origin) throw new OnboardingError('ENVIRONMENT_CHANGED');
@@ -231,6 +233,7 @@ export class OnboardingController {
   }
 
   connect(request, signal) {
+    this.syncEnvironment();
     return this.schedule('validating', signal, async lifetime => {
       this.error = undefined;
       this.warning = undefined;
@@ -241,6 +244,7 @@ export class OnboardingController {
   }
 
   retry(request, signal) {
+    this.syncEnvironment();
     return this.schedule('validating', signal, async lifetime => {
       this.error = undefined;
       this.warning = undefined;
@@ -258,6 +262,7 @@ export class OnboardingController {
   }
 
   disconnect(signal) {
+    this.syncEnvironment();
     this.cancel();
     return this.schedule('disconnecting', signal, async lifetime => {
       this.error = undefined;
@@ -274,6 +279,7 @@ export class OnboardingController {
   }
 
   clearKey(signal) {
+    this.syncEnvironment();
     this.cancel();
     return this.schedule('clearing', signal, async lifetime => {
       this.error = undefined;
@@ -300,11 +306,7 @@ export class OnboardingController {
     return this.refreshState();
   }
 
-  environmentChanged(value) {
-    let next;
-    let invalid = false;
-    try { next = normalizeOrigin(value); }
-    catch { next = undefined; invalid = true; }
+  applyEnvironment(next, invalid) {
     if (next === this.origin && invalid === this.environmentInvalid) return;
     this.origin = next;
     this.environmentInvalid = invalid;
@@ -314,6 +316,31 @@ export class OnboardingController {
     this.probeStates = idleProbeStates();
     this.error = invalid ? { code: 'INVALID_ORIGIN' } : undefined;
     this.warning = undefined;
+    if (!invalid && next) this.restoreEnvironment();
+  }
+
+  syncEnvironment() {
+    if (this.stopped) return;
+    let next;
+    let invalid = false;
+    try { next = normalizeOrigin(this.readOrigin()); }
+    catch { next = undefined; invalid = true; }
+    this.applyEnvironment(next, invalid);
+  }
+
+  restoreEnvironment() {
+    void this.schedule('restoring-environment', undefined, async signal => {
+      try { await this.restore(signal); }
+      catch (error) { this.recordError(error); }
+    }).catch(() => {});
+  }
+
+  environmentChanged(value) {
+    let next;
+    let invalid = false;
+    try { next = normalizeOrigin(value); }
+    catch { next = undefined; invalid = true; }
+    this.applyEnvironment(next, invalid);
   }
 
   recordError(error) {
@@ -328,6 +355,7 @@ export class OnboardingController {
   }
 
   refreshState() {
+    this.syncEnvironment();
     try {
       const legacy = this.readLegacy();
       if (legacy && !this.legacyManaged) {

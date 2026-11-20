@@ -10,6 +10,7 @@ const success = () => ({ ok: true, closeConfirmed: true, toolNames: [], truncate
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
 function fixture(options = {}) {
+  let accountOrigin = options.origin === null ? undefined : options.origin ?? ORIGIN;
   const operations = [];
   const values = new Map();
   if (options.formalKey !== undefined) values.set(FORMAL_CREDENTIAL_REF, options.formalKey);
@@ -55,7 +56,8 @@ function fixture(options = {}) {
     if (options.saveFailure) throw new Error('private settings failure');
   };
   const controller = new OnboardingController({
-    origin: options.origin === null ? undefined : options.origin ?? ORIGIN,
+    origin: accountOrigin,
+    readOrigin: options.readOrigin ?? (() => accountOrigin),
     boundOrigin: options.boundOrigin,
     credentials,
     mcpManager,
@@ -66,7 +68,7 @@ function fixture(options = {}) {
     logger: { warn() {} },
   });
   return { controller, values, operations, registrations, disposals, probes, saved,
-    changeEnvironment: value => environmentCallback(value) };
+    changeEnvironment: value => { accountOrigin = value; environmentCallback(value); } };
 }
 
 test('空 origin 为 environment-required，不探测、不注册、不写凭据', async () => {
@@ -78,6 +80,36 @@ test('空 origin 为 environment-required，不探测、不注册、不写凭据
   assert.equal(f.probes.length, 0);
   assert.equal(f.registrations.length, 0);
   assert.equal(f.values.size, 0);
+});
+
+test('账号服务晚于插件就绪时，状态刷新会取得地址并恢复连接', async () => {
+  let currentOrigin;
+  const f = fixture({
+    origin: null,
+    formalKey: 'old-secret',
+    boundOrigin: ORIGIN,
+    readOrigin: () => currentOrigin,
+  });
+  await f.controller.readyPromise;
+  assert.equal(f.controller.refreshState().phase, 'environment-required');
+  currentOrigin = ORIGIN;
+  const refreshed = f.controller.refreshState();
+  assert.equal(refreshed.origin, ORIGIN);
+  await f.controller.tail;
+  const restored = f.controller.refreshState();
+  assert.equal(restored.phase, 'connected');
+  assert.deepEqual(f.registrations.map(item => item.name), SERVICES.map(service => service.name));
+});
+
+test('账号地址晚到后，首次连接会先同步环境再提交', async () => {
+  let currentOrigin;
+  const f = fixture({ origin: null, readOrigin: () => currentOrigin });
+  await f.controller.readyPromise;
+  currentOrigin = ORIGIN;
+  const state = await f.controller.connect({ apiKey: 'new-secret' });
+  assert.equal(state.phase, 'connected');
+  assert.equal(f.controller.origin, ORIGIN);
+  assert.equal(f.registrations[0].entry.url, `${ORIGIN}${SERVICES[0].path}`);
 });
 
 test('legacy-managed 只读，不注册同名、不探测、不迁移', async () => {
