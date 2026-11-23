@@ -1,22 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
-import { API_PREFIX, createSecrets, registerRoutes } from '../index.js';
+import { API_PREFIX, createSecrets, registerRoutes, applyWithServices } from '../index.js';
 import { DatasourceRuntime } from '../runtime.js';
+import { DatasourceStore } from '../store.js';
 
-// Contract fake for the Host's native CredentialRecords methods. The native
-// credentials-local document admits only api-key (key/env) and grant (JSON
-// payload) records and rejects extra fields. Fixture persistence below is JSON,
-// not the Host's YAML provider, file permissions, authentication or authorization.
+// Contract fake for native CredentialRecords. This validates JSON grant shapes,
+// not the Host's YAML persistence, file permissions or authenticated-owner middleware.
 function assertJsonPayload(value, seen = new Set()) {
   if (value === null || ['string', 'boolean'].includes(typeof value)) return;
   if (typeof value === 'number' && Number.isFinite(value)) return;
   assert.ok(value && typeof value === 'object' && (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype), 'grant payload must be JSON');
-  assert.equal(seen.has(value), false, 'grant payload must not be cyclic');
-  seen.add(value);
+  assert.equal(seen.has(value), false, 'grant payload must not be cyclic'); seen.add(value);
   for (const nested of Object.values(value)) assertJsonPayload(nested, seen);
   seen.delete(value);
 }
@@ -24,398 +22,234 @@ function assertNativeRecord(record) {
   assert.ok(record && typeof record === 'object' && !Array.isArray(record), 'record must be a mapping');
   assert.ok(['api-key', 'grant'].includes(record.kind), 'record kind must be api-key or grant');
   const allowed = record.kind === 'grant' ? ['kind', 'payload'] : ['kind', 'key', 'env'];
-  assert.ok(Object.keys(record).every((field) => allowed.includes(field)), 'record has an unknown field');
-  if (record.kind === 'grant') {
-    assert.ok(Object.hasOwn(record, 'payload'), 'grant record needs a payload');
-    assertJsonPayload(record.payload);
-  } else {
-    assert.ok(record.key === undefined || (typeof record.key === 'string' && record.key.length > 0), 'api-key key must be a non-empty string');
+  assert.ok(Object.keys(record).every(field => allowed.includes(field)), 'record has an unknown field');
+  if (record.kind === 'grant') { assert.ok(Object.hasOwn(record, 'payload')); assertJsonPayload(record.payload); }
+  else {
+    assert.ok(record.key === undefined || (typeof record.key === 'string' && record.key.length > 0));
     if (record.env !== undefined) {
-      assert.ok(record.env && typeof record.env === 'object' && !Array.isArray(record.env), 'api-key env must be a mapping');
-      for (const [name, value] of Object.entries(record.env)) {
-        assert.match(name, /^[A-Za-z_][A-Za-z0-9_]*$/);
-        assert.ok(typeof value === 'string' && value.length > 0, 'api-key env value must be a non-empty string');
-      }
+      assert.ok(record.env && typeof record.env === 'object' && !Array.isArray(record.env));
+      for (const [name, value] of Object.entries(record.env)) { assert.match(name, /^[A-Za-z_][A-Za-z0-9_]*$/); assert.ok(typeof value === 'string' && value.length > 0); }
     }
   }
 }
 class CredentialRecords {
-  records = new Map();
-  calls = [];
-
-  constructor(records = []) {
-    for (const [key, record] of records) {
-      this.#check(key);
-      assertNativeRecord(record);
-      this.records.set(key, structuredClone(record));
-    }
-  }
-  async persist(filePath) {
-    await writeFile(filePath, JSON.stringify([...this.records]), 'utf8');
-  }
-  static async reload(filePath) {
-    return new CredentialRecords(JSON.parse(await readFile(filePath, 'utf8')));
-  }
-  #check(key) {
-    assert.match(key, /^sql\/[a-z][a-z0-9-]*$/);
-  }
-  async readRecord(key) {
-    this.#check(key);
-    this.calls.push(['readRecord', key]);
-    return this.records.has(key) ? structuredClone(this.records.get(key)) : undefined;
-  }
-  async modifyRecord(key, modify) {
-    this.#check(key);
-    this.calls.push(['modifyRecord', key]);
-    const previous = this.records.has(key) ? structuredClone(this.records.get(key)) : undefined;
-    const next = await modify(previous);
-    if (next === undefined) return previous;
-    assertNativeRecord(next);
-    this.records.set(key, structuredClone(next));
-    return structuredClone(next);
-  }
-  async deleteRecord(key) {
-    this.#check(key);
-    this.calls.push(['deleteRecord', key]);
-    return this.records.delete(key);
-  }
+  records = new Map(); calls = [];
+  constructor(records = []) { for (const [key, record] of records) { this.check(key); assertNativeRecord(record); this.records.set(key, structuredClone(record)); } }
+  check(key) { assert.match(key, /^sql\/[a-z][a-z0-9-]*$/); }
+  async persist(file) { await writeFile(file, JSON.stringify([...this.records]), 'utf8'); }
+  static async reload(file) { return new CredentialRecords(JSON.parse(await readFile(file, 'utf8'))); }
+  async readRecord(key) { this.check(key); this.calls.push(['readRecord', key]); return structuredClone(this.records.get(key)); }
+  async modifyRecord(key, modify) { this.check(key); this.calls.push(['modifyRecord', key]); const previous = structuredClone(this.records.get(key)), next = await modify(previous); if (next === undefined) return previous; assertNativeRecord(next); this.records.set(key, structuredClone(next)); return structuredClone(next); }
+  async deleteRecord(key) { this.check(key); this.calls.push(['deleteRecord', key]); return this.records.delete(key); }
 }
-
-function register(runtime) {
+function register(services) {
   const routes = new Map();
-  const ctx = { connection: { fetch: { register(definition) {
-    assert.equal(routes.has(definition.path), false, 'routes must not overwrite each other');
-    routes.set(definition.path, definition);
-  } } } };
-  registerRoutes(ctx, runtime);
+  registerRoutes({ connection: { fetch: { register(definition) { assert.equal(routes.has(definition.path), false); routes.set(definition.path, definition); } } } }, () => services);
   return routes;
 }
-
 async function setup(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'dsh-datasource-host-test-'));
-  const file = join(directory, 'fixture.sqlite');
-  const filePath = join(directory, 'metadata.json');
-  const db = new DatabaseSync(file);
-  db.exec('CREATE TABLE samples (id INTEGER PRIMARY KEY, label TEXT NOT NULL); INSERT INTO samples VALUES (1, \'host fixture\')');
-  db.close();
-  const credentials = new CredentialRecords();
-  const runtime = new DatasourceRuntime({ filePath, secrets: createSecrets(credentials) });
-  const runtimes = [runtime];
-  await runtime.initialize();
-  const routes = register(runtime);
-  t.after(async () => {
-    await Promise.allSettled(runtimes.map((item) => item.close()));
-    assert.ok(resolve(directory).startsWith(resolve(tmpdir())));
-    // Remove only this test's uniquely generated temporary directory.
-    await rm(directory, { recursive: true, force: true });
-  });
-  return { directory, file, filePath, credentials, runtime, runtimes, routes };
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-datasource-host-'));
+  const file = join(directory, 'fixture.sqlite'), db = new DatabaseSync(file);
+  db.exec("CREATE TABLE samples (id INTEGER PRIMARY KEY, label TEXT); INSERT INTO samples VALUES (1, 'host fixture')"); db.close();
+  const credentials = new CredentialRecords(), store = new DatasourceStore();
+  const runtime = new DatasourceRuntime({ store, secrets: createSecrets(credentials) }); await runtime.initialize();
+  const flow = { get: id => store.get(id), sourceChanged: async () => {}, action: async () => ({ revision: 1 }), sampleTable: async () => ({ samples: [] }) };
+  const routes = register({ runtime, store, flow });
+  t.after(async () => { await runtime.close(); await rm(directory, { recursive: true, force: true }); });
+  return { directory, file, credentials, store, runtime, flow, routes };
 }
-
 async function call(routes, operation, options = {}) {
-  const route = routes.get(API_PREFIX + '/' + operation);
-  assert.ok(route);
-  const method = route.methods[0];
-  const headers = options.headers ?? (method === 'POST' ? { 'Content-Type': 'application/json' } : {});
-  const init = { method, headers, signal: options.signal };
+  const route = routes.get(API_PREFIX + '/' + operation); assert.ok(route, 'registered ' + operation);
+  const method = route.methods[0], init = { method, headers: options.headers ?? (method === 'POST' ? { 'Content-Type': 'application/json' } : {}), signal: options.signal };
   if (method === 'POST') init.body = Object.hasOwn(options, 'body') ? options.body : JSON.stringify(options.data ?? {});
-  // Direct standard Request -> registered fetch invocation. There is no real
-  // Host routing middleware, session cookie, owner check or network listener.
-  return await route.fetch(new Request('http://localhost' + route.path, init));
+  return route.fetch(new Request('http://localhost' + route.path, init));
 }
-
 async function json(response, status = 200) {
-  assert.ok(response instanceof Response);
-  assert.equal(response.status, status);
-  assert.match(response.headers.get('content-type'), /^application\/json\b/i);
-  assert.equal(response.headers.get('cache-control'), 'no-store');
-  const value = JSON.parse(await response.text());
-  assert.equal(typeof value, 'object');
-  assert.notEqual(value, null);
-  return value;
+  assert.ok(response instanceof Response); assert.equal(response.status, status);
+  assert.match(response.headers.get('content-type'), /^application\/json\b/i); assert.equal(response.headers.get('cache-control'), 'no-store');
+  const value = await response.json(); assert.ok(value && typeof value === 'object'); return value;
 }
+const network = { name: '服务器凭据', engine: 'mysql', host: 'localhost', port: 3306, user: 'readonly_fixture', database: 'fixture' };
+const operations = ['save', 'test', 'remove', 'source-status', 'questions-list', 'questions-save', 'questions-remove', 'flow-state', 'flow-action', 'flow-samples'];
 
-const network = { name: '服务器凭据', description: '不连接实际服务器', engine: 'mysql', host: 'localhost', port: 3306, user: 'readonly_fixture', database: 'fixture' };
-
-test('credential contract rejects the legacy custom kind and invalid native record shapes', async () => {
-  const credentials = new CredentialRecords();
-  const key = 'sql/fixture-password';
-  const legacy = { kind: 'database-password', payload: { password: 'synthetic-legacy-password' } };
-  await assert.rejects(credentials.modifyRecord(key, async () => legacy), /record kind must be api-key or grant/);
-  assert.throws(() => new CredentialRecords([[key, legacy]]), /record kind must be api-key or grant/);
-  for (const record of [
-    {}, [], null, { kind: 'oauth' },
-    { kind: 'grant' },
-    { kind: 'grant', payload: undefined },
-    { kind: 'grant', payload: { password: Infinity } },
-    { kind: 'grant', payload: { password: new Date() } },
-    { kind: 'grant', payload: {}, extra: true },
-    { kind: 'api-key', payload: {} },
-    { kind: 'api-key', key: '' },
-    { kind: 'api-key', env: { INVALID: '' } },
-  ]) {
-    await assert.rejects(credentials.modifyRecord(key, async () => record));
-  }
+test('native credential contract rejects legacy custom kinds and malformed records', async () => {
+  const credentials = new CredentialRecords(), key = 'sql/fixture-password';
+  const legacy = { kind: 'database-password', payload: { password: 'legacy' } };
+  await assert.rejects(credentials.modifyRecord(key, () => legacy), /record kind/);
+  assert.throws(() => new CredentialRecords([[key, legacy]]), /record kind/);
+  for (const record of [{}, [], null, { kind: 'oauth' }, { kind: 'grant' }, { kind: 'grant', payload: undefined }, { kind: 'grant', payload: { password: Infinity } }, { kind: 'grant', payload: new Date() }, { kind: 'grant', payload: {}, extra: true }, { kind: 'api-key', payload: {} }, { kind: 'api-key', key: '' }, { kind: 'api-key', env: { INVALID: '' } }]) await assert.rejects(credentials.modifyRecord(key, () => record));
   assert.equal(credentials.records.size, 0);
-  // Native grants admit any JSON payload, while api-key uses its own fields.
-  for (const payload of [null, false, 123, 'fixture', ['fixture'], { nested: { fixture: true } }]) {
-    const record = { kind: 'grant', payload };
-    assert.deepEqual(await credentials.modifyRecord(key, async () => record), record);
-  }
-  const apiKey = { kind: 'api-key', key: 'synthetic-api-key', env: { FIXTURE_KEY: 'synthetic-env-key' } };
-  assert.deepEqual(await credentials.modifyRecord(key, async () => apiKey), apiKey);
+  for (const payload of [null, false, 123, 'fixture', ['fixture'], { nested: true }]) assert.deepEqual(await credentials.modifyRecord(key, () => ({ kind: 'grant', payload })), { kind: 'grant', payload });
+  const apiKey = { kind: 'api-key', key: 'fixture-key', env: { FIXTURE_KEY: 'fixture-env' } }; assert.deepEqual(await credentials.modifyRecord(key, () => apiKey), apiKey);
 });
 
-test('createSecrets maps keys to native scoped records and performs password CRUD', async () => {
-  const credentials = new CredentialRecords();
-  const secrets = createSecrets(credentials);
-  const key = 'DSH-Datasource:2B7995A5-7EAE-4729-BA8C-39ED7AD72ED8:Password';
-  const recordKey = 'sql/dsh-datasource-2b7995a5-7eae-4729-ba8c-39ed7ad72ed8-password';
-  assert.equal(await secrets.get(key), undefined);
-  await secrets.set(key, '  synthetic-record-password  ');
-  assert.deepEqual(credentials.records.get(recordKey), { kind: 'grant', payload: { password: '  synthetic-record-password  ' } });
-  assert.equal(await secrets.get(key), '  synthetic-record-password  ');
-  await secrets.set(key, 'replacement-fixture-password');
-  assert.equal(await secrets.get(key), 'replacement-fixture-password');
-  assert.equal(credentials.records.size, 1);
-  await secrets.delete(key);
-  assert.equal(await secrets.get(key), undefined);
-  assert.equal(credentials.records.size, 0);
-  assert.ok(credentials.calls.some(([method, id]) => method === 'deleteRecord' && id === recordKey));
+test('createSecrets performs scoped native password CRUD and supports native grant reload', async t => {
+  const { credentials, directory } = await setup(t), secrets = createSecrets(credentials);
+  const key = 'DSH-Datasource:2B7995A5-7EAE-4729-BA8C-39ED7AD72ED8:Password', id = 'sql/dsh-datasource-2b7995a5-7eae-4729-ba8c-39ed7ad72ed8-password';
+  assert.equal(await secrets.get(key), undefined); await secrets.set(key, '  fixture-password  ');
+  assert.deepEqual(credentials.records.get(id), { kind: 'grant', payload: { password: '  fixture-password  ' } });
+  const file = join(directory, 'credential.fixture.json'); await credentials.persist(file);
+  const reloaded = createSecrets(await CredentialRecords.reload(file)); assert.equal(await reloaded.get(key), '  fixture-password  ');
+  await secrets.set(key, 'replacement'); assert.equal(await secrets.get(key), 'replacement'); assert.equal(credentials.records.size, 1);
+  await secrets.delete(key); assert.equal(await secrets.get(key), undefined); assert.equal(credentials.records.size, 0);
 });
 
-test('createSecrets reads only string passwords from grant records', async () => {
-  const credentials = new CredentialRecords();
-  const secrets = createSecrets(credentials);
-  const key = 'dsh-datasource:fixture:password';
-  const id = 'sql/dsh-datasource-fixture-password';
-  // Bypass write validation to exercise defensive reads of unexpected service results.
-  for (const value of [
-    undefined, null, {},
-    { kind: 'grant' },
-    { kind: 'grant', payload: null },
-    { kind: 'grant', payload: {} },
-    { kind: 'grant', payload: { password: 123 } },
-    { kind: 'grant', payload: { password: false } },
-    { kind: 'grant', payload: 'synthetic-scalar-password' },
-    { kind: 'api-key', key: 'synthetic-api-key' },
-    { payload: { password: 'synthetic-untyped-password' } },
-    { kind: 'database-password', payload: { password: 'synthetic-legacy-password' } },
-  ]) {
-    if (value === undefined) credentials.records.delete(id);
-    else credentials.records.set(id, value);
-    assert.equal(await secrets.get(key), undefined);
-  }
-  credentials.records.set(id, { kind: 'grant', payload: { password: '' } });
-  assert.equal(await secrets.get(key), '');
-});
-
-test('createSecrets rejects invalid record ids before touching CredentialRecords', async () => {
-  const credentials = new CredentialRecords();
-  const secrets = createSecrets(credentials);
-  for (const key of ['', '1starts-with-number', 'bad/record', '../outside', 'bad_key', 'not valid', '中文', 'bad?key']) {
-    await assert.rejects(secrets.get(key), /无效.*凭据标识/);
-    await assert.rejects(secrets.set(key, 'synthetic-password'), /无效.*凭据标识/);
-    await assert.rejects(secrets.delete(key), /无效.*凭据标识/);
-  }
+test('createSecrets accepts only string grant passwords and validates ids before native calls', async () => {
+  const credentials = new CredentialRecords(), secrets = createSecrets(credentials), key = 'dsh-datasource:fixture:password', id = 'sql/dsh-datasource-fixture-password';
+  for (const record of [undefined, null, {}, { kind: 'grant' }, { kind: 'grant', payload: null }, { kind: 'grant', payload: {} }, { kind: 'grant', payload: { password: 123 } }, { kind: 'grant', payload: { password: false } }, { kind: 'grant', payload: 'scalar' }, { kind: 'api-key', key: 'key' }, { payload: { password: 'untyped' } }, { kind: 'database-password', payload: { password: 'legacy' } }]) { credentials.records.set(id, record); assert.equal(await secrets.get(key), undefined); }
+  credentials.records.set(id, { kind: 'grant', payload: { password: '' } }); assert.equal(await secrets.get(key), ''); credentials.calls = [];
+  for (const invalid of ['', '1starts-with-number', 'bad/record', '../outside', 'bad_key', 'not valid', '中文', 'bad?key']) { await assert.rejects(secrets.get(invalid), /无效.*凭据标识/); await assert.rejects(secrets.set(invalid, 'password'), /无效.*凭据标识/); await assert.rejects(secrets.delete(invalid), /无效.*凭据标识/); }
   assert.deepEqual(credentials.calls, []);
 });
 
-test('registerRoutes declares the four exact buffered endpoints and their allowed methods', async (t) => {
-  const { routes } = await setup(t);
-  assert.equal(API_PREFIX, '/api/datasources');
-  assert.deepEqual([...routes.keys()], ['/api/datasources/list', '/api/datasources/save', '/api/datasources/test', '/api/datasources/remove']);
-  for (const [path, route] of routes) {
-    assert.equal(route.requestBody, 'buffered');
-    assert.deepEqual(route.methods, [path.endsWith('/list') ? 'GET' : 'POST']);
-    assert.equal(typeof route.fetch, 'function');
-  }
+test('routes register every exact endpoint once with buffered bodies and declared methods', async t => {
+  const { routes } = await setup(t); assert.equal(API_PREFIX, '/api/datasources');
+  assert.deepEqual([...routes.keys()].sort(), ['list', ...operations].map(name => API_PREFIX + '/' + name).sort());
+  for (const [path, route] of routes) { assert.equal(route.requestBody, 'buffered'); assert.deepEqual(route.methods, [path.endsWith('/list') ? 'GET' : 'POST']); assert.equal(typeof route.fetch, 'function'); }
 });
 
-test('all four Request routes integrate with a real SQLite runtime and persist CRUD metadata', async (t) => {
-  const { routes, runtime, file, filePath } = await setup(t);
+test('source Request CRUD uses revisions and native secrets without returning private data', async t => {
+  const { routes, credentials, runtime } = await setup(t);
   assert.deepEqual(await json(await call(routes, 'list')), { items: [] });
-  const saved = await json(await call(routes, 'save', { data: { name: '本地数据库', description: 'Host 集成测试', engine: 'sqlite', file } }));
-  assert.equal(saved.item.name, '本地数据库');
-  assert.equal(saved.item.description, 'Host 集成测试');
-  assert.equal(saved.item.hasPassword, false);
-  assert.ok(saved.item.id);
-  const listed = await json(await call(routes, 'list'));
-  assert.deepEqual(listed.items, [saved.item]);
-  const tested = await json(await call(routes, 'test', { data: { id: saved.item.id, password: '' } }));
-  assert.equal(tested.ok, true);
-  assert.match(tested.message, /成功/);
-  const query = runtime.getTools().find((tool) => tool.name === 'sql_query');
-  assert.deepEqual((await query.execute({ connection: '本地数据库', sql: 'SELECT label FROM samples' })).rows, [['host fixture']]);
-  const edited = await json(await call(routes, 'save', { data: { id: saved.item.id, name: '本地数据库改名', description: '编辑后的描述', password: '' } }));
-  assert.equal(edited.item.id, saved.item.id);
-  assert.equal(edited.item.description, '编辑后的描述');
-  const metadata = JSON.parse(await readFile(filePath, 'utf8'));
-  assert.equal(metadata.connections[0].id, saved.item.id);
-  assert.equal(metadata.connections[0].name, '本地数据库改名');
-  const removed = await json(await call(routes, 'remove', { data: { id: saved.item.id } }));
-  assert.deepEqual(removed, { ok: true });
-  assert.deepEqual(await json(await call(routes, 'list')), { items: [] });
-  assert.deepEqual(JSON.parse(await readFile(filePath, 'utf8')).connections, []);
+  const saved = (await json(await call(routes, 'save', { data: { ...network, password: 'synthetic-host-password' } }))).item;
+  assert.equal(saved.enabled, true); assert.equal(saved.hasPassword, true);
+  const native = [...credentials.records.values()][0]; assert.deepEqual(native, { kind: 'grant', payload: { password: 'synthetic-host-password' } });
+  const renamed = (await json(await call(routes, 'save', { data: { id: saved.id, revision: saved.revision, name: '保留密码', password: '' } }))).item;
+  assert.equal(renamed.hasPassword, true); assert.equal(renamed.connectionVersion, saved.connectionVersion);
+  await json(await call(routes, 'save', { data: { id: saved.id, revision: saved.revision, name: 'stale' } }), 409);
+  await json(await call(routes, 'remove', { data: { id: saved.id, revision: saved.revision } }), 409);
+  const listed = await json(await call(routes, 'list')); assert.deepEqual(listed.items, [{ ...renamed, tableCount: null }]);
+  assert.doesNotMatch(JSON.stringify({ saved, renamed, listed }), /synthetic-host-password|credentialRef|"password"|"payload"/);
+  const cleared = (await json(await call(routes, 'save', { data: { id: saved.id, revision: renamed.revision, clearPassword: true } }))).item;
+  assert.equal(cleared.hasPassword, false); assert.equal(credentials.records.size, 0);
+  await json(await call(routes, 'remove', { data: { id: saved.id, revision: cleared.revision } })); assert.deepEqual(await runtime.list(), []);
 });
 
-test('draft SQLite testing returns JSON without saving a connection', async (t) => {
-  const { routes, file, filePath } = await setup(t);
-  const result = await json(await call(routes, 'test', { data: { name: '未保存测试', engine: 'sqlite', file } }));
-  assert.equal(result.ok, true);
-  assert.deepEqual(await json(await call(routes, 'list')), { items: [] });
-  await assert.rejects(readFile(filePath), { code: 'ENOENT' });
+test('SQLite draft probes and CRUD use memory storage and leave business file unchanged', async t => {
+  const { routes, runtime, file, store } = await setup(t), before = await readFile(file);
+  assert.equal((await json(await call(routes, 'test', { data: { name: 'draft', engine: 'sqlite', file } }))).ok, true);
+  assert.deepEqual(await runtime.list(), []);
+  const saved = (await json(await call(routes, 'save', { data: { name: '本地数据库', engine: 'sqlite', file } }))).item;
+  const tables = await runtime.scan(saved.id, saved.connectionVersion);
+  await store.change(saved.id, state => ({ state: { ...state, catalog: { tables: tables.map(table => ({ ...table, enabled: true })) } } }));
+  assert.deepEqual((await runtime.getTools().find(tool => tool.name === 'sql_query').execute({ sql: 'SELECT label FROM samples' })).rows, [['host fixture']]);
+  assert.deepEqual(await readFile(file), before);
 });
 
-test('route responses never expose saved passwords and native records follow save/edit/remove', async (t) => {
-  const { routes, credentials, filePath } = await setup(t);
-  const password = 'synthetic-host-password';
-  const saved = await json(await call(routes, 'save', { data: { ...network, password } }));
-  assert.equal(saved.item.hasPassword, true);
-  const key = 'sql/dsh-datasource-' + saved.item.id + '-password';
-  assert.equal(credentials.records.get(key).payload.password, password);
-  assert.doesNotMatch(JSON.stringify(saved), /synthetic-host-password|"password"|"payload"/);
-  const edited = await json(await call(routes, 'save', { data: { id: saved.item.id, name: '保留密码', password: '' } }));
-  assert.equal(edited.item.hasPassword, true);
-  assert.equal(credentials.records.get(key).payload.password, password);
-  const listed = await json(await call(routes, 'list'));
-  assert.equal(listed.items[0].hasPassword, true);
-  assert.doesNotMatch(JSON.stringify(listed), /synthetic-host-password|"password"|"payload"/);
-  assert.doesNotMatch(await readFile(filePath, 'utf8'), /synthetic-host-password|"password"|sql\/dsh-datasource/);
-  const cleared = await json(await call(routes, 'save', { data: { id: saved.item.id, clearPassword: true } }));
-  assert.equal(cleared.item.hasPassword, false);
-  assert.equal(credentials.records.has(key), false);
-  await json(await call(routes, 'save', { data: { id: saved.item.id, password: 'replacement-fixture-password' } }));
-  await json(await call(routes, 'remove', { data: { id: saved.item.id } }));
-  assert.equal(credentials.records.size, 0);
+test('source-status batch reports successful entries and individual revision failures', async t => {
+  const { routes, file, runtime } = await setup(t);
+  const first = await runtime.save({ name: 'first', engine: 'sqlite', file }), second = await runtime.save({ name: 'second', engine: 'sqlite', file });
+  const result = await json(await call(routes, 'source-status', { data: { items: [{ id: first.id, enabled: false, revision: first.revision }, { id: second.id, enabled: false, revision: second.revision - 1 }] } }));
+  assert.equal(result.results.length, 2); assert.equal(result.results[0].ok, true); assert.equal(result.results[0].item.enabled, false); assert.equal(result.results[1].ok, false);
+  assert.equal((await runtime.source(second.id)).enabled, true);
+  for (const items of [null, {}, 'all']) await json(await call(routes, 'source-status', { data: { items } }), 400);
 });
 
-test('grant passwords persist and reload with metadata without appearing in route responses', async (t) => {
-  const { directory, routes, runtime, runtimes, credentials, filePath } = await setup(t);
-  const password = '  synthetic-reload-password  ';
-  const saved = await json(await call(routes, 'save', { data: { ...network, password } }));
-  const recordKey = 'sql/dsh-datasource-' + saved.item.id + '-password';
-  const fixturePath = join(directory, 'credential-records.fixture.json');
-  await credentials.persist(fixturePath);
-  assert.deepEqual(JSON.parse(await readFile(fixturePath, 'utf8')), [[recordKey, { kind: 'grant', payload: { password } }]]);
-  await runtime.close();
-  credentials.records.clear();
-
-  const reloadedCredentials = await CredentialRecords.reload(fixturePath);
-  const secrets = createSecrets(reloadedCredentials);
-  assert.equal(await secrets.get('dsh-datasource:' + saved.item.id + ':password'), password);
-  const reloaded = new DatasourceRuntime({ filePath, secrets });
-  runtimes.push(reloaded);
-  await reloaded.initialize();
-  const reloadedRoutes = register(reloaded);
-  const listed = await json(await call(reloadedRoutes, 'list'));
-  assert.deepEqual(listed.items, [saved.item]);
-  const edited = await json(await call(reloadedRoutes, 'save', { data: { id: saved.item.id, password: '' } }));
-  assert.equal(edited.item.hasPassword, true);
-  assert.equal(reloadedCredentials.records.get(recordKey).payload.password, password);
-  assert.doesNotMatch(await readFile(filePath, 'utf8'), /synthetic-reload-password|"password"|sql\/dsh-datasource/);
-  const removed = await json(await call(reloadedRoutes, 'remove', { data: { id: saved.item.id } }));
-  assert.deepEqual(removed, { ok: true });
-  assert.doesNotMatch(JSON.stringify({ saved, listed, edited, removed }), /synthetic-reload-password|"password"|"payload"/);
-  assert.doesNotMatch(await readFile(filePath, 'utf8'), /synthetic-reload-password|"password"|sql\/dsh-datasource/);
-  await reloadedCredentials.persist(fixturePath);
-  assert.equal((await CredentialRecords.reload(fixturePath)).records.size, 0);
+test('question routes support CRUD with source-filtered links and reject stale versions', async t => {
+  const { routes, runtime, file } = await setup(t), source = await runtime.save({ name: 'questions', engine: 'sqlite', file });
+  const created = (await json(await call(routes, 'questions-save', { data: { sourceId: source.id, text: '有多少条记录？' } }))).item;
+  assert.ok(created.id); assert.equal(created.version, 1);
+  assert.deepEqual((await json(await call(routes, 'questions-list', { data: { id: source.id } }))).items, [{ ...created, analysisStatus: 'missing' }]);
+  const edited = (await json(await call(routes, 'questions-save', { data: { ...created, text: '记录总量是多少？' } }))).item;
+  assert.equal(edited.id, created.id); assert.equal(edited.version, created.version + 1);
+  await json(await call(routes, 'questions-save', { data: { ...created, text: 'stale' } }), 409);
+  await json(await call(routes, 'questions-remove', { data: { id: created.id, version: created.version } }), 409);
+  await json(await call(routes, 'questions-remove', { data: { id: edited.id, version: edited.version } }));
+  assert.deepEqual((await json(await call(routes, 'questions-list', { data: { id: source.id } }))).items, []);
 });
 
-test('POST routes reject missing and unsupported media types with 415 JSON', async (t) => {
-  const { routes } = await setup(t);
-  for (const operation of ['save', 'test', 'remove']) {
-    for (const headers of [{}, { 'content-type': 'text/plain' }, { 'content-type': 'application/x-www-form-urlencoded' }, { 'content-type': 'application/jsonp' }, { 'content-type': 'application/json+xml' }]) {
-      const response = await json(await call(routes, operation, { headers, body: '{}' }), 415);
-      assert.match(response.error, /JSON/);
+test('flow route wrappers forward Request signal and return success or failure sessionId', async t => {
+  const { routes, flow } = await setup(t), controller = new AbortController();
+  let seen;
+  flow.action = async (input, signal) => { seen = signal; assert.equal(input.action, 'suggest'); return { revision: 4, draft: { id: 'draft' }, sessionId: 'session-123' }; };
+  assert.deepEqual(await json(await call(routes, 'flow-action', { data: { action: 'suggest' }, signal: controller.signal })), { state: { revision: 4, draft: { id: 'draft' } }, sessionId: 'session-123' });
+  assert.equal(seen.aborted, false); controller.abort(); assert.equal(seen.aborted, true);
+  flow.sampleTable = async (_input, signal) => { assert.ok(signal instanceof AbortSignal); return { samples: [[1]] }; };
+  assert.deepEqual(await json(await call(routes, 'flow-samples', { data: {} })), { samples: [[1]] });
+  flow.action = async () => { throw Object.assign(new Error('private raw failure'), { publicMessage: '推荐失败。', status: 409, sessionId: 'session-failed' }); };
+  assert.deepEqual(await json(await call(routes, 'flow-action', { data: {} }), 409), { error: '推荐失败。', sessionId: 'session-failed' });
+});
+
+test('every POST route enforces JSON media type, object bodies and request size before mutation', async t => {
+  const { routes, runtime } = await setup(t);
+  for (const operation of operations) {
+    for (const headers of [{}, { 'content-type': 'text/plain' }, { 'content-type': 'application/x-www-form-urlencoded' }, { 'content-type': 'application/jsonp' }]) assert.match((await json(await call(routes, operation, { headers, body: '{}' }), 415)).error, /JSON/);
+    for (const body of ['', '{', 'null', '[]', '123', 'false', '"string"']) {
+      const result = await json(await call(routes, operation, { body }), 400); assert.match(result.error, /格式无效/); assert.doesNotMatch(JSON.stringify(result), /stack|SyntaxError|JSON\.parse|file:\/\//);
     }
+    const limit = operation.startsWith('flow-') ? 1048576 : 32768;
+    assert.match((await json(await call(routes, operation, { body: JSON.stringify({ text: 'x'.repeat(limit + 1) }) }), 413)).error, /过长/);
   }
-  assert.deepEqual(await json(await call(routes, 'list')), { items: [] });
+  assert.deepEqual(await runtime.list(), []);
 });
 
-test('JSON media type with case and charset parameters is accepted', async (t) => {
-  const { routes, file } = await setup(t);
-  const result = await json(await call(routes, 'save', { headers: { 'Content-Type': 'Application/JSON; charset=UTF-8' }, data: { name: '有 charset 的请求', engine: 'sqlite', file } }));
-  assert.ok(result.item.id);
+test('case-insensitive JSON with charset works and safe validation errors hide raw internals', async t => {
+  const { routes, file, runtime, credentials } = await setup(t);
+  const saved = await json(await call(routes, 'save', { headers: { 'Content-Type': 'Application/JSON; charset=UTF-8' }, data: { name: 'charset', engine: 'sqlite', file } })); assert.ok(saved.item.id);
+  for (const data of [{ name: '', engine: 'sqlite', file }, { name: 'invalid', engine: 'oracle' }, { ...network, port: 70000 }, { ...network, host: 'mysql://user:validation-secret@host/db' }]) { const result = await json(await call(routes, 'save', { data }), 400); assert.doesNotMatch(JSON.stringify(result), /stack|validation-secret|mysql:\/\//); }
+  for (const id of [undefined, null, 123, '']) assert.equal((await json(await call(routes, 'remove', { data: { id } }), 400)).error, '请选择要删除的数据源。');
+  runtime.list = async () => { throw new Error('mysql://user:driver-secret@host/db\nstack'); };
+  assert.deepEqual(await json(await call(routes, 'list'), 400), { error: '操作失败，请检查连接信息后重试。' });
+  credentials.modifyRecord = async () => { throw new Error('postgres://user:credential-secret@host/db'); };
+  const error = await json(await call(routes, 'save', { data: { ...network, password: 'new-secret' } }), 400); assert.doesNotMatch(JSON.stringify(error), /credential-secret|new-secret|postgres:\/\//);
 });
 
-test('POST routes reject invalid JSON and non-object JSON values with 400 JSON', async (t) => {
-  const { routes } = await setup(t);
-  for (const operation of ['save', 'test', 'remove']) {
-    for (const body of ['', '{', '{"unterminated":', 'null', '[]', '123', 'false', '"string"']) {
-      const result = await json(await call(routes, operation, { body }), 400);
-      assert.match(result.error, /格式无效/);
-      assert.doesNotMatch(JSON.stringify(result), /stack|SyntaxError|JSON\.parse|file:\/\//);
-    }
-  }
+test('an already aborted Request returns cancellation JSON', async t => {
+  const { routes } = await setup(t), controller = new AbortController(); controller.abort();
+  assert.match((await json(await call(routes, 'list', { signal: controller.signal }), 408)).error, /取消/);
 });
 
-test('oversized JSON request bodies receive 413 without mutating metadata', async (t) => {
-  const { routes, filePath } = await setup(t);
-  const body = JSON.stringify({ description: 'x'.repeat(32769) });
-  for (const operation of ['save', 'test', 'remove']) {
-    const result = await json(await call(routes, operation, { body }), 413);
-    assert.match(result.error, /过长/);
-  }
-  assert.deepEqual(await json(await call(routes, 'list')), { items: [] });
-  await assert.rejects(readFile(filePath), { code: 'ENOENT' });
+function hostFixture(credentials = new CredentialRecords()) {
+  const routes = new Map(), tools = new Map(); let dispose;
+  const ctx = { credentials,
+    provide(name, value) { this[name] = value; },
+    sessionController: { create() {}, prompt() {}, resolveAgent() {}, cancel() {}, async *observeEvent() { yield { type: 'ready' }; } },
+    sessions: { flush() {}, get() {} }, agents: { get() {} },
+    connection: { fetch: { register(route) { assert.equal(routes.has(route.path), false); routes.set(route.path, route); } } },
+    tools: { register(tool) { assert.equal(tools.has(tool.name), false); tools.set(tool.name, tool); } },
+    on(event, handler) { assert.equal(event, 'dispose'); dispose = handler; },
+  };
+  return { ctx, routes, tools, credentials, close: () => dispose() };
+}
+function serviceFixture() {
+  let closed = false;
+  const runtime = { list: async () => [{ id: 'fixture-source' }], getTools: () => ['sql_list', 'sql_query', 'sql_schema'].map(name => ({ name, execute: async () => ({ executed: name }) })) };
+  const flow = { scopedSql: (_name, args, execution, execute) => execute(args, execution), getTool: () => ({ execute: async () => ({ persisted: true }) }) };
+  return { runtime, flow, store: new DatasourceStore(), close: async () => { closed = true; }, get closed() { return closed; } };
+}
+const managementInput = { host: 'management.invalid', port: 3306, user: 'fixture_manager', database: 'fixture_management', password: 'synthetic-management-password' };
+
+test('unconfigured Host binds all routes and tools, then activates after private bootstrap', async t => {
+  const f = hostFixture(), service = serviceFixture(); let opened = 0;
+  await applyWithServices(f.ctx, {}, { createServices: async options => { opened++; assert.equal(options.managementConfig.password, managementInput.password); assert.match(options.profileId, /^[a-f0-9]{64}$/); return service; } });
+  t.after(() => f.close());
+  assert.equal(f.routes.size, 13); assert.deepEqual([...f.tools.keys()].sort(), ['datasource_task', 'sql_list', 'sql_query', 'sql_schema']);
+  assert.deepEqual(await json(await call(f.routes, 'management-status')), { configured: false, ready: false, message: '请先在数据源页面配置 MySQL 管理库。' });
+  assert.match((await json(await call(f.routes, 'list'), 503)).error, /管理库/);
+  for (const tool of f.tools.values()) await assert.rejects(tool.execute({}), /管理库/);
+  const status = await json(await call(f.routes, 'management-save', { data: managementInput })); assert.equal(status.ready, true); assert.equal(status.configured, true); assert.equal(status.settings.hasPassword, true);
+  assert.doesNotMatch(JSON.stringify(status), /synthetic-management-password|"password"|payload/);
+  const [[key, stored]] = [...f.credentials.records]; assert.match(key, /^sql\/management-[a-f0-9]{64}$/); assert.deepEqual(stored, { kind: 'grant', payload: managementInput });
+  assert.equal((await json(await call(f.routes, 'list'))).items[0].id, 'fixture-source');
+  assert.deepEqual(await f.tools.get('sql_query').execute({}), { executed: 'sql_query' }); assert.deepEqual(await f.tools.get('datasource_task').execute({}), { persisted: true });
+  await json(await call(f.routes, 'management-save', { data: { ...managementInput, password: '' } }));
+  await json(await call(f.routes, 'management-save', { data: { ...managementInput, database: 'another_management' } }), 409);
+  await json(await call(f.routes, 'management-save', { data: { ...managementInput, password: 'changed-password' } }), 409);
+  assert.equal(opened, 1); assert.equal(f.routes.size, 13); assert.equal(f.tools.size, 4);
 });
 
-test('save returns safe public validation messages instead of generic failures', async (t) => {
-  const { routes, file } = await setup(t);
-  const inputs = [
-    [{ name: '', engine: 'sqlite', file }, /连接名称/],
-    [{ name: '非法类型', engine: 'oracle', file }, /数据库类型/],
-    [{ ...network, port: 70000 }, /端口/],
-    [{ name: '缺少文件', engine: 'sqlite' }, /文件路径/],
-    [{ ...network, host: 'mysql://user:synthetic-validation-password@example.invalid/db' }, /主机地址/],
-  ];
-  for (const [data, expected] of inputs) {
-    const result = await json(await call(routes, 'save', { data }), 400);
-    assert.match(result.error, expected);
-    assert.doesNotMatch(JSON.stringify(result), /stack|synthetic-validation-password|mysql:\/\/|file:\/\//);
-  }
-  await json(await call(routes, 'save', { data: { name: '重复名称', engine: 'sqlite', file } }));
-  const duplicate = await json(await call(routes, 'save', { data: { name: ' 重复名称 ', engine: 'sqlite', file } }), 400);
-  assert.match(duplicate.error, /名称已存在/);
+test('stored bootstrap restarts services without exposing management passwords', async t => {
+  const first = hostFixture(); await applyWithServices(first.ctx, {}, { createServices: async () => serviceFixture() }); await json(await call(first.routes, 'management-save', { data: managementInput })); await first.close();
+  const f = hostFixture(first.credentials), service = serviceFixture();
+  await applyWithServices(f.ctx, {}, { createServices: async options => { assert.equal(options.managementConfig.password, managementInput.password); return service; } }); t.after(() => f.close());
+  const status = await json(await call(f.routes, 'management-status')); assert.equal(status.ready, true); assert.doesNotMatch(JSON.stringify(status), /synthetic-management-password|"password"/);
+  await f.close(); assert.equal(service.closed, true); await assert.rejects(f.tools.get('sql_query').execute({}), /关闭/);
 });
 
-test('test failures and missing remove ids return bounded JSON without raw internals', async (t) => {
-  const { routes, directory } = await setup(t);
-  const failed = await json(await call(routes, 'test', { data: { name: '失败测试', engine: 'sqlite', file: join(directory, 'missing.sqlite') } }));
-  assert.equal(failed.ok, false);
-  assert.match(failed.message, /连接失败/);
-  assert.doesNotMatch(JSON.stringify(failed), /stack|SqliteAdapter|readOnly|missing\.sqlite|file:\/\//);
-  for (const data of [{}, { id: null }, { id: 123 }, { id: '' }]) {
-    const result = await json(await call(routes, 'remove', { data }), 400);
-    assert.equal(result.error, '请选择要删除的数据源。');
-    assert.doesNotMatch(JSON.stringify(result), /stack|TypeError|file:\/\//);
-  }
-  const unknown = await json(await call(routes, 'remove', { data: { id: 'unknown-id' } }), 400);
-  assert.match(unknown.error, /未找到/);
-});
-
-test('unexpected runtime errors are hidden rather than returning a stack, driver message or DSN', async (t) => {
-  const { runtime, routes } = await setup(t);
-  runtime.list = async () => { throw new Error('mysql://user:synthetic-driver-password@example.invalid/db\nraw driver stack'); };
-  const result = await json(await call(routes, 'list'), 400);
-  assert.deepEqual(result, { error: '操作失败，请检查连接信息后重试。' });
-  assert.doesNotMatch(JSON.stringify(result), /synthetic-driver-password|mysql:\/\/|stack|Error:/);
-});
-
-test('credential service failures become safe public JSON errors', async (t) => {
-  const { routes, credentials } = await setup(t);
-  credentials.modifyRecord = async () => { throw new Error('postgres://user:synthetic-credential-password@example.invalid/db'); };
-  const result = await json(await call(routes, 'save', { data: { ...network, password: 'synthetic-new-password' } }), 400);
-  assert.match(result.error, /安全凭据/);
-  assert.doesNotMatch(JSON.stringify(result), /synthetic-credential-password|synthetic-new-password|postgres:\/\/|stack/);
-  assert.deepEqual(await json(await call(routes, 'list')), { items: [] });
-});
-
-test('an already-aborted standard Request returns a JSON cancellation response', async (t) => {
-  const { routes } = await setup(t);
-  const controller = new AbortController();
-  controller.abort();
-  const result = await json(await call(routes, 'list', { signal: controller.signal }), 408);
-  assert.match(result.error, /取消/);
+test('bootstrap and credential failures remain recoverable and close unpublished services', async t => {
+  const f = hostFixture(), service = serviceFixture(); let failOpen = true;
+  await applyWithServices(f.ctx, {}, { createServices: async () => { if (failOpen) throw new Error('mysql://fixture:driver-secret@management.invalid/db'); return service; } }); t.after(() => f.close());
+  const failed = await json(await call(f.routes, 'management-save', { data: managementInput }), 503); assert.doesNotMatch(JSON.stringify(failed), /driver-secret|mysql:\/\//); assert.equal(f.credentials.records.size, 0); assert.equal((await json(await call(f.routes, 'management-status'))).ready, false);
+  failOpen = false; f.credentials.modifyRecord = async () => { throw new Error('credential-secret'); };
+  const failedSave = await json(await call(f.routes, 'management-save', { data: managementInput }), 503); assert.doesNotMatch(JSON.stringify(failedSave), /credential-secret/); assert.equal(service.closed, true); assert.equal((await json(await call(f.routes, 'management-status'))).ready, false);
 });

@@ -1,15 +1,66 @@
 {
   "name": "dsh-sql",
-  "version": "0.7.0-local.3",
-  "description": "数据源：连接管理、问题驱动的后台会话与持久回填、分批选表和关系确认；保留三个只读 SQL 工具。",
+  "version": "0.9.0-local.9",
+  "description": "数据源接入：只读目录、源表启停、问题与业务域辅助选表；独立 MySQL 管理库保存当前成果。",
   "type": "module",
   "main": "./index.js",
-  "exports": {".": "./index.js", "./client": "./client.js", "./package.json": "./package.json", "./cordis.patch.yml": "./cordis.patch.yml"},
-  "files": ["index.js", "runtime.js", "store.js", "flow.js", "host-bridge.js", "vendor/*.js", "client.js", "cordis.patch.yml", "README.md", "CHANGELOG.md", "LICENSE", "THIRD-PARTY-NOTICES.md"],
-  "scripts": {"test": "node --test test/*.test.mjs", "check": "node --check index.js && node --check client.js && node --check runtime.js && node --check store.js && node --check flow.js && node --check host-bridge.js"},
-  "dsh": {"bundle": {"patch": "./cordis.patch.yml"}, "client": {"platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-sidebar", "@deepseek-ai/dsh-client-connection"]}},
-  "engines": {"node": ">=24.0.0", "dsh": ">=0.2.1-rc.5"},
-  "dependencies": {"mysql2": "^3.11.0", "pg": "^8.23.0"},
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./host-bridge": "./host-bridge.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.js",
+    "runtime.js",
+    "store.js",
+    "flow.js",
+    "flow-store.js",
+    "management-db.js",
+    "annotation-store.js",
+    "service.js",
+    "task-prompts.js",
+    "selection-flow.js",
+    "sql-policy.js",
+    "freshness.js",
+    "migrations/*.sql",
+    "scripts/reset-management.sql",
+    "host-bridge.js",
+    "vendor/*.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check annotation-store.js && node --check service.js && node --check index.js && node --check client.js && node --check runtime.js && node --check store.js && node --check flow.js && node --check flow-store.js && node --check management-db.js && node --check task-prompts.js && node --check selection-flow.js && node --check sql-policy.js && node --check freshness.js && node --check vendor/tools.js && node --check vendor/adapters.js && node --check host-bridge.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-connection"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=24.0.0",
+    "dsh": ">=0.2.1-rc.5"
+  },
+  "dependencies": {
+    "mysql2": "^3.11.0",
+    "node-sql-parser": "5.4.0",
+    "pg": "^8.23.0"
+  },
   "license": "MIT",
   "author": "stardustlc; local datasource UI contributors"
 }

@@ -3,393 +3,1104 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
-    const engines = [{ id: 'mysql', name: 'MySQL', mark: 'My' }, { id: 'postgres', name: 'PostgreSQL', mark: 'Pg' }, { id: 'sqlite', name: 'SQLite', mark: 'Sq' }];
-    const engineOf = (id) => engines.find((item) => item.id === id) || engines[0];
-    const blank = (engine = 'mysql') => ({ name: '', description: '', engine, host: '127.0.0.1', port: engine === 'postgres' ? 5432 : 3306, user: '', database: '', file: '', password: '', clearPassword: false });
-    const copy = (value) => JSON.parse(JSON.stringify(value));
-    const statusNames = { queued: '排队中', dispatching: '正在创建会话', running: '执行中', succeeded: '已完成', partial: '部分完成', failed: '失败', canceled: '已取消', stale: '问题已变化' };
-    const relationTypes = { 'one-to-one': '一对一', 'one-to-many': '一对多', 'many-to-one': '多对一', 'many-to-many': '多对多' };
-    const selectedQuestions = (questions) => questions.filter((question) => question.selected).map(({ id, text }) => ({ id, text }));
-    const isPending = (run) => !['succeeded', 'canceled', 'stale'].includes(run.status) && (['queued', 'running'].includes(run.status) || run.batches.some((batch) => ['queued', 'dispatching', 'running'].includes(batch.status)));
-    // Inherit the active Host palette, including theme-pack overrides on body.
+    const { useEffect, useRef, useState } = React;
+    const engines = [['mysql', 'MySQL'], ['postgres', 'PostgreSQL'], ['sqlite', 'SQLite']];
+    const pageSize = 10;
+    const emptyFilters = { search: '', domain: '', days: '', empty: '' };
+    const engineName = (engine) => engines.find(([id]) => id === engine)?.[1] || engine;
+    const operationId = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const blankConnection = () => ({ name: '', description: '', engine: 'mysql', host: '127.0.0.1', port: 3306, user: '', database: '', file: '', password: '', clearPassword: false });
+    const connectionLabels = { running: '检测中', normal: '正常', failed: '异常', disabled: '已停用' };
+    const operationLabels = { scan: '正在刷新目录', 'ensure-scan': '正在检查目录', 'detect-freshness': '正在检测时效', 'detect-domains': '正在识别业务域', suggest: '正在分析选表依据', 'generalize-question': '正在泛化问题' };
+    const pendingRefresh = 30 * 60 * 1000;
     const css = `
-.dsh-ds{height:100%;overflow:auto;box-sizing:border-box;padding:30px clamp(22px,3.5vw,48px) 48px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);color-scheme:inherit;font:14px/1.55 "Segoe UI","Microsoft YaHei",sans-serif}
-.dsh-ds *{box-sizing:border-box}
-.dsh-ds .ds-wrap{max-width:1220px;margin:0 auto;min-width:0}
+.dsh-ds{height:100%;overflow:auto;padding:26px clamp(12px,3vw,44px) 40px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif}
+.dsh-ds,.dsh-ds *{box-sizing:border-box}
+.dsh-ds .ds-wrap{max-width:1240px;margin:auto;min-width:0}
 .dsh-ds h1,.dsh-ds h2,.dsh-ds h3,.dsh-ds p{margin:0}
-.dsh-ds h1{font-size:22px;font-weight:600}
-.dsh-ds h2{font-size:16px;font-weight:600}
-.dsh-ds h3{font-size:14px}
+.dsh-ds h1{font-size:22px;font-weight:600;overflow-wrap:anywhere}
+.dsh-ds h2{font-size:17px;font-weight:600}
+.dsh-ds h3{font-size:14px;font-weight:600}
 .dsh-ds button,.dsh-ds input,.dsh-ds select,.dsh-ds textarea{font:inherit;color-scheme:inherit}
 .dsh-ds button{cursor:pointer}
-.dsh-ds button:disabled{cursor:default;opacity:.48}
-.dsh-ds button:focus-visible,.dsh-ds summary:focus-visible,.dsh-ds tr:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:3px}
-.dsh-ds input:not([type=checkbox]),.dsh-ds select,.dsh-ds textarea{width:100%;min-width:0;border:1px solid var(--dsw-alias-border-l4);border-radius:7px;padding:9px 11px;background:var(--dsw-specific-input-major);color:var(--dsw-alias-label-primary);outline:none}
-.dsh-ds input::placeholder,.dsh-ds textarea::placeholder{color:var(--dsw-alias-label-tertiary);opacity:1}
+.dsh-ds button:disabled{cursor:default;opacity:.5}
+.dsh-ds :is(button,summary,input,select,textarea):focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
+.dsh-ds input:not([type=checkbox]),.dsh-ds select,.dsh-ds textarea{width:100%;min-width:0;border:1px solid var(--dsw-alias-border-l4);border-radius:7px;padding:7px 10px;background:var(--dsw-specific-input-major);color:var(--dsw-alias-label-primary)}
 .dsh-ds select option{background:var(--dsw-specific-input-major);color:var(--dsw-alias-label-primary)}
-.dsh-ds input:focus,.dsh-ds textarea:focus,.dsh-ds select:focus{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-business-primary) 15%,transparent)}
-.dsh-ds textarea{resize:vertical;line-height:1.6}
+.dsh-ds textarea{resize:vertical}
 .dsh-ds input[type=checkbox]{width:16px;height:16px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;flex:none;margin:0}
-.dsh-ds input[type=checkbox]:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:3px}
-.dsh-ds .ds-header,.dsh-ds .ds-section-head,.dsh-ds .ds-toolbar,.dsh-ds .ds-actions,.dsh-ds .ds-inline{display:flex;align-items:center;gap:12px}
-.dsh-ds .ds-header{justify-content:space-between;margin-bottom:25px;align-items:flex-start}
-.dsh-ds .ds-section-head{justify-content:space-between;margin-bottom:16px;flex-wrap:wrap}
-.dsh-ds .ds-toolbar{justify-content:space-between;flex-wrap:wrap;margin:16px 0}
-.dsh-ds .ds-actions{flex-wrap:wrap}
+.dsh-ds .ds-header,.dsh-ds .ds-row,.dsh-ds .ds-actions,.dsh-ds .ds-filters,.dsh-ds .ds-pagination{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dsh-ds .ds-header,.dsh-ds .ds-row,.dsh-ds .ds-pagination{justify-content:space-between}
+.dsh-ds .ds-header{gap:16px;margin:0 0 16px}
+.dsh-ds .ds-filters{margin:12px 0}
+.dsh-ds .ds-filters input{width:min(230px,100%)}
+.dsh-ds .ds-filters select{width:auto;max-width:100%}
 .dsh-ds .ds-muted{color:var(--dsw-alias-label-secondary);font-size:12px}
-.dsh-ds .ds-intro{color:var(--dsw-alias-label-secondary);margin-top:6px;font-size:13px}
-.dsh-ds .ds-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid var(--dsw-alias-border-l4);border-radius:7px;padding:8px 15px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);white-space:nowrap;line-height:1.4}
+.dsh-ds .ds-button,.dsh-ds summary.ds-button{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--dsw-alias-border-l4);border-radius:7px;padding:6px 12px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);white-space:nowrap;line-height:1.5}
+.dsh-ds .ds-button.compact{font-size:12px;padding:3px 8px;border-radius:5px}
 .dsh-ds .ds-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
 .dsh-ds .ds-button.primary{background:var(--dsw-alias-button-primary-fill);border-color:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}
-.dsh-ds .ds-button.primary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover);border-color:var(--dsw-alias-button-primary-hover)}
-.dsh-ds .ds-button.small{padding:5px 10px;font-size:12px}
+.dsh-ds .ds-button.primary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}
 .dsh-ds .ds-button.danger,.dsh-ds .ds-link.danger{color:var(--dsw-alias-state-error-primary)}
-.dsh-ds .ds-button.danger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);border-color:var(--dsw-alias-state-error-primary)}
-.dsh-ds .ds-link{border:0;background:transparent;padding:3px 0;color:var(--dsw-alias-state-business-primary);text-align:left;line-height:1.5}
+.dsh-ds .ds-link{border:0;background:transparent;padding:3px 0;color:var(--dsw-alias-state-business-primary);text-align:left;line-height:1.5;overflow-wrap:anywhere}
 .dsh-ds .ds-link:hover:not(:disabled){text-decoration:underline}
-.dsh-ds .ds-card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);border-radius:12px;padding:22px 24px;margin-bottom:20px;min-width:0}
-.dsh-ds .ds-table-wrap{overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1)}
+.dsh-ds .ds-table-wrap{overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:var(--dsw-alias-bg-layer-1)}
 .dsh-ds table{border-collapse:collapse;width:100%;text-align:left;font-size:13px;color:var(--dsw-alias-label-primary)}
-.dsh-ds th{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform)}
-.dsh-ds th,.dsh-ds td{padding:14px 18px;border-bottom:1px solid var(--dsw-alias-border-l2);vertical-align:middle}
-.dsh-ds tbody tr:last-child>td{border-bottom:0}
-.dsh-ds .ds-source-row{cursor:pointer}
-.dsh-ds .ds-source-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-ds .ds-source-name{display:flex;align-items:center;gap:12px;font-weight:500}
-.dsh-ds .ds-source-name .ds-link{color:var(--dsw-alias-label-primary);font-weight:500;font-size:14px}
-.dsh-ds .ds-logo{width:34px;height:34px;display:flex;align-items:center;justify-content:center;flex:none;border-radius:8px;background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary);font-size:12px;font-weight:600}
-.dsh-ds .ds-cell-actions{width:155px;white-space:nowrap}
-.dsh-ds .ds-cell-actions .ds-link+.ds-link{margin-left:18px}
-.dsh-ds .ds-empty{padding:64px 24px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:14px}
-.dsh-ds .ds-notice{padding:11px 14px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 35%,transparent);border-radius:8px;background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-label-primary);margin-bottom:17px;font-size:13px;overflow-wrap:anywhere}
-.dsh-ds .ds-notice.error{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent);background:var(--dsw-alias-interactive-bg-hover-danger)}
-.dsh-ds .ds-notice.success{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent);background:var(--dsw-alias-state-success-tertiary)}
-.dsh-ds .ds-tag{display:inline-block;border:1px solid var(--dsw-alias-border-l2);border-radius:5px;padding:2px 7px;font-size:11px;white-space:nowrap;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover);vertical-align:middle}
-.dsh-ds .ds-tag.running,.dsh-ds .ds-tag.queued,.dsh-ds .ds-tag.dispatching{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-state-business-tertiary);border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 40%,transparent)}
-.dsh-ds .ds-tag.succeeded{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-state-success-tertiary);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 40%,transparent)}
-.dsh-ds .ds-tag.failed,.dsh-ds .ds-tag.partial,.dsh-ds .ds-tag.stale{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-state-warn-tertiary);border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 45%,transparent)}
-.dsh-ds .ds-back{margin:0 0 18px}
-.dsh-ds .ds-heading-meta{display:flex;gap:10px;align-items:center;color:var(--dsw-alias-label-secondary);font-size:12px;margin-top:7px;overflow-wrap:anywhere}
-.dsh-ds .ds-step+.ds-step{border-left:1px solid var(--dsw-alias-border-l2)}
-.dsh-ds .ds-tabs{display:flex;gap:28px;border-bottom:1px solid var(--dsw-alias-border-l2);margin-bottom:22px}
-.dsh-ds .ds-tab{border:0;background:transparent;color:var(--dsw-alias-label-secondary);padding:0 0 13px;font-size:14px;border-bottom:2px solid transparent;display:flex;align-items:center;gap:8px}
-.dsh-ds .ds-tab.is-active{border-bottom-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-text)}
-.dsh-ds .ds-count{font-size:11px;line-height:19px;padding:0 6px;border-radius:4px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}
-.dsh-ds .ds-composer textarea{margin:13px 0 12px;min-height:112px}
-.dsh-ds .ds-check{display:inline-flex;align-items:center;gap:8px;font-size:12px}
-.dsh-ds .ds-question-text{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}
-.dsh-ds .ds-question-text textarea{min-height:65px;display:block;margin-bottom:6px}
-.dsh-ds .ds-question-kind{font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
-.dsh-ds .ds-question-kind.expanded{color:var(--dsw-alias-label-secondary)}
-.dsh-ds .ds-question-selected{background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-ds .ds-selection-cell{width:45px;padding-right:6px}
-.dsh-ds .ds-number-cell{width:40px;color:var(--dsw-alias-label-secondary);font-size:12px}
-.dsh-ds .ds-question-actions{white-space:nowrap;width:100px}
-.dsh-ds .ds-question-actions .ds-link+.ds-link{margin-left:12px}
-.dsh-ds .ds-filter{display:flex;gap:5px;flex-wrap:wrap}
-.dsh-ds .ds-filter button{border:0;background:transparent;padding:5px 10px;border-radius:5px;color:var(--dsw-alias-label-secondary);font-size:12px}
-.dsh-ds .ds-filter button:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-ds .ds-filter button.is-active{background:var(--dsw-alias-interactive-bg-active);color:var(--dsw-alias-brand-text)}
-.dsh-ds .ds-search{max-width:260px}
-.dsh-ds .ds-summary{font-size:12px;color:var(--dsw-alias-label-secondary)}
-.dsh-ds .ds-warning{color:var(--dsw-alias-label-primary);font-size:12px;border-left:3px solid var(--dsw-alias-state-warn-primary);padding-left:8px}
-.dsh-ds .ds-error-text{color:var(--dsw-alias-label-primary);border-left:3px solid var(--dsw-alias-state-error-primary);padding-left:8px;font-size:12px;margin-top:5px;overflow-wrap:anywhere}
-.dsh-ds .ds-session-id{font:11px/1.6 ui-monospace,monospace;overflow-wrap:anywhere;color:var(--dsw-alias-label-secondary)}
-.dsh-ds .ds-table-card{border:1px solid var(--dsw-alias-border-l2);border-radius:9px;margin-bottom:12px;overflow:hidden}
-.dsh-ds .ds-table-card.is-selected{border-color:var(--dsw-alias-border-l4)}
-.dsh-ds .ds-table-title{display:flex;align-items:center;gap:11px;padding:16px 18px;background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-ds .ds-table-meta{flex:1;min-width:0}
-.dsh-ds .ds-table-title strong{font-size:13px;overflow-wrap:anywhere}
-.dsh-ds .ds-table-title p{font-size:12px;color:var(--dsw-alias-label-secondary);margin-top:3px}
-.dsh-ds .ds-fields-details summary{padding:10px 18px;color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer;border-top:1px solid var(--dsw-alias-border-l2)}
-.dsh-ds .ds-fields-details td,.dsh-ds .ds-fields-details th{padding:9px 18px;font-size:12px}
-.dsh-ds .ds-relation{border:1px solid var(--dsw-alias-border-l2);border-radius:9px;padding:17px 18px;margin-bottom:12px;min-width:0}
-.dsh-ds .ds-relation.is-selected{border-color:var(--dsw-alias-border-l4)}
-.dsh-ds .ds-relation-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:13px}
-.dsh-ds .ds-relation-endpoints{display:grid;grid-template-columns:minmax(0,1fr) 30px minmax(0,1fr);gap:10px;align-items:start}
-.dsh-ds .ds-relation-side{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:9px;min-width:0}
-.dsh-ds .ds-small-label{display:block;font-size:11px;color:var(--dsw-alias-label-secondary);margin-bottom:5px}
-.dsh-ds .ds-relation-side select{font-size:12px;padding:7px}
-.dsh-ds .ds-arrow{font-size:20px;color:var(--dsw-alias-label-secondary);text-align:center;margin-top:21px}
-.dsh-ds .ds-relation-extra{display:grid;grid-template-columns:160px minmax(0,1fr);gap:12px;margin-top:13px}
-.dsh-ds .ds-relation-extra input,.dsh-ds .ds-relation-extra select{font-size:12px;padding:7px 9px}
-.dsh-ds .ds-relation-sources{border-top:1px solid var(--dsw-alias-border-l2);padding-top:12px;margin-top:14px;font-size:12px;overflow-wrap:anywhere}
-.dsh-ds .ds-relation-sources ul{padding-left:20px;color:var(--dsw-alias-label-secondary);margin:5px 0 10px}
-.dsh-ds .ds-relation-review{padding:10px 12px;background:var(--dsw-alias-state-warn-tertiary);border:1px solid color-mix(in srgb,var(--dsw-alias-state-warn-primary) 40%,transparent);border-radius:7px;margin-top:10px}
-.dsh-ds .ds-confirm-bar{display:flex;justify-content:space-between;align-items:center;gap:15px;flex-wrap:wrap;padding-top:18px;margin-top:18px;border-top:1px solid var(--dsw-alias-border-l2)}
-.dsh-ds .ds-modal{width:min(620px,calc(100vw - 64px));max-height:calc(100vh - 70px);overflow:auto;border:1px solid var(--dsw-alias-border-l4);border-radius:13px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding:0;box-shadow:0 20px 80px rgb(0 0 0 / .24)}
-/* Native dialog backdrops do not inherit body custom properties. */
-.dsh-ds .ds-modal::backdrop{background:rgb(0 0 0 / .45);backdrop-filter:blur(2px)}
-.dsh-ds .ds-modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:22px 25px 17px;border-bottom:1px solid var(--dsw-alias-border-l2)}
-.dsh-ds .ds-modal-head h2{font-size:17px}
-.dsh-ds .ds-close{border:0;background:transparent;color:var(--dsw-alias-label-secondary);font-size:24px;line-height:1;padding:1px 3px}
-.dsh-ds .ds-close:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-ds .ds-modal-body{padding:22px 25px}
-.dsh-ds .ds-form-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
-.dsh-ds .ds-field{display:block;min-width:0}
-.dsh-ds .ds-field.wide{grid-column:1/-1}
-.dsh-ds .ds-field>span{display:block;font-size:12px;color:var(--dsw-alias-label-secondary);margin-bottom:7px}
-.dsh-ds .ds-field small{display:block;font-size:11px;color:var(--dsw-alias-label-tertiary);line-height:1.6;margin-top:5px}
-.dsh-ds .ds-modal fieldset{padding:0;margin:0;border:0;min-width:0}
-.dsh-ds .ds-modal-foot{border-top:1px solid var(--dsw-alias-border-l2);padding:16px 25px;display:flex;justify-content:space-between;gap:15px;align-items:center}
-.dsh-ds .ds-delete-body{font-size:13px;line-height:1.8;overflow-wrap:anywhere}
-.dsh-ds .ds-space-top{margin-top:14px}
-.dsh-ds .ds-source-table{table-layout:fixed}
-.dsh-ds .ds-source-table th:first-child{width:260px}
-.dsh-ds .ds-source-table th:nth-child(2){width:150px}
-.dsh-ds .ds-source-table .ds-cell-actions{width:auto;text-align:right}
-.dsh-ds .ds-source-table .ds-source-name{min-width:0}
-.dsh-ds .ds-source-table .ds-source-name .ds-link{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dsh-ds .ds-subtabs{display:flex;gap:4px;width:fit-content;padding:4px;margin-bottom:26px;border-radius:9px;background:var(--dsw-alias-bg-module-platform)}
-.dsh-ds .ds-subtab{border:1px solid transparent;border-radius:6px;padding:7px 18px;background:transparent;color:var(--dsw-alias-label-secondary)}
-.dsh-ds .ds-subtab.is-active{border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-weight:600}
-.dsh-ds .ds-subtab:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-ds .ds-question-filters{display:flex;gap:10px;max-width:520px;flex:1}
-.dsh-ds .ds-question-filters select{width:150px;flex:none}
-.dsh-ds .ds-question-tools{margin-bottom:18px;flex-wrap:wrap}
-.dsh-ds .ds-question-table th,.dsh-ds .ds-question-table td{padding-top:16px;padding-bottom:16px}
-.dsh-ds .ds-question-actions{text-align:right;white-space:nowrap}
-.dsh-ds .ds-question-actions .ds-link+.ds-link{margin-left:16px}
-.dsh-ds .ds-task-status{padding:14px 18px;margin-bottom:22px;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:var(--dsw-alias-bg-layer-1);font-size:13px}
-.dsh-ds .ds-task-summary{display:flex;justify-content:space-between;gap:18px;align-items:center;flex-wrap:wrap}
-.dsh-ds .ds-task-summary .ds-actions{flex-wrap:wrap}
-.dsh-ds .ds-session-select{width:auto;max-width:220px;padding:5px 9px}
-.dsh-ds .ds-task-error{margin-top:10px}
-.dsh-ds .ds-task-error summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}
-.dsh-ds .ds-task-error .ds-error-text{max-height:140px;overflow:auto;margin-top:8px}
-.dsh-ds .ds-compose-settings{margin-top:18px;color:var(--dsw-alias-label-secondary)}
-.dsh-ds .ds-compose-settings summary{cursor:pointer;font-size:13px}
-.dsh-ds .ds-compose-settings label{display:block;max-width:580px;margin-top:12px;font-size:13px}
-.dsh-ds .ds-compose-settings input{display:block;margin-top:6px}
-@media(max-width:1450px){.dsh-ds{padding:24px 22px 40px}.dsh-ds .ds-card{padding:20px}.dsh-ds th,.dsh-ds td{padding:12px 14px}.dsh-ds .ds-relation-side{gap:7px}}
+.dsh-ds th{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform);white-space:nowrap}
+.dsh-ds th,.dsh-ds td{padding:10px 12px;border-bottom:1px solid var(--dsw-alias-border-l2);vertical-align:middle;overflow-wrap:anywhere}
+.dsh-ds tbody tr:last-child td{border-bottom:0}
+.dsh-ds tr.ds-new{background:var(--dsw-alias-state-business-tertiary)}
+.dsh-ds .ds-check-cell{width:38px}
+.dsh-ds .ds-source-table{min-width:820px}
+.dsh-ds .ds-catalog-table{min-width:620px}
+.dsh-ds .ds-small-table{min-width:450px}
+.dsh-ds .ds-ellipsis{max-width:260px}
+.dsh-ds .ds-empty{padding:32px 12px;text-align:center;color:var(--dsw-alias-label-secondary)}
+.dsh-ds .ds-notice{padding:9px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:var(--dsw-alias-state-business-tertiary);margin:8px 0 12px;overflow-wrap:anywhere}
+.dsh-ds .ds-notice.error{border-color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-interactive-bg-hover-danger)}
+.dsh-ds .ds-toast{position:fixed;z-index:1;right:16px;bottom:16px;box-shadow:0 4px 20px rgb(0 0 0 / .15);background:var(--dsw-alias-bg-layer-2);display:flex;align-items:center;gap:16px;max-width:calc(100vw - 32px)}
+.dsh-ds .ds-tag{display:inline-block;border:1px solid var(--dsw-alias-border-l2);border-radius:5px;padding:1px 6px;font-size:11px;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
+.dsh-ds .ds-tag+.ds-tag{margin-left:5px}
+.dsh-ds .ds-connection-status{display:inline-flex;gap:7px;align-items:center;white-space:nowrap}
+.dsh-ds .ds-connection-status::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary)}
+.dsh-ds .ds-connection-status.normal::before{background:var(--dsw-alias-state-success-primary)}
+.dsh-ds .ds-connection-status.failed::before{background:var(--dsw-alias-state-error-primary)}
+.dsh-ds .ds-pagination{margin-top:10px}
+.dsh-ds .ds-check{display:inline-flex;align-items:center;gap:8px;overflow-wrap:anywhere}
+.dsh-ds .ds-nowrap{white-space:nowrap}
+.dsh-ds .ds-modal{width:min(620px,calc(100% - 24px));height:min(600px,calc(100dvh - 24px));max-height:calc(100dvh - 24px);overflow:hidden;border:1px solid var(--dsw-alias-border-l4);border-radius:12px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding:0;box-shadow:0 20px 80px rgb(0 0 0 / .24)}
+.dsh-ds .ds-modal[open]{display:flex;flex-direction:column}
+.dsh-ds .ds-modal-wide{width:min(890px,calc(100% - 24px));height:min(760px,calc(100dvh - 24px))}
+.dsh-ds .ds-modal-basis{height:min(640px,calc(100dvh - 24px))}
+.dsh-ds .ds-modal-delete{height:min(360px,calc(100dvh - 24px))}
+.dsh-ds .ds-modal::backdrop{background:rgb(0 0 0 / .43)}
+.dsh-ds .ds-modal-head,.dsh-ds .ds-modal-body,.dsh-ds .ds-modal-footer{padding:16px 20px}
+.dsh-ds .ds-modal-head{flex:none;border-bottom:1px solid var(--dsw-alias-border-l2)}
+.dsh-ds .ds-modal-layout{display:flex;flex:1;flex-direction:column;min-height:0;margin:0}
+.dsh-ds .ds-modal-body{flex:1;min-height:0;overflow:auto}
+.dsh-ds .ds-modal-footer{flex:none;border-top:1px solid var(--dsw-alias-border-l2)}
+.dsh-ds .ds-modal-footer>.ds-modal-foot{margin-top:0}
+.dsh-ds .ds-modal-footer>.ds-pagination{margin:0 0 12px}
+.dsh-ds .ds-delete-list{padding-left:22px;overflow-wrap:anywhere}
+.dsh-ds .ds-close{border:0;background:transparent;color:var(--dsw-alias-label-secondary);font-size:24px;line-height:1;padding:2px 5px}
+.dsh-ds .ds-modal-foot{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:16px}
+.dsh-ds .ds-form,.dsh-ds .ds-basis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.dsh-ds .ds-basis>section{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:12px}
+.dsh-ds .ds-modal-basis .ds-modal-body{display:flex;flex-direction:column;overflow:hidden}
+.dsh-ds .ds-modal-basis .ds-basis{flex:1;min-height:0;grid-template-rows:minmax(0,1fr)}
+.dsh-ds .ds-basis>section>.ds-row{flex:none}
+.dsh-ds .ds-basis-list{flex:1;min-height:0;overflow:auto;align-content:start;padding-right:3px}
+.dsh-ds .ds-reference-list{flex:1;min-height:0;overflow:auto;align-content:start}
+.dsh-ds .ds-modal-originals{height:min(600px,calc(100dvh - 24px))}
+.dsh-ds .ds-reference-summary{flex:none;margin-bottom:10px}
+.dsh-ds .ds-stack{display:grid;gap:9px;margin-top:12px}
+.dsh-ds .ds-question-option{display:flex;align-items:flex-start;gap:9px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;padding:9px 10px;cursor:pointer;overflow-wrap:anywhere}
+.dsh-ds .ds-question-option input{margin-top:3px}
+.dsh-ds .ds-question-text{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
+.dsh-ds .ds-question-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:nowrap}
+.dsh-ds .ds-question-actions .ds-button{font-size:12px;padding:3px 8px;border-radius:5px}
+.dsh-ds .ds-questions-table{min-width:690px;table-layout:fixed}
+.dsh-ds .ds-questions-table th:first-child{width:52px}
+.dsh-ds .ds-questions-table th:nth-child(2){width:38%}
+.dsh-ds .ds-questions-table th:last-child{width:116px;text-align:right}
+.dsh-ds .ds-recommendation-table{min-width:720px;table-layout:fixed}
+.dsh-ds .ds-recommendation-table th:first-child{width:42px}
+.dsh-ds .ds-recommendation-table th:nth-child(2){width:27%}
+.dsh-ds .ds-recommendation-table th:nth-child(3){width:22%}
+.dsh-ds .ds-recommendation-table th:nth-child(4){width:14%}
+.dsh-ds .ds-table-links{display:grid;gap:9px;margin-top:9px}
+.dsh-ds .ds-table-link,.dsh-ds .ds-draft-candidate{min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;padding:10px}
+.dsh-ds .ds-table-link-head{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
+.dsh-ds .ds-table-name{font-weight:500;overflow-wrap:anywhere}
+.dsh-ds .ds-link-details{margin-top:7px;font-size:12px}
+.dsh-ds .ds-link-details summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}
+.dsh-ds .ds-link-details dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:5px 10px;margin:7px 0 0}
+.dsh-ds .ds-link-details dt{color:var(--dsw-alias-label-secondary)}
+.dsh-ds .ds-link-details dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.dsh-ds .ds-draft-list{min-height:0;overflow:auto;padding-right:3px}
+.dsh-ds .ds-draft-editor{display:flex;align-items:flex-start;gap:9px}
+.dsh-ds .ds-draft-editor input{margin-top:9px}
+.dsh-ds .ds-draft-editor textarea{flex:1}
+.dsh-ds .ds-draft-candidate .ds-table-links{margin-left:25px}
+.dsh-ds .ds-field>span{display:block;font-size:12px;color:var(--dsw-alias-label-secondary);margin-bottom:5px}
+.dsh-ds .ds-wide{grid-column:1/-1}
+.dsh-ds .ds-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.dsh-ds .ds-space{margin:12px 0}
+.dsh-ds .ds-switch{appearance:none;width:32px;height:18px;background:var(--dsw-alias-bg-module-platform);border:1px solid var(--dsw-alias-border-l4);border-radius:12px;vertical-align:middle;padding:2px}
+.dsh-ds .ds-switch::after{content:'';display:block;width:12px;height:12px;border-radius:50%;background:var(--dsw-alias-label-secondary)}
+.dsh-ds .ds-switch[aria-checked=true]{background:var(--dsw-alias-button-primary-fill);border-color:var(--dsw-alias-button-primary-fill)}
+.dsh-ds .ds-switch[aria-checked=true]::after{margin-left:auto;background:var(--dsw-alias-label-primary-foreground)}
+.dsh-ds .ds-loading{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--dsw-alias-border-l4);border-radius:8px;background:var(--dsw-alias-bg-layer-1);margin:12px 0}
+.dsh-ds .ds-loading>span[role=status]{flex:1}
+.dsh-ds .ds-spinner{width:18px;height:18px;flex:none;border:2px solid var(--dsw-alias-border-l4);border-top-color:var(--dsw-alias-state-business-primary);border-radius:50%;animation:ds-spin .8s linear infinite}
+@keyframes ds-spin{to{transform:rotate(360deg)}}
+.dsh-ds .ds-modal-scroll{overflow:hidden}
+.dsh-ds .ds-modal-scroll[open]{display:flex;flex-direction:column}
+.dsh-ds .ds-modal-scroll .ds-modal-head{flex:none}
+.dsh-ds .ds-modal-scroll .ds-modal-body{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.dsh-ds .ds-modal-scroll .ds-table-wrap{min-height:0;overflow:auto}
+.dsh-ds .ds-modal-scroll th{position:sticky;top:0;z-index:1}
+.dsh-ds .ds-modal-scroll .ds-modal-foot,.dsh-ds .ds-modal-scroll .ds-modal-body>.ds-row{flex:none}
+@media(max-width:650px){.dsh-ds .ds-basis,.dsh-ds .ds-form{grid-template-columns:1fr}.dsh-ds .ds-modal-basis .ds-basis{grid-template-rows:repeat(2,minmax(0,1fr))}.dsh-ds .ds-modal-head,.dsh-ds .ds-modal-body{padding:12px}.dsh-ds th,.dsh-ds td{padding:8px 10px}}
     `;
+
     async function api(operation, input, signal) {
-      const response = await fetch(`/api/datasources/${operation}`, { method: input === undefined ? 'GET' : 'POST', credentials: 'same-origin', cache: 'no-store', signal, ...(input === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) }) });
+      const options = input === undefined ? { method: 'GET' } : {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+      };
+      const response = await fetch(`/api/datasources/${operation}`, { ...options, credentials: 'same-origin', cache: 'no-store', signal });
       let value;
-      try { value = await response.json(); } catch { throw new Error('无法读取数据源服务的响应，请稍后重试。'); }
-      if (!response.ok) { const error = new Error(typeof value?.error === 'string' ? value.error : '操作失败，请稍后重试。'); error.status = response.status; throw error; }
+      try { value = await response.json(); } catch { throw new Error('无法读取数据源服务的响应，请重试。'); }
+      if (!response.ok) {
+        const error = new Error(typeof value?.error === 'string' ? value.error : '操作失败，请重试。');
+        error.status = response.status;
+        error.sessionId = value?.sessionId;
+        throw error;
+      }
       return value;
     }
+
     const button = (label, onClick, props = {}) => h('button', { type: 'button', className: 'ds-button', onClick, ...props }, label);
-    const tag = (status) => h('span', { className: `ds-tag ${status}` }, statusNames[status] || status);
+    const link = (label, onClick, props = {}) => button(label, onClick, props);
     const noticeView = (notice) => notice && h('div', { className: `ds-notice ${notice.type || ''}`, role: notice.type === 'error' ? 'alert' : 'status' }, notice.text);
-    function DatabaseIcon() {
-      return h('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.65, 'aria-hidden': true }, h('ellipse', { cx: 12, cy: 5.2, rx: 7.4, ry: 3 }), h('path', { d: 'M4.6 5.2v13.6c0 1.65 3.31 3 7.4 3s7.4-1.35 7.4-3V5.2M4.6 12c0 1.65 3.31 3 7.4 3s7.4-1.35 7.4-3' }));
+    const errorNotice = (error) => ({ type: 'error', text: error.message });
+    const tag = (text) => h('span', { className: 'ds-tag' }, text);
+    const searchInput = (label, value, onChange) => h('input', { type: 'search', 'aria-label': label, placeholder: label, value, onChange: (event) => onChange(event.target.value) });
+    const selectInput = (label, value, onChange, options, props = {}) => h('select', { 'aria-label': label, value, onChange: (event) => onChange(event.target.value), ...props }, options.map(([id, name]) => h('option', { key: id, value: id }, name)));
+    const check = (label, checked, onChange, props = {}) => h('input', { type: 'checkbox', 'aria-label': label, checked, onChange: (event) => onChange(event.target.checked), ...props });
+    const cell = (children, props) => h('td', props, children);
+    const matches = (search, ...values) => values.some((value) => String(value ?? '').toLowerCase().includes(search.trim().toLowerCase()));
+    const withChecked = (current, ids, checked) => {
+      const next = new Set(current);
+      for (const id of ids) { if (checked) next.add(id); else next.delete(id); }
+      return next;
+    };
+    const shownPage = (page, rows) => Math.min(page, Math.max(1, Math.ceil(rows.length / pageSize)));
+    const pageRows = (rows, page) => rows.slice((page - 1) * pageSize, page * pageSize);
+
+    function Pagination({ page, count, onPage }) {
+      const last = Math.max(1, Math.ceil(count / pageSize));
+      return h('nav', { className: 'ds-pagination', 'aria-label': '分页' },
+        h('span', { className: 'ds-muted' }, `${count} 条 · 第 ${page} / ${last} 页`),
+        h('div', { className: 'ds-actions' }, button('上一页', () => onPage(page - 1), { disabled: page === 1 }),
+          button('下一页', () => onPage(page + 1), { disabled: page === last })));
     }
+
+    function SelectAll({ label, rows, chosen, onChange, disabled }) {
+      const count = rows.filter((row) => chosen.has(row.id)).length;
+      return check(label, rows.length > 0 && count === rows.length, onChange, {
+        disabled: disabled || rows.length === 0, ref: (input) => { if (input) input.indeterminate = count > 0 && count < rows.length; },
+      });
+    }
+
+    function DataTable({ labels, rows, className, testId, empty = '没有匹配结果' }) {
+      return h('div', { className: 'ds-table-wrap' }, h('table', { className, 'data-testid': testId },
+        h('thead', null, h('tr', null, labels.map((label, index) => h('th', { key: index, scope: 'col', className: typeof label === 'string' ? undefined : 'ds-check-cell' }, label)))),
+        h('tbody', null, rows.length ? rows : h('tr', null, cell(empty, { colSpan: labels.length, className: 'ds-empty' })))));
+    }
+
+    function LoadingBar({ action, startedAt, onCancel, label }) {
+      const [now, setNow] = useState(Date.now);
+      useEffect(() => {
+        const timer = window.setInterval(() => setNow(Date.now()), 250);
+        return () => window.clearInterval(timer);
+      }, [startedAt]);
+      return h('div', { className: 'ds-loading' }, h('span', { className: 'ds-spinner', 'aria-hidden': true }),
+        h('span', { role: 'status' }, `${label || operationLabels[action] || '正在处理'} · 已用 ${Math.max(0, Math.floor((now - startedAt) / 1000))} 秒`),
+        onCancel && button('取消操作', onCancel));
+    }
+
+    function Dialog({ title, testId, onClose, children, footer, formProps, wide, size, busy, internalScroll }) {
+      const ref = useRef(null);
+      useEffect(() => {
+        const dialog = ref.current;
+        const previous = document.activeElement;
+        dialog.showModal();
+        return () => { dialog.close(); previous?.focus?.(); };
+      }, []);
+      return h('dialog', {
+        ref, className: `ds-modal${wide ? ' ds-modal-wide' : ''}${size ? ` ds-modal-${size}` : ''}${internalScroll ? ' ds-modal-scroll' : ''}`, 'aria-label': title, 'data-testid': testId,
+        onCancel: (event) => { event.preventDefault(); if (!busy) onClose(); },
+      }, h('header', { className: 'ds-modal-head ds-row' }, h('h2', null, title),
+        button('×', onClose, { className: 'ds-close', 'aria-label': `关闭${title}`, disabled: busy })),
+      h(formProps ? 'form' : 'div', { ...formProps, className: 'ds-modal-layout' },
+        h('div', { className: 'ds-modal-body' }, children),
+        footer && h('footer', { className: 'ds-modal-footer' }, footer)));
+    }
+
+    function Field({ label, name, draft, change, wide, multiline, ...props }) {
+      return h('label', { className: wide ? 'ds-field ds-wide' : 'ds-field' }, h('span', null, label),
+        h(multiline ? 'textarea' : 'input', { ...props, 'aria-label': label, value: draft[name] ?? '', onChange: (event) => change(name, event.target.value) }));
+    }
+
     function ConnectionDialog({ item, onClose, onSaved }) {
-      const [draft, setDraft] = React.useState(() => item ? { ...blank(item.engine), ...item, password: '', clearPassword: false } : blank());
-      const [busy, setBusy] = React.useState(''), [notice, setNotice] = React.useState(null);
-      const dialog = React.useRef(null), form = React.useRef(null), lifetime = React.useRef(null), writing = React.useRef(false);
-      React.useEffect(() => { const controller = new AbortController(); lifetime.current = controller; dialog.current?.showModal(); return () => { controller.abort(); lifetime.current = null; dialog.current?.close(); }; }, []);
-      const change = (key, value) => { setDraft((current) => key === 'engine' ? { ...current, engine: value, port: value === 'postgres' ? 5432 : 3306, password: '', clearPassword: false } : { ...current, [key]: value, ...(key === 'password' && value ? { clearPassword: false } : {}), ...(key === 'clearPassword' && value ? { password: '' } : {}) }); setNotice(null); };
+      const [draft, setDraft] = useState(() => ({ ...blankConnection(), ...item, password: '', clearPassword: false }));
+      const [busy, setBusy] = useState(''), [notice, setNotice] = useState(null);
+      const form = useRef(null), request = useRef(null);
+      useEffect(() => () => request.current?.abort(), []);
+      const change = (key, value) => {
+        setDraft((current) => {
+          if (key === 'engine') return { ...current, engine: value, port: value === 'postgres' ? 5432 : 3306, password: '', clearPassword: false };
+          if (key === 'clearPassword' && value) return { ...current, clearPassword: true, password: '' };
+          return { ...current, [key]: value, ...(key === 'password' && value ? { clearPassword: false } : {}) };
+        });
+        setNotice(null);
+      };
       const execute = async (action) => {
-        if (writing.current || !form.current?.reportValidity()) return;
-        writing.current = true; setBusy(action); setNotice(null);
-        const signal = lifetime.current.signal;
-        const payload = { ...(draft.id ? { id: draft.id } : {}), name: draft.name, description: draft.description || '', engine: draft.engine, ...(draft.engine === 'sqlite' ? { file: draft.file } : { host: draft.host, port: Number(draft.port), user: draft.user, database: draft.database, password: draft.password, clearPassword: !!draft.clearPassword }) };
-        try { const result = await api(action, payload, signal); if (signal.aborted) return; if (action === 'save') { setDraft((value) => ({ ...value, password: '' })); onSaved(result.item); } else setNotice({ type: result.ok ? 'success' : 'error', text: result.message || (result.ok ? '连接成功。' : '连接失败，请检查配置。') }); }
-        catch (error) { if (!signal.aborted) setNotice({ type: 'error', text: error.message }); }
-        finally { writing.current = false; if (!signal.aborted) setBusy(''); }
-      };
-      const field = (key, label, options = {}) => { const { wide, help, ...input } = options; return h('label', { className: `ds-field${wide ? ' wide' : ''}`, key }, h('span', null, label), h('input', { 'aria-label': label, value: draft[key] ?? '', onChange: (event) => change(key, event.target.value), autoComplete: key === 'password' ? 'new-password' : 'off', ...input }), help && h('small', null, help)); };
-      return h('dialog', { ref: dialog, className: 'ds-modal', 'aria-labelledby': 'ds-connection-title', 'data-testid': 'connection-modal', onCancel: (event) => { event.preventDefault(); if (!writing.current) onClose(); } },
-        h('form', { ref: form, onSubmit: (event) => { event.preventDefault(); void execute('save'); } },
-          h('div', { className: 'ds-modal-head' }, h('h2', { id: 'ds-connection-title' }, item ? '编辑数据源连接' : '创建数据源连接'), button('×', onClose, { className: 'ds-close', disabled: !!busy, 'aria-label': '关闭连接弹框' })),
-          h('div', { className: 'ds-modal-body' }, noticeView(notice), h('fieldset', { disabled: !!busy }, h('div', { className: 'ds-form-fields' },
-            h('label', { className: 'ds-field wide' }, h('span', null, '数据源类型'), h('select', { 'aria-label': '数据源类型', value: draft.engine, onChange: (event) => change('engine', event.target.value) }, engines.map((engine) => h('option', { key: engine.id, value: engine.id }, engine.name)))),
-            field('name', '数据源名称', { required: true, wide: true, maxLength: 80, placeholder: '给这个连接起个名字', autoFocus: true }), field('description', '描述', { wide: true, maxLength: 500, placeholder: '选填' }),
-            ...(draft.engine === 'sqlite' ? [field('file', '数据库文件路径', { required: true, wide: true, placeholder: '本机已有 SQLite 文件的绝对路径' })] : [field('host', '主机地址 / IP', { required: true }), field('port', '端口', { required: true, type: 'number', min: 1, max: 65535 }), field('database', '数据库名称', { required: true }), field('user', '用户名', { required: true }), field('password', '密码', { type: 'password', wide: true, placeholder: draft.hasPassword ? '留空保留已保存的密码' : '输入数据库密码', help: draft.hasPassword ? '留空保留；填写新密码可替换。' : '密码保存在 DSH 凭据存储中。' }), draft.hasPassword && h('label', { key: 'clearPassword', className: 'ds-check', style: { gridColumn: '1 / -1' } }, h('input', { type: 'checkbox', checked: !!draft.clearPassword, onChange: (event) => change('clearPassword', event.target.checked) }), '清除已保存的密码') ])))),
-          h('div', { className: 'ds-modal-foot' }, button(busy === 'test' ? '正在测试…' : '测试连接', () => void execute('test'), { disabled: !!busy }), h('div', { className: 'ds-actions' }, button('取消', onClose, { disabled: !!busy }), h('button', { className: 'ds-button primary', type: 'submit', disabled: !!busy }, busy === 'save' ? '正在保存…' : '保存连接')))));
-    }
-    function DeleteDialog({ item, onClose, onRemoved }) {
-      const dialog = React.useRef(null), lifetime = React.useRef(null), writing = React.useRef(false);
-      const [busy, setBusy] = React.useState(false), [notice, setNotice] = React.useState(null);
-      React.useEffect(() => { const controller = new AbortController(); lifetime.current = controller; dialog.current?.showModal(); return () => { controller.abort(); dialog.current?.close(); }; }, []);
-      const remove = async () => { if (writing.current) return; writing.current = true; setBusy(true); setNotice(null); const signal = lifetime.current.signal; try { await api('remove', { id: item.id }, signal); if (!signal.aborted) onRemoved(item.id); } catch (error) { if (!signal.aborted) setNotice({ type: 'error', text: error.message }); } finally { writing.current = false; if (!signal.aborted) setBusy(false); } };
-      return h('dialog', { ref: dialog, className: 'ds-modal', 'aria-labelledby': 'ds-delete-title', onCancel: (event) => { event.preventDefault(); if (!writing.current) onClose(); } }, h('div', { className: 'ds-modal-head' }, h('h2', { id: 'ds-delete-title' }, '删除数据源连接'), button('×', onClose, { className: 'ds-close', disabled: busy, 'aria-label': '关闭删除弹框' })), h('div', { className: 'ds-modal-body ds-delete-body' }, noticeView(notice), h('p', null, `确定删除「${item.name}」的连接配置吗？`), h('p', { className: 'ds-muted ds-space-top' }, '正在执行的任务将由后台终止。')), h('div', { className: 'ds-modal-foot' }, h('span'), h('div', { className: 'ds-actions' }, button('取消', onClose, { disabled: busy }), button(busy ? '正在删除…' : '删除连接', () => void remove(), { className: 'ds-button danger', disabled: busy }))));
-    }
-    function RunStatus({ runs, busy, act, openSession, onTables, onRelations }) {
-      const run = runs[runs.length - 1];
-      if (!run) return null;
-      const analysis = run.kind === 'range', pending = isPending(run);
-      const failed = run.batches.find((batch) => batch.status === 'failed');
-      const canRetry = !!failed && ['failed', 'partial'].includes(run.status) && !run.batches.some((batch) => ['running', 'dispatching'].includes(batch.status));
-      const sessions = [...new Set(run.batches.map((batch) => batch.sessionId).filter(Boolean))];
-      const messages = analysis
-        ? { queued: '正在分析问题，完成后将自动显示数据表。', running: '正在分析问题，完成后将自动显示数据表。', succeeded: '分析已完成，可以查看数据表与关联关系。', partial: '分析尚未完成，已完成的内容会保留。', failed: '分析未完成，请重试或在会话中查看原因。', canceled: '分析已取消。', stale: '问题已修改，请按当前清单重新确认分析。' }
-        : { queued: '正在整理问题，完成后将自动更新列表。', running: '正在整理问题，完成后将自动更新列表。', succeeded: '问题列表已更新，请选择需要分析的问题。', partial: '问题整理尚未完成。', failed: '问题整理未完成，请重试或在会话中查看原因。', canceled: '问题整理已取消。', stale: '问题整理已失效。' };
-      return h('aside', { className: 'ds-task-status', 'aria-label': '后台分析状态', 'data-run-id': run.id },
-        h('div', { className: 'ds-task-summary' }, h('p', { role: 'status' }, messages[run.status] || statusNames[run.status]),
-          h('div', { className: 'ds-actions' },
-            analysis && run.status === 'succeeded' && button('查看数据表', onTables, { className: 'ds-link' }),
-            analysis && run.status === 'succeeded' && button('查看关联关系', onRelations, { className: 'ds-link' }),
-            canRetry && button(analysis ? '重试分析' : '重试整理', () => void act('retry', { runId: run.id, batchId: failed.id }), { className: 'ds-button small', disabled: !!busy }),
-            pending && button('取消任务', () => void act('cancel', { runId: run.id }), { className: 'ds-link', disabled: !!busy }),
-            sessions.length === 1 && button('查看会话', () => openSession(sessions[0]), { className: 'ds-link' }),
-            sessions.length > 1 && h('select', { className: 'ds-session-select', value: '', 'aria-label': '查看后台会话', onChange: (event) => { if (event.target.value) openSession(event.target.value); } }, h('option', { value: '' }, '查看后台会话'), sessions.map((id, index) => h('option', { value: id, key: id }, '会话 ' + (index + 1)))))),
-        failed?.error && h('details', { className: 'ds-task-error' }, h('summary', null, '查看错误信息'), h('p', { className: 'ds-error-text' }, failed.error)));
-    }
-    function FlowDetail({ item, onBack, onEdit, openSession: openWorkspaceSession }) {
-      const [tab, setTab] = React.useState('questions'), [flow, setFlow] = React.useState(null), [loading, setLoading] = React.useState(true);
-      const [notice, setNotice] = React.useState(null), [busy, setBusy] = React.useState(''), [input, setInput] = React.useState(''), [cwd, setCwd] = React.useState('');
-      const [questions, setQuestions] = React.useState([]), [tables, setTables] = React.useState([]), [relations, setRelations] = React.useState([]);
-      const [dirty, setDirty] = React.useState({ questions: false, tables: false, relations: false });
-      const [editingQuestion, setEditingQuestion] = React.useState(null), [questionFilter, setQuestionFilter] = React.useState('all'), [search, setSearch] = React.useState('');
-      const [questionPage, setQuestionPage] = React.useState('list');
-      const confirming = React.useRef(false), watchedRange = React.useRef(null);
-      const stateRef = React.useRef(null), dirtyRef = React.useRef({ questions: false, tables: false, relations: false });
-      const alive = React.useRef(false), writing = React.useRef(false), controllers = React.useRef(new Set()), draftSequence = React.useRef(0), analysisRef = React.useRef(null), focusAnalysis = React.useRef(false);
-      const markDirty = (kind, value = true) => { dirtyRef.current = { ...dirtyRef.current, [kind]: value }; setDirty({ ...dirtyRef.current }); };
-      const applyState = (value) => {
-        if (!alive.current) return;
-        if (!value || value.id !== item.id || !Number.isInteger(value.revision)) throw new Error('数据源流程响应不完整，请重试。');
-        if (stateRef.current && value.revision < stateRef.current.revision) return;
-        const next = { ...value, questions: value.questions || [], tables: value.tables || [], relations: value.relations || [], runs: value.runs || [], confirmations: value.confirmations || { tables: false, relations: false } };
-        if (!stateRef.current) watchedRange.current = [...next.runs].reverse().find((run) => run.kind === 'range' && isPending(run))?.id || null;
-        stateRef.current = next; setFlow(next);
-        if (!dirtyRef.current.questions) setQuestions(copy(next.questions));
-        if (!dirtyRef.current.tables) setTables(copy(next.tables));
-        if (!dirtyRef.current.relations) setRelations(copy(next.relations));
-      };
-      const readState = async () => { const controller = new AbortController(); controllers.current.add(controller); try { const result = await api('flow-state', { id: item.id }, controller.signal); if (alive.current && !controller.signal.aborted) applyState(result.state); } finally { controllers.current.delete(controller); } };
-      React.useEffect(() => {
-        alive.current = true; let stopped = false, timer;
-        const poll = async () => { try { await readState(); } catch (error) { if (!stopped && error.name !== 'AbortError') setNotice({ type: 'error', text: error.message }); } finally { if (!stopped) { setLoading(false); timer = window.setTimeout(poll, 2000); } } };
-        void poll();
-        return () => { stopped = true; alive.current = false; window.clearTimeout(timer); for (const controller of controllers.current) controller.abort(); controllers.current.clear(); };
-      }, [item.id]);
-      React.useEffect(() => { if (tab === 'questions' && questionPage === 'list' && focusAnalysis.current) { focusAnalysis.current = false; analysisRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); analysisRef.current?.focus({ preventScroll: true }); } }, [tab, questionPage]);
-      React.useEffect(() => {
-        const run = flow?.runs.find((candidate) => candidate.id === watchedRange.current);
-        if (!run || isPending(run)) return;
-        const latestRange = [...flow.runs].reverse().find((candidate) => candidate.kind === 'range');
-        if (run.kind === 'range' && run.id === latestRange?.id && run.status === 'succeeded' && flow.rangeCurrent && !dirtyRef.current.tables && !dirtyRef.current.relations) setTab('tables');
-        watchedRange.current = null;
-      }, [flow]);
-      const act = async (action, payload = {}) => {
-        if (!alive.current || writing.current || !stateRef.current) return false;
-        writing.current = true; setBusy(action); setNotice(null);
-        const controller = new AbortController(); controllers.current.add(controller);
+        if (request.current || !form.current?.reportValidity()) return;
+        const controller = new AbortController();
+        request.current = controller;
+        setBusy(action);
+        setNotice(null);
+        const { name, description, engine, host, port, user, database, file, password, clearPassword } = draft;
+        const target = engine === 'sqlite' ? { file } : { host, port: Number(port), user, database, password, clearPassword };
+        const metadata = item ? { id: item.id, ...(action === 'save' ? { revision: item.revision } : {}) } : {};
         try {
-          if (['organize', 'analyze'].includes(action) && cwd.trim() && !/^(?:[a-zA-Z]:[\\/]|\\\\[^\\]+\\[^\\]+|\/)/.test(cwd.trim())) throw new Error('执行工作区请填写绝对路径。');
-          const result = await api('flow-action', { id: item.id, revision: stateRef.current.revision, action, ...payload, ...(['organize', 'analyze'].includes(action) && cwd.trim() ? { cwd: cwd.trim() } : {}) }, controller.signal);
-          if (!alive.current || controller.signal.aborted) return false;
-          const kind = { 'save-questions': 'questions', 'save-tables': 'tables', 'save-relations': 'relations' }[action];
-          if (kind) markDirty(kind, false);
-          applyState(result.state);
-          if (action === 'organize') { setInput(''); setQuestionPage('list'); setNotice({ type: 'success', text: '问题已提交，整理完成后会自动更新列表。' }); }
-          else if (action.startsWith('save-')) setNotice({ type: 'success', text: '修改已保存。' });
-          else if (action.startsWith('confirm-')) setNotice({ type: 'success', text: action === 'confirm-tables' ? '已确认本轮表范围，请继续确认关联关系。' : '本轮表范围与关联关系已分别确认。' });
-          else if (action === 'review-relation') setNotice({ type: 'success', text: '已复核本轮问题依据，表和字段修改已保留。' });
-          else if (action === 'analyze') { watchedRange.current = [...result.state.runs].reverse().find((run) => run.kind === 'range')?.id || null; setNotice({ type: 'success', text: '已开始分析，完成后将自动显示数据表；详细过程可在会话中查看。' }); }
-          else if (action === 'cancel') setNotice({ type: 'success', text: '已提交取消任务。' });
-          else if (action === 'retry') { const run = result.state.runs.find((candidate) => candidate.id === payload.runId); watchedRange.current = run?.kind === 'range' ? run.id : null; setNotice({ type: 'success', text: run?.kind === 'range' ? '已重试失败的分析，已完成的结果会保留。' : '已重试问题整理。' }); }
-          return true;
+          const result = await api(action, { ...metadata, name, description, engine, ...target }, controller.signal);
+          if (controller.signal.aborted) return;
+          if (action === 'save') onSaved(result.item);
+          else setNotice({ type: result.ok ? 'success' : 'error', text: result.message || (result.ok ? '连接成功。' : '连接失败。') });
         } catch (error) {
-          if (alive.current && !controller.signal.aborted) { setNotice({ type: 'error', text: error.status === 409 ? `${error.message} 已回读最新状态，未保存的修改仍保留，请核对后重试。` : error.message }); try { await readState(); } catch { /* Keep the write error and local drafts. */ } }
-          return false;
-        } finally { controllers.current.delete(controller); writing.current = false; if (alive.current && !controller.signal.aborted) setBusy(''); }
+          if (!controller.signal.aborted) setNotice(errorNotice(error));
+        } finally {
+          request.current = null;
+          if (!controller.signal.aborted) setBusy('');
+        }
       };
-      const openSession = (id) => { try { if (openWorkspaceSession(id)) return; } catch { /* Keep the session id available when navigation is unavailable. */ } setNotice({ type: 'info', text: `当前界面无法直接打开该会话，请在会话列表中查看。会话 ID：${id}` }); };
-      const updateQuestion = (id, changes) => { markDirty('questions'); setQuestions((current) => current.map((question) => question.id === id ? { ...question, ...changes } : question)); };
-      const updateTable = (id, changes) => { markDirty('tables'); setTables((current) => current.map((table) => table.id === id ? { ...table, ...changes } : table)); };
-      const updateRelation = (id, changes) => { markDirty('relations'); setRelations((current) => current.map((relation) => relation.id === id ? { ...relation, ...changes } : relation)); };
-      const questionTaskPending = !!flow?.runs.some((run) => run.kind === 'questions' && isPending(run));
-      const rangeTaskPending = !!flow?.runs.some((run) => run.kind === 'range' && isPending(run));
-      const questionLocked = !!busy || questionTaskPending || rangeTaskPending;
-      const selectedCount = selectedQuestions(questions).length;
-      const selectedTables = tables.filter((table) => table.selected), selectedRelations = relations.filter((relation) => relation.selected);
-      const needsReview = selectedRelations.some((relation) => relation.needsSourceReview);
-      const showAnalysis = () => { setTab('questions'); setQuestionPage('list'); focusAnalysis.current = true; if (tab === 'questions' && questionPage === 'list') { focusAnalysis.current = false; analysisRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); analysisRef.current?.focus({ preventScroll: true }); } };
-      const saveQuestions = async () => {
-        if (questions.some((question) => !question.text.trim())) { setNotice({ type: 'error', text: '问题正文不能为空，请填写或删除空白问题。' }); return false; }
-        const ok = await act('save-questions', { questions: questions.map((question) => ({ ...(question.id.startsWith('draft-') ? {} : { id: question.id }), text: question.text.trim(), kind: question.kind, selected: !!question.selected })) });
-        if (ok) setEditingQuestion(null);
-        return ok;
-      };
-      const startAnalysis = async () => {
-        if (confirming.current || writing.current || questionTaskPending || rangeTaskPending || !selectedCount) return;
-        confirming.current = true;
+      const field = (name, label, props = {}) => h(Field, { key: name, name, label, draft, change, ...props });
+      return h(Dialog, { title: item ? '编辑数据源' : '新建数据源', testId: 'connection-modal', onClose, busy: !!busy,
+        formProps: { ref: form, onSubmit: (event) => { event.preventDefault(); void execute('save'); } },
+        footer: h('div', { className: 'ds-modal-foot' }, button(busy === 'test' ? '正在测试…' : '测试连接', () => void execute('test'), { disabled: !!busy }),
+          button('取消', onClose, { disabled: !!busy }), h('button', { type: 'submit', className: 'ds-button primary', disabled: !!busy }, busy === 'save' ? '正在保存…' : '保存')) },
+        noticeView(notice), h('div', { className: 'ds-form' },
+            h('label', { className: 'ds-field ds-wide' }, h('span', null, '数据源类型'), selectInput('数据源类型', draft.engine, (value) => change('engine', value), engines, { disabled: !!busy })),
+            field('name', '数据源名称', { required: true, wide: true, autoFocus: true, maxLength: 80, disabled: !!busy }),
+            field('description', '描述', { wide: true, maxLength: 500, disabled: !!busy }),
+            ...(draft.engine === 'sqlite' ? [field('file', '数据库文件路径', { required: true, wide: true, disabled: !!busy })] : [
+              field('host', '主机地址 / IP', { required: true, disabled: !!busy }),
+              field('port', '端口', { required: true, type: 'number', min: 1, max: 65535, disabled: !!busy }),
+              field('database', '数据库名称', { required: true, disabled: !!busy }),
+              field('user', '用户名', { required: true, disabled: !!busy }),
+              field('password', '密码', { type: 'password', wide: true, autoComplete: 'new-password', placeholder: item?.hasPassword ? '留空保留已保存的密码' : '', disabled: !!busy }),
+              item?.hasPassword && h('label', { key: 'clear', className: 'ds-check ds-wide' }, check('清除已保存的密码', draft.clearPassword, (value) => change('clearPassword', value), { disabled: !!busy }), '清除已保存的密码'),
+            ])));
+    }
+
+    function DeleteDialog({ title, kind, items, onClose, onRemove }) {
+      const [pending, setPending] = useState(items);
+      const [busy, setBusy] = useState(false), [notice, setNotice] = useState(null);
+      const request = useRef(null);
+      useEffect(() => () => request.current?.abort(), []);
+      const remove = async () => {
+        if (request.current) return;
+        const controller = new AbortController();
+        request.current = controller;
+        setBusy(true);
+        setNotice(null);
+        const remaining = [], errors = [];
         try {
-          if (dirtyRef.current.questions && !await saveQuestions()) return;
-          if (!alive.current || dirtyRef.current.questions) return;
-          await act('analyze', { batchSize: 5 });
-        } finally { confirming.current = false; }
+          for (let index = 0; index < pending.length; index++) {
+            const item = pending[index];
+            if (controller.signal.aborted) { remaining.push(...pending.slice(index)); break; }
+            try {
+              await onRemove(item, controller.signal);
+              if (controller.signal.aborted) { remaining.push(...pending.slice(index)); break; }
+            } catch (error) {
+              remaining.push(item);
+              errors.push(`${item.name || item.text}：${error.message}`);
+              if (controller.signal.aborted) { remaining.push(...pending.slice(index + 1)); break; }
+            }
+          }
+          if (controller.signal.aborted) return;
+          setPending(remaining);
+          if (!remaining.length) onClose();
+          else setNotice({ type: 'error', text: `还有 ${remaining.length} 个${kind}未删除。${errors.join('；')}` });
+        } finally { request.current = null; if (!controller.signal.aborted) setBusy(false); }
       };
-      const addManualQuestions = () => {
-        const lines = input.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-        if (!lines.length || questionLocked) return;
-        markDirty('questions');
-        setQuestions((current) => [...current, ...lines.map((text) => ({ id: 'draft-' + (++draftSequence.current), text, kind: 'original', selected: true }))]);
-        setInput(''); setQuestionPage('list');
-      };
-      const runList = flow && h(RunStatus, { runs: flow.runs, busy, act, openSession, onTables: () => setTab('tables'), onRelations: () => setTab('relations') });
-      let body = null;
-      if (flow && tab === 'questions') {
-        const visible = questions.filter((question) => (questionFilter === 'all' || questionFilter === 'selected' && question.selected || question.kind === questionFilter) && question.text.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
-        const questionRows = visible.map((question) => h('tr', { key: question.id, className: question.selected ? 'ds-question-selected' : '' },
-          h('td', { className: 'ds-selection-cell' }, h('input', { type: 'checkbox', checked: !!question.selected, disabled: questionLocked, onChange: (event) => updateQuestion(question.id, { selected: event.target.checked }), 'aria-label': '选择问题：' + (question.text || '新问题') })), h('td', { className: 'ds-number-cell' }, questions.indexOf(question) + 1),
-          h('td', { className: 'ds-question-text' }, editingQuestion === question.id ? h(React.Fragment, null, h('textarea', { value: question.text, rows: 3, disabled: questionLocked, autoFocus: true, 'aria-label': '问题正文', onChange: (event) => updateQuestion(question.id, { text: event.target.value }) }), button('完成编辑', () => setEditingQuestion(null), { className: 'ds-link', disabled: questionLocked })) : question.text || h('span', { className: 'ds-muted' }, '请填写问题')),
-          h('td', null, h('span', { className: 'ds-question-kind ' + question.kind }, question.kind === 'expanded' ? '扩展问题' : '原问题')),
-          h('td', { className: 'ds-question-actions' }, button('编辑', () => setEditingQuestion(question.id), { className: 'ds-link', disabled: questionLocked, 'aria-label': '编辑问题' + (questions.indexOf(question) + 1) }), button('删除', () => { markDirty('questions'); setQuestions((current) => current.filter((candidate) => candidate.id !== question.id)); if (editingQuestion === question.id) setEditingQuestion(null); }, { className: 'ds-link danger', disabled: questionLocked, 'aria-label': '删除问题' + (questions.indexOf(question) + 1) }))));
-        const listPage = h(React.Fragment, null,
-          h('div', { className: 'ds-section-head' }, h('div', null, h('h2', null, '已添加的问题'), h('p', { className: 'ds-intro' }, '选择需要分析的问题，可直接修改或删除。')), h('span', { className: 'ds-muted' }, '已选 ' + selectedCount + ' / ' + questions.length)),
-          questions.length > 0 && h('div', { className: 'ds-toolbar ds-question-tools' }, h('div', { className: 'ds-question-filters' }, h('input', { value: search, placeholder: '搜索问题', 'aria-label': '搜索问题', onChange: (event) => setSearch(event.target.value) }), h('select', { value: questionFilter, 'aria-label': '筛选问题', onChange: (event) => setQuestionFilter(event.target.value) }, [['all', '全部问题'], ['selected', '已选问题'], ['original', '原问题'], ['expanded', '扩展问题']].map(([value, label]) => h('option', { value, key: value }, label)))), h('div', { className: 'ds-actions' }, button('全选问题', () => { markDirty('questions'); setQuestions((current) => current.map((question) => ({ ...question, selected: true }))); }, { className: 'ds-link', disabled: questionLocked }), button('取消全选', () => { markDirty('questions'); setQuestions((current) => current.map((question) => ({ ...question, selected: false }))); }, { className: 'ds-link', disabled: questionLocked }))),
-          questions.length > 0 ? h('div', { className: 'ds-table-wrap ds-question-table-wrap' }, h('table', { className: 'ds-question-table' }, h('thead', null, h('tr', null, h('th', { className: 'ds-selection-cell' }, '选择'), h('th', { className: 'ds-number-cell' }, '序号'), h('th', null, '问题'), h('th', null, '来源'), h('th', { className: 'ds-question-actions' }, '操作'))), h('tbody', null, questionRows.length ? questionRows : h('tr', null, h('td', { colSpan: 5, className: 'ds-empty' }, '没有匹配的问题'))))) : h('div', { className: 'ds-empty' }, h('p', null, '还没有问题，请先填写需要分析的内容。'), button('填写问题', () => setQuestionPage('compose'), { className: 'ds-button', style: { marginTop: 16 } })),
-          h('div', { className: 'ds-confirm-bar' }, h('p', { className: 'ds-muted' }, dirty.questions ? '有未保存的修改，确认分析时会一并保存。' : '确认后按所选问题分析，完成后查看结果。'), h('div', { className: 'ds-actions' }, button('保存问题清单', () => void saveQuestions(), { disabled: questionLocked || !dirty.questions }), button('确认并分析', () => void startAnalysis(), { ref: analysisRef, className: 'ds-button primary', disabled: questionLocked || !selectedCount }))));
-        const composePage = h(React.Fragment, null,
-          h('div', { className: 'ds-section-head' }, h('div', null, h('h2', null, '填写需要分析的问题'), h('p', { className: 'ds-intro' }, '每行一个问题，整理后会添加到问题列表。'))),
-          h('textarea', { value: input, rows: 8, disabled: questionLocked, placeholder: '输入您希望这个数据源回答的问题，每行一个。', 'aria-label': '原问题，每行一个', onChange: (event) => setInput(event.target.value) }),
-          h('details', { className: 'ds-compose-settings' }, h('summary', null, '执行设置（可选）'), h('label', null, '执行工作区', h('input', { value: cwd, disabled: questionLocked, placeholder: '留空使用当前工作区，或填写绝对路径', 'aria-label': '执行工作区（可选）', onChange: (event) => setCwd(event.target.value) }))),
-          h('div', { className: 'ds-confirm-bar' }, h('p', { className: 'ds-muted' }, '添加后请在列表中选择、修改并确认。'), h('div', { className: 'ds-actions' }, button('手动添加问题', addManualQuestions, { disabled: questionLocked || !input.trim() }), button('整理问题', () => void act('organize', { text: input }), { className: 'ds-button primary', disabled: questionLocked || !input.trim() || dirty.questions }))));
-        body = h('section', { className: 'ds-card ds-question-page' },
-          h('nav', { className: 'ds-subtabs', role: 'tablist', 'aria-label': '问题视图', onKeyDown: (event) => { const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End']; if (!keys.includes(event.key)) return; event.preventDefault(); const next = event.key === 'Home' ? 'list' : event.key === 'End' ? 'compose' : questionPage === 'list' ? 'compose' : 'list'; setQuestionPage(next); document.getElementById('ds-question-tab-' + next)?.focus(); } }, [['list', '问题列表'], ['compose', '填写问题']].map(([key, label]) => button(label, () => setQuestionPage(key), { key, id: 'ds-question-tab-' + key, role: 'tab', tabIndex: questionPage === key ? 0 : -1, 'aria-selected': questionPage === key, 'aria-controls': 'ds-question-panel-' + key, className: 'ds-subtab' + (questionPage === key ? ' is-active' : '') }))),
-          h('div', { role: 'tabpanel', id: 'ds-question-panel-' + questionPage, 'aria-labelledby': 'ds-question-tab-' + questionPage }, questionPage === 'list' ? listPage : composePage));
-      }
-      if (flow && tab === 'tables') {
-        body = h('section', { className: 'ds-card' }, h('div', { className: 'ds-section-head' }, h('div', null, h('h2', null, '数据表范围'), h('p', { className: 'ds-intro' }, `已选择 ${selectedTables.length} / ${tables.length} 张表，勾选需要保留的字段。`)), h('div', { className: 'ds-actions' }, button('前往分析问题', showAnalysis, { className: 'ds-button small' }), button('保存表与字段', () => void act('save-tables', { tables }), { className: 'ds-button small', disabled: !!busy || !dirty.tables || rangeTaskPending }))), !flow.rangeCurrent && h('p', { className: 'ds-warning', style: { marginBottom: 14 } }, '当前问题尚无有效的分析结果，请先按最新问题完成分析。'),
-          tables.length ? tables.map((table) => h('article', { key: table.id, className: `ds-table-card${table.selected ? ' is-selected' : ''}` }, h('div', { className: 'ds-table-title' }, h('input', { type: 'checkbox', checked: !!table.selected, disabled: !!busy || rangeTaskPending, onChange: (event) => updateTable(table.id, { selected: event.target.checked }), 'aria-label': `选择数据表 ${table.name}` }), h('div', { className: 'ds-table-meta' }, h('strong', null, table.name), table.description && h('p', null, table.description)), h('span', { className: 'ds-tag' }, `${table.fields.filter((field) => field.selected).length} / ${table.fields.length} 字段`)),
-            h('details', { className: 'ds-fields-details' }, h('summary', null, `查看字段（${table.fields.length}）`), h('div', { className: 'ds-table-wrap', style: { border: 0, borderRadius: 0 } }, h('table', null, h('thead', null, h('tr', null, h('th', { className: 'ds-selection-cell' }, h('input', { type: 'checkbox', checked: table.fields.length > 0 && table.fields.every((field) => field.selected), disabled: !!busy || rangeTaskPending || !table.selected || !table.fields.length, 'aria-label': `选择 ${table.name} 的全部字段`, onChange: (event) => updateTable(table.id, { fields: table.fields.map((field) => ({ ...field, selected: event.target.checked })) }) })), h('th', null, '字段'), h('th', null, '类型'), h('th', null, '说明'))), h('tbody', null, table.fields.map((field) => h('tr', { key: field.name }, h('td', null, h('input', { type: 'checkbox', checked: !!field.selected, disabled: !!busy || rangeTaskPending || !table.selected, 'aria-label': `选择字段 ${table.name}.${field.name}`, onChange: (event) => updateTable(table.id, { fields: table.fields.map((candidate) => candidate.name === field.name ? { ...candidate, selected: event.target.checked } : candidate) }) })), h('td', null, field.name), h('td', { className: 'ds-muted' }, field.type), h('td', { className: 'ds-muted' }, field.description || '—'))))))))) : h('div', { className: 'ds-empty' }, '分析完成后将在这里显示实际数据表和字段。'),
-          h('div', { className: 'ds-confirm-bar' }, h('div', null, flow.confirmations.tables && !dirty.tables ? h('span', { className: 'ds-tag succeeded' }, '本轮表范围已确认') : h('p', { className: 'ds-muted' }, '保存选择后，确认本轮表范围。'), dirty.tables && h('p', { className: 'ds-warning' }, '表或字段有未保存的修改。'), needsReview && h('p', { className: 'ds-warning' }, '已选择的关系存在来源待复核项，请前往关联关系页核对。')), button('确认表范围', () => void act('confirm-tables'), { className: 'ds-button primary', disabled: !!busy || rangeTaskPending || dirty.tables || dirty.questions || dirty.relations || !flow.rangeCurrent || !selectedTables.length || flow.confirmations.tables })));
-      }
-      if (flow && tab === 'relations') {
-        const canonicalTables = flow.tables, currentRange = [...flow.runs].reverse().find((run) => run.kind === 'range');
-        const side = (relation, sideName, label) => {
-          const tableKey = `${sideName}Table`, fieldKey = `${sideName}Field`, table = canonicalTables.find((candidate) => candidate.id === relation[tableKey]), available = canonicalTables.filter((candidate) => candidate.selected), fields = table?.fields || [];
-          return h('div', { className: 'ds-relation-side' }, h('label', null, h('span', { className: 'ds-small-label' }, `${label}侧表`), h('select', { value: relation[tableKey] || '', disabled: !!busy || !relation.selected || rangeTaskPending, 'aria-label': `${label}侧表 ${relation.id}`, onChange: (event) => { const next = canonicalTables.find((candidate) => candidate.id === event.target.value); updateRelation(relation.id, { [tableKey]: event.target.value, [fieldKey]: next?.fields.find((field) => field.selected)?.name || next?.fields[0]?.name || '' }); } }, (!table || !table.selected) && h('option', { value: relation[tableKey] || '' }, table ? `${table.name}（不在范围）` : '请选择表'), available.map((candidate) => h('option', { key: candidate.id, value: candidate.id }, candidate.name)))), h('label', null, h('span', { className: 'ds-small-label' }, `${label}侧字段`), h('select', { value: relation[fieldKey] || '', disabled: !!busy || !relation.selected || rangeTaskPending || !table, 'aria-label': `${label}侧字段 ${relation.id}`, onChange: (event) => updateRelation(relation.id, { [fieldKey]: event.target.value }) }, !fields.some((field) => field.name === relation[fieldKey]) && h('option', { value: relation[fieldKey] || '' }, relation[fieldKey] || '请选择字段'), fields.map((field) => h('option', { key: field.name, value: field.name }, `${field.name}${field.selected ? '' : '（未选）'}`)))));
-        };
-        body = h('section', { className: 'ds-card' }, h('div', { className: 'ds-section-head' }, h('div', null, h('h2', null, '关联关系'), h('p', { className: 'ds-intro' }, `已选择 ${selectedRelations.length} / ${relations.length} 条关系，核对两侧表、字段与问题来源。`)), button('保存关系修改', () => void act('save-relations', { relations }), { className: 'ds-button small', disabled: !!busy || !dirty.relations || rangeTaskPending })), !flow.rangeCurrent && h('p', { className: 'ds-warning', style: { marginBottom: 14 } }, '当前问题尚无有效的分析结果，来源复核和确认需等待本轮分析完成。'),
-          relations.length ? relations.map((relation, index) => h('article', { className: `ds-relation${relation.selected ? ' is-selected' : ''}`, key: relation.id },
-            h('div', { className: 'ds-relation-head' }, h('label', { className: 'ds-check' }, h('input', { type: 'checkbox', checked: !!relation.selected, disabled: !!busy || rangeTaskPending, onChange: (event) => updateRelation(relation.id, { selected: event.target.checked }), 'aria-label': `选择关系${index + 1}` }), `关系 ${index + 1}`), relation.needsSourceReview && relation.selected ? h('span', { className: 'ds-tag stale' }, '来源待复核') : h('span', { className: 'ds-tag' }, relation.selected ? '已选择' : '未选择')),
-            h('div', { className: 'ds-relation-endpoints' }, side(relation, 'left', '左'), h('span', { className: 'ds-arrow', 'aria-hidden': true }, '→'), side(relation, 'right', '右')),
-            h('div', { className: 'ds-relation-extra' }, h('label', null, h('span', { className: 'ds-small-label' }, '关系类型'), h('select', { value: relation.type || 'many-to-one', disabled: !!busy || !relation.selected || rangeTaskPending, 'aria-label': `关系类型 ${relation.id}`, onChange: (event) => updateRelation(relation.id, { type: event.target.value }) }, Object.entries(relationTypes).map(([value, label]) => h('option', { key: value, value }, label)))), h('label', null, h('span', { className: 'ds-small-label' }, '关系说明'), h('input', { value: relation.description || '', disabled: !!busy || !relation.selected || rangeTaskPending, 'aria-label': `关系说明 ${relation.id}`, onChange: (event) => updateRelation(relation.id, { description: event.target.value }) }))),
-            h('div', { className: 'ds-relation-sources' }, relation.proposals?.length > 0 && h('details', { style: { marginBottom: 12 } }, h('summary', null, '候选分析依据（任务原始快照）'), ...relation.proposals.map((proposal, proposalIndex) => h('section', { key: `${proposal.runId}-${proposalIndex}`, style: { padding: '8px 0' } }, h('small', null, `分析任务 ${proposal.runId}`), h('ul', null, ...(proposal.sourceQuestions || []).map((question, questionIndex) => h('li', { key: `${question.questionId}-${questionIndex}` }, question.textAtSnapshot)))))), h('span', { className: 'ds-muted' }, '已确认的来源问题快照'), relation.sourceQuestions?.length ? h('ul', null, relation.sourceQuestions.map((question, sourceIndex) => h('li', { key: `${question.questionId}-${sourceIndex}` }, question.textAtSnapshot))) : h('p', { className: 'ds-muted' }, '尚未记录来源问题。'),
-              relation.needsSourceReview && relation.selected && h('div', { className: 'ds-relation-review' }, h('p', null, '来源问题已变化，请结合本轮问题和当前表、字段重新核对。'), currentRange?.questionSnapshot?.length > 0 && h('details', { style: { marginTop: 7 } }, h('summary', null, '查看本轮完整问题快照'), h('ul', null, currentRange.questionSnapshot.map((question) => h('li', { key: question.id }, question.text)))), h('div', { className: 'ds-toolbar', style: { marginBottom: 0 } }, h('span', { className: 'ds-muted' }, '复核会保留已保存的表和字段修改。'), button('确认本轮问题依据', () => void act('review-relation', { relationId: relation.id }), { className: 'ds-button small', disabled: !!busy || rangeTaskPending || dirty.relations || dirty.tables || dirty.questions || !flow.rangeCurrent })))))) : h('div', { className: 'ds-empty' }, '分析完成后将在这里显示候选关联关系。'),
-          h('div', { className: 'ds-confirm-bar' }, h('div', null, flow.confirmations.relations && !dirty.relations ? h('span', { className: 'ds-tag succeeded' }, '本轮关联关系已确认') : h('p', { className: 'ds-muted' }, '先确认表范围，再确认已选择的关联关系。'), dirty.relations && h('p', { className: 'ds-warning' }, '关系有未保存的修改，请先保存。'), needsReview && h('p', { className: 'ds-warning' }, '请逐条复核已选择关系的问题依据。')), button('确认关联关系', () => void act('confirm-relations'), { className: 'ds-button primary', disabled: !!busy || rangeTaskPending || dirty.questions || dirty.tables || dirty.relations || !flow.rangeCurrent || !flow.confirmations.tables || needsReview || flow.confirmations.relations })));
-      }
-      return h('div', { 'data-testid': 'datasource-detail', 'data-source-id': item.id }, button('‹ 返回数据源列表', onBack, { className: 'ds-link ds-back' }), h('header', { className: 'ds-header' }, h('div', null, h('h1', null, item.name), h('div', { className: 'ds-heading-meta' }, h('span', null, engineOf(item.engine).name), h('span', { 'aria-hidden': true }, '·'), h('span', null, item.engine === 'sqlite' ? item.file : item.database))), button('编辑连接', onEdit)),
-        h('nav', { className: 'ds-tabs', role: 'tablist', 'aria-label': '数据源详情' }, [['questions', '问题', questions.length], ['tables', '数据表', tables.length], ['relations', '关联关系', relations.length]].map(([key, label, count]) => button(h(React.Fragment, null, label, h('span', { className: 'ds-count' }, count)), () => setTab(key), { key, id: `ds-tab-${key}`, role: 'tab', 'aria-selected': tab === key, 'aria-controls': `ds-panel-${key}`, className: `ds-tab${tab === key ? ' is-active' : ''}` }))), noticeView(notice), runList, loading && h('div', { className: 'ds-card ds-empty', role: 'status' }, '正在加载…'), !loading && !flow && h('div', { className: 'ds-card ds-empty' }, '暂时无法加载，将自动重试。'), h('div', { role: 'tabpanel', id: `ds-panel-${tab}`, 'aria-labelledby': `ds-tab-${tab}`, 'aria-busy': !!busy }, body));
+      return h(Dialog, { title, testId: 'delete-dialog', size: 'delete', onClose, busy,
+        footer: h('div', { className: 'ds-modal-foot' }, button('取消', onClose, { disabled: busy }),
+          button(busy ? '正在删除…' : notice ? '重试删除' : '删除', () => void remove(), { className: 'ds-button danger', disabled: busy })) },
+        noticeView(notice), h('p', null, `确定删除以下 ${pending.length} 个${kind}${kind === '数据源' ? '及其目录和关联结果' : '及其关联'}？`),
+        h('ul', { className: 'ds-delete-list', 'aria-label': '待删除清单' }, pending.map((item) => h('li', { key: item.id }, item.name || item.text))));
     }
+
+    function ManagementSettings({ status, onReady, onClose }) {
+      const [draft, setDraft] = useState(() => ({ host: '127.0.0.1', port: 3306, database: '', user: '', ...status.settings, password: '' }));
+      const [busy, setBusy] = useState(false), [notice, setNotice] = useState(null);
+      const request = useRef(null);
+      useEffect(() => () => request.current?.abort(), []);
+      const save = async (event) => {
+        event.preventDefault();
+        if (request.current) return;
+        const controller = new AbortController();
+        request.current = controller;
+        setBusy(true);
+        setNotice(null);
+        try {
+          const result = await api('management-save', { ...draft, port: Number(draft.port) }, controller.signal);
+          if (controller.signal.aborted) return;
+          setDraft((previous) => ({ ...previous, password: '' }));
+          if (!result.ready) setNotice({ type: 'error', text: result.message || '管理库尚未就绪。' });
+          onReady(result);
+        } catch (error) {
+          if (!controller.signal.aborted) setNotice(errorNotice(error));
+        } finally {
+          request.current = null;
+          if (!controller.signal.aborted) setBusy(false);
+        }
+      };
+      return h(Dialog, { title: '配置管理库', testId: 'management-modal', onClose, busy,
+        formProps: { onSubmit: (event) => void save(event) },
+        footer: h('div', { className: 'ds-modal-foot' }, button('取消', onClose, { disabled: busy }),
+          h('button', { type: 'submit', className: 'ds-button primary', disabled: busy }, busy ? '正在配置…' : '保存管理库设置')) },
+        noticeView(notice), status.message && h('p', { className: 'ds-muted ds-space' }, status.message),
+        h('div', { className: 'ds-form' },
+          [['host', '管理库主机'], ['port', '管理库端口'], ['database', '管理库名称'], ['user', '管理库用户名'], ['password', '管理库密码']].map(([name, label]) =>
+            h(Field, { key: name, name, label, draft, required: name !== 'password', disabled: busy,
+              type: name === 'password' ? 'password' : name === 'port' ? 'number' : 'text',
+              ...(name === 'port' ? { min: 1, max: 65535 } : {}),
+              placeholder: name === 'password' && status.configured ? '留空保留密码' : '',
+              change: (key, value) => setDraft((previous) => ({ ...previous, [key]: value })),
+            }))));
+    }
+
+    function SourceList({ items, statuses, loading, onOpen, onCreate, onEdit, onDelete, onStatus, statusBusy }) {
+      const [search, setSearch] = useState(''), [engine, setEngine] = useState(''), [status, setStatus] = useState('');
+      const [page, setPage] = useState(1), [chosen, setChosen] = useState(() => new Set());
+      const [more, setMore] = useState(null);
+      useEffect(() => { setChosen((current) => new Set(items.filter(({ id }) => current.has(id)).map(({ id }) => id))); }, [items]);
+      const statusOf = (item) => item.enabled ? statuses[item.id]?.type || 'running' : 'disabled';
+      const filtered = items.filter((item) => matches(search, item.name) && (!engine || item.engine === engine) && (!status || statusOf(item) === status));
+      const currentPage = shownPage(page, filtered);
+      const selected = items.filter((item) => chosen.has(item.id));
+      const filter = (set) => (value) => { set(value); setPage(1); setMore(null); };
+      const choose = (ids, checked) => setChosen((current) => withChecked(current, ids, checked));
+      const count = (type) => items.filter((item) => statusOf(item) === type).length;
+      const rows = pageRows(filtered, currentPage).map((item) => h('tr', { key: item.id, 'data-testid': `source-row-${item.id}` },
+        cell(check(`选择数据源 ${item.name}`, chosen.has(item.id), (value) => choose([item.id], value))),
+        cell(link(item.name, () => onOpen(item))), cell(engineName(item.engine)),
+        cell(item.description || '—', { className: 'ds-ellipsis' }),
+        cell(h('span', { className: `ds-connection-status ${statusOf(item)}`, title: item.enabled ? statuses[item.id]?.message : undefined,
+          'data-testid': `source-connection-status-${item.id}` }, connectionLabels[statusOf(item)])),
+        cell(item.tableCount ?? '—'), cell(formatDate(item.createdAt)),
+        cell(h('div', { className: 'ds-actions' }, link(item.enabled ? '停用' : '启用', () => void onStatus([item], !item.enabled), { disabled: statusBusy, 'aria-label': `${item.enabled ? '停用' : '启用'} ${item.name}` }),
+          link('编辑', () => onEdit(item), { 'aria-label': `编辑 ${item.name}` }),
+          link('更多', () => setMore(more === item.id ? null : item.id), { 'aria-label': `更多 ${item.name}`, 'aria-expanded': more === item.id }),
+          more === item.id && link('删除', () => onDelete(item), { className: 'ds-button danger', 'aria-label': `删除 ${item.name}` })))));
+      return h(React.Fragment, null,
+        h('header', { className: 'ds-header' }, h('div', null, h('h1', null, '数据源'),
+          h('p', { className: 'ds-muted', role: 'status' }, `共 ${items.length} 个 · 正常 ${count('normal')} · 异常 ${count('failed')} · 已停用 ${count('disabled')}`)),
+          button('新建数据源', onCreate, { className: 'ds-button primary', disabled: loading, 'data-testid': 'create-datasource' })),
+        items.length > 0 && h('div', { className: 'ds-row' },
+          h('div', { className: 'ds-filters' }, searchInput('搜索数据源名称', search, filter(setSearch)),
+            selectInput('筛选数据源类型', engine, filter(setEngine), [['', '全部类型'], ...engines]),
+            selectInput('筛选连接状态', status, filter(setStatus), [['', '全部连接状态'], ['normal', '正常'], ['failed', '异常'], ['disabled', '已停用']])),
+          h('div', { className: 'ds-actions' }, selected.length > 0 && h('span', { className: 'ds-muted' }, `已选 ${selected.length} 个`),
+            button('批量启用', () => void onStatus(selected, true).then((succeeded) => choose(succeeded, false)), { disabled: statusBusy || !selected.length }),
+            button(`删除已选（${selected.length}）`, () => onDelete(selected), { className: 'ds-button danger', disabled: statusBusy || !selected.length }))),
+        loading ? h('p', { className: 'ds-empty', role: 'status' }, '正在加载…') :
+          h(DataTable, { testId: 'source-table', className: 'ds-source-table', empty: items.length ? '没有匹配的数据源' : '还没有数据源', rows,
+            labels: [h(SelectAll, { rows: filtered, chosen, label: '全选当前筛选数据源', onChange: (value) => choose(filtered.map(({ id }) => id), value) }),
+              '名称', '类型', '描述', '连接状态', '表数量', '创建时间', '操作'] }),
+        filtered.length > 0 && h(Pagination, { page: currentPage, count: filtered.length, onPage: setPage }));
+    }
+
     function DatasourcePage({ openSession }) {
-      const [items, setItems] = React.useState([]), [loading, setLoading] = React.useState(true), [notice, setNotice] = React.useState(null);
-      const [selectedId, setSelectedId] = React.useState(null), [connection, setConnection] = React.useState(null), [deleting, setDeleting] = React.useState(null);
-      const alive = React.useRef(false), controllers = React.useRef(new Set());
-      const refresh = async () => { const controller = new AbortController(); controllers.current.add(controller); try { const result = await api('list', undefined, controller.signal); if (alive.current && !controller.signal.aborted) setItems(result.items || []); } catch (error) { if (alive.current && !controller.signal.aborted) setNotice({ type: 'error', text: error.message }); } finally { controllers.current.delete(controller); if (alive.current && !controller.signal.aborted) setLoading(false); } };
-      React.useEffect(() => { alive.current = true; void refresh(); return () => { alive.current = false; for (const controller of controllers.current) controller.abort(); controllers.current.clear(); }; }, []);
+      const [items, setItems] = useState([]), [statuses, setStatuses] = useState({});
+      const [loading, setLoading] = useState(true), [notice, setNotice] = useState(null);
+      const [selectedId, setSelectedId] = useState(null), [connection, setConnection] = useState(null), [deleting, setDeleting] = useState(null);
+      const [management, setManagement] = useState(null), [managementOpen, setManagementOpen] = useState(false);
+      const [statusBusy, setStatusBusy] = useState(false);
+      const lifetime = useRef(null), tests = useRef(new Map()), statusRequest = useRef(false), sourceScans = useRef(new Map());
+      const opening = useRef(null);
+      const testConnection = async (item) => {
+        const { id } = item;
+        tests.current.get(id)?.abort();
+        if (!item.enabled) return;
+        const controller = new AbortController();
+        tests.current.set(id, controller);
+        const report = (type, message) => {
+          if (!controller.signal.aborted) setStatuses((current) => ({ ...current, [id]: { type, message } }));
+        };
+        report('running');
+        try {
+          const result = await api('test', { id }, controller.signal);
+          report(result.ok ? 'normal' : 'failed', result.message);
+          return result.ok && !controller.signal.aborted;
+        } catch (error) { report('failed', error.message); return false; }
+        finally { if (tests.current.get(id) === controller) tests.current.delete(id); }
+      };
+      const loadItems = async (signal) => {
+        const { items: sources } = await api('list', undefined, signal);
+        if (signal.aborted) return;
+        setItems(sources);
+        for (const item of sources) void testConnection(item);
+      };
+      useEffect(() => {
+        const controller = new AbortController();
+        lifetime.current = controller;
+        const { signal } = controller;
+        void (async () => {
+          try {
+            const status = await api('management-status', undefined, signal);
+            if (signal.aborted) return;
+            setManagement(status);
+            if (status.ready) await loadItems(signal);
+          } catch (error) { if (!signal.aborted) setNotice(errorNotice(error)); }
+          finally { if (!signal.aborted) setLoading(false); }
+        })();
+        return () => {
+          controller.abort();
+          for (const test of tests.current.values()) test.abort();
+          for (const scan of sourceScans.current.values()) scan.controller.abort();
+        };
+      }, []);
+      const setSource = (item) => setItems((current) => current.some(({ id }) => id === item.id)
+        ? current.map((candidate) => candidate.id === item.id ? item : candidate) : [...current, item]);
+      const setTableCount = (id, version, tableCount) => setItems((current) => current.map((item) =>
+        item.id === id && item.connectionVersion === version && item.tableCount !== tableCount ? { ...item, tableCount } : item));
       const selected = items.find((item) => item.id === selectedId);
-      const select = (item) => { setNotice(null); setSelectedId(item.id); };
-      const saved = (item) => { if (item) setItems((current) => current.some((candidate) => candidate.id === item.id) ? current.map((candidate) => candidate.id === item.id ? item : candidate) : [...current, item]); setConnection(null); setNotice({ type: 'success', text: '数据源连接已保存。' }); void refresh(); };
-      const removed = (id) => { setItems((current) => current.filter((item) => item.id !== id)); if (selectedId === id) setSelectedId(null); setDeleting(null); setNotice({ type: 'success', text: '数据源连接已删除。' }); };
-      const list = h(React.Fragment, null, h('header', { className: 'ds-header' }, h('div', null, h('h1', null, '数据源'), h('p', { className: 'ds-intro' }, '管理连接，查看问题与分析结果。')), button('+ 创建数据源连接', () => setConnection({ item: null }), { className: 'ds-button primary', disabled: loading })), noticeView(notice),
-        h('section', { className: 'ds-table-wrap', 'aria-label': '已保存的数据源' }, loading ? h('div', { className: 'ds-empty', role: 'status' }, '正在加载…') : !items.length ? h('div', { className: 'ds-empty', 'data-testid': 'datasource-empty' }, '没有数据源连接') : h('table', { className: 'ds-source-table' }, h('thead', null, h('tr', null, h('th', null, '数据源名称'), h('th', null, '数据源类型'), h('th', { className: 'ds-cell-actions' }, '操作'))), h('tbody', null, items.map((item) => h('tr', { key: item.id, className: 'ds-source-row', tabIndex: 0, 'data-testid': `source-row-${item.id}`, onClick: () => select(item), onKeyDown: (event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); select(item); } } }, h('td', null, h('div', { className: 'ds-source-name' }, h('span', { className: 'ds-logo', 'aria-hidden': true }, engineOf(item.engine).mark), button(item.name, (event) => { event.stopPropagation(); select(item); }, { className: 'ds-link' }))), h('td', null, h('span', { className: 'ds-tag' }, engineOf(item.engine).name)), h('td', { className: 'ds-cell-actions' }, button('编辑连接', (event) => { event.stopPropagation(); setConnection({ item }); }, { className: 'ds-link', 'aria-label': `编辑连接 ${item.name}` }), button('删除', (event) => { event.stopPropagation(); setDeleting(item); }, { className: 'ds-link danger', 'aria-label': `删除连接 ${item.name}` }))))))));
-      return h('div', { className: 'dsh-ds', 'data-testid': 'datasource-page' }, h('style', null, css), h('div', { className: 'ds-wrap' }, selected ? h(React.Fragment, null, noticeView(notice), h(FlowDetail, { key: selected.id, item: selected, onBack: () => { setSelectedId(null); setNotice(null); }, onEdit: () => setConnection({ item: selected }), openSession })) : list, connection && h(ConnectionDialog, { key: connection.item?.id || 'new', item: connection.item, onClose: () => setConnection(null), onSaved: saved }), deleting && h(DeleteDialog, { item: deleting, onClose: () => setDeleting(null), onRemoved: removed })));
+      const saveSource = (item) => {
+        const previous = items.find(({ id }) => id === item.id);
+        const { id, connectionVersion } = item;
+        setConnection(null);
+        setSource(item);
+        setNotice(null);
+        const needsScan = item.enabled && (!previous || previous.connectionVersion !== connectionVersion);
+        sourceScans.current.get(id)?.controller.abort();
+        const controller = new AbortController();
+        const scan = { controller, request: null };
+        sourceScans.current.set(id, scan);
+        void (async () => {
+          try {
+            const ok = await testConnection(item);
+            if (!ok || !needsScan || controller.signal.aborted || opening.current === id) return;
+            scan.request = api('flow-action', { id, action: 'ensure-scan', open: true, operationId: operationId() }, controller.signal);
+            const { state } = await scan.request;
+            if (!controller.signal.aborted) setTableCount(id, connectionVersion, state.catalog?.tables.length ?? null);
+          } catch (error) {
+            if (!controller.signal.aborted) setNotice({ type: 'error', text: `已保存「${item.name}」，目录读取失败。${error.message}` });
+          } finally { if (sourceScans.current.get(id) === scan) sourceScans.current.delete(id); }
+        })();
+      };
+      const changeSourceStatus = async (targets, enabled) => {
+        const changes = targets.filter((item) => item.enabled !== enabled);
+        const succeeded = targets.filter((item) => item.enabled === enabled).map(({ id }) => id);
+        if (!changes.length || statusRequest.current) return succeeded;
+        const { signal } = lifetime.current;
+        statusRequest.current = true;
+        setStatusBusy(true);
+        setNotice(null);
+        try {
+          const { results } = await api('source-status', { items: changes.map(({ id, revision }) => ({ id, revision, enabled })) }, signal);
+          if (signal.aborted) return succeeded;
+          const errors = [];
+          for (const result of results) {
+            if (result.ok) {
+              succeeded.push(result.id);
+              setSource(result.item);
+              if (!result.item.enabled) sourceScans.current.get(result.id)?.controller.abort();
+              void testConnection(result.item);
+            } else {
+              const name = changes.find(({ id }) => id === result.id)?.name || result.id;
+              const message = typeof result.error === 'string' ? result.error : result.error?.message;
+              errors.push(`${name}：${message || '操作失败'}`);
+            }
+          }
+          if (errors.length) setNotice({ type: 'error', text: errors.join('；') });
+        } catch (error) { if (!signal.aborted) setNotice(errorNotice(error)); }
+        finally { statusRequest.current = false; if (!signal.aborted) setStatusBusy(false); }
+        return succeeded;
+      };
+      const removeSource = async ({ id, revision }, signal) => {
+        await api('remove', { id, revision }, signal);
+        if (signal.aborted) return;
+        tests.current.get(id)?.abort();
+        sourceScans.current.get(id)?.controller.abort();
+        setItems((current) => current.filter((item) => item.id !== id));
+      };
+      const openSource = (item) => {
+        opening.current = item.id;
+        setNotice(null);
+        setSelectedId(item.id);
+      };
+      const createSource = () => {
+        setNotice(null);
+        if (management?.ready) setConnection({ item: null });
+        else setManagementOpen(true);
+      };
+      const managementReady = async (status) => {
+        setManagement(status);
+        if (!status.ready) return;
+        setManagementOpen(false);
+        setConnection({ item: null });
+        const { signal } = lifetime.current;
+        try { await loadItems(signal); } catch (error) { if (!signal.aborted) setNotice(errorNotice(error)); }
+      };
+      return h('div', { className: 'dsh-ds', 'data-testid': 'datasource-page' }, h('style', null, css),
+        h('div', { className: 'ds-wrap' }, noticeView(notice),
+          selected ? h(FlowDetail, { key: `${selected.id}:${selected.connectionVersion}`, item: selected, openSession,
+            onBack: () => { opening.current = null; setSelectedId(null); setNotice(null); }, onCatalog: setTableCount,
+            initialScan: sourceScans.current.get(selected.id)?.request })
+            : h(SourceList, { items, statuses, loading, onCreate: createSource, statusBusy, onStatus: changeSourceStatus,
+              onOpen: openSource, onEdit: (item) => setConnection({ item }), onDelete: (items) => setDeleting(Array.isArray(items) ? items : [items]) }),
+          managementOpen && h(ManagementSettings, { status: management || {}, onClose: () => setManagementOpen(false), onReady: managementReady }),
+          connection && h(ConnectionDialog, { item: connection.item, onClose: () => setConnection(null), onSaved: saveSource }),
+          deleting && h(DeleteDialog, { title: '删除数据源', kind: '数据源', items: deleting, onClose: () => setDeleting(null), onRemove: removeSource })));
     }
+
     function apply(ctx) {
-      // The supported optional lookup keeps this page usable without a Workspace provider.
-      const openSession = (id) => { const workspace = ctx.get?.('uiWorkspace'); if (typeof workspace?.openSession !== 'function') return false; workspace.openSession(id); return true; };
+      const openSession = (id) => {
+        const workspace = ctx.get?.('uiWorkspace');
+        if (typeof workspace?.openSession !== 'function') return false;
+        workspace.openSession(id);
+        return true;
+      };
       const Page = () => h(DatasourcePage, { openSession });
+      const DatabaseIcon = () => h('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.65, 'aria-hidden': true },
+        h('ellipse', { cx: 12, cy: 5.2, rx: 7.4, ry: 3 }), h('path', { d: 'M4.6 5.2v13.6c0 1.65 3.31 3 7.4 3s7.4-1.35 7.4-3V5.2M4.6 12c0 1.65 3.31 3 7.4 3s7.4-1.35 7.4-3' }));
       ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'datasources' }, Page));
       ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: 'datasources', order: 5, label: '数据源' }, DatabaseIcon));
+    }
+
+    const dateFormatter = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+    const timeFormatter = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' });
+    function formatDate(value, withTime = false) {
+      const date = new Date(value);
+      return value && Number.isFinite(date.getTime()) ? (withTime ? timeFormatter : dateFormatter).format(date) : '—';
+    }
+
+    const freshnessLabels = { UNDETECTED: '未检测', EMPTY: '空表', NO_TIME_COLUMN: '无时间字段', NO_TIME_VALUE: '无时间值', ERROR: '检测失败' };
+    function Freshness({ data }) {
+      if (!data) return h('span', { className: 'ds-muted' }, '未检测');
+      const time = data.lastDataAt;
+      const text = time ? (data.dateOnly || !data.hasTimezone ? time.replace('T', ' ') : formatDate(time, true)) : freshnessLabels[data.status] || '—';
+      const detail = [data.timeColumn && `字段 ${data.timeColumn}`, data.scannedAt && `检测于 ${formatDate(data.scannedAt, true)}`, data.error].filter(Boolean).join(' · ');
+      return h('div', { title: detail }, h('span', null, text), data.timeColumn && h('div', { className: 'ds-muted' }, data.timeColumn));
+    }
+
+    function recentEnough(data, days, now = new Date()) {
+      if (!days) return true;
+      if (data?.status !== 'OK' || !data.lastDataAt) return false;
+      const value = data.lastDataAt;
+      const lower = new Date(now);
+      lower.setDate(lower.getDate() - Number(days));
+      if (data.dateOnly) {
+        const localDate = (date) => new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+        return value >= localDate(lower) && value <= localDate(now);
+      }
+      const time = Date.parse(value);
+      return time >= lower.getTime() && time <= now.getTime();
+    }
+
+    const domainOf = (table) => table.domain || (table.category === 'SYSTEM' ? '系统支撑' : table.category === 'UNKNOWN' ? '其他' : '未归域');
+    function tableNames(tables) {
+      const counts = new Map();
+      for (const table of tables) counts.set(table.name, (counts.get(table.name) || 0) + 1);
+      return new Map(tables.map((table) => [table.id, counts.get(table.name) > 1 && table.schema ? `${table.schema}.${table.name}` : table.name]));
+    }
+
+    function TableDialog({ table, name, sourceId, snapshotId, canSample, onClose }) {
+      const [samples, setSamples] = useState(null);
+      const request = useRef(null);
+      useEffect(() => () => request.current?.abort(), []);
+      const readSamples = async () => {
+        if (request.current) return;
+        const controller = new AbortController();
+        request.current = controller;
+        setSamples({ loading: true });
+        try {
+          const result = await api('flow-samples', { id: sourceId, tableId: table.id, snapshotId }, controller.signal);
+          if (!controller.signal.aborted) setSamples(result);
+        } catch (error) { if (!controller.signal.aborted) setSamples({ sampleStatus: 'failed', error: error.message }); }
+        finally { request.current = null; }
+      };
+      const fields = table.fields || [];
+      const formatValue = (value) => typeof value === 'string' ? value : JSON.stringify(value);
+      const rows = fields.map((field) => {
+        const index = samples?.fieldNames?.indexOf(field.name) ?? -1;
+        const examples = index < 0 ? [] : samples.samples.map((row) => row[index]).filter((value) => value !== undefined).slice(0, 5);
+        return h('tr', { key: field.name }, cell(field.name), cell(field.type || '—'), cell(field.primaryKey ? '是' : '否'),
+          cell(field.notNull ? '是' : '否'), cell(field.sourceComment || '—'), samples?.fieldNames && cell(examples.map(formatValue).join('；') || '—'));
+      });
+      return h(Dialog, { title: name, testId: 'field-detail-dialog', onClose, wide: true,
+        footer: h('div', { className: 'ds-modal-foot' }, canSample && (!samples?.fieldNames || samples.sampleStatus === 'failed') &&
+          button(samples?.loading ? '正在读取…' : '加载样例', () => void readSamples(), { disabled: samples?.loading }), button('关闭', onClose)) },
+        table.sourceComment && h('p', { className: 'ds-space ds-text' }, table.sourceComment),
+        h(DataTable, { className: 'ds-small-table', labels: ['字段', '类型', '主键', '非空', '原始注释', ...(samples?.fieldNames ? ['样例'] : [])], rows, empty: '没有字段' }),
+        samples?.sampleStatus === 'failed' && noticeView({ type: 'error', text: samples.error || '加载样例失败。' }),
+        samples?.sampleStatus && samples.sampleStatus !== 'failed' && !samples.samples?.length && h('p', { className: 'ds-muted ds-space' }, '暂无样例'));
+    }
+
+    function CatalogTable({ tables, names, filters, onFilter, newIds, showNew, onShowAll, chosen, onChoose, onClear, disabled, onStatus, onInspect }) {
+      const [page, setPage] = useState(1);
+      const [onlySelected, setOnlySelected] = useState(false);
+      const selection = tables.filter(({ id }) => chosen.has(id));
+      const domains = [...new Set(tables.map(domainOf))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+      const filtered = tables.filter((table) => {
+        const { id, sourceComment, freshness } = table;
+        return (!showNew || newIds.has(id)) && (!onlySelected || chosen.has(id)) &&
+          matches(filters.search, names.get(id), sourceComment) && (!filters.domain || domainOf(table) === filters.domain) &&
+          (!filters.empty || filters.empty === (freshness?.empty == null ? 'unknown' : freshness.empty ? 'yes' : 'no')) && recentEnough(freshness, filters.days);
+      });
+      const currentPage = shownPage(page, filtered);
+      const first = useRef(null);
+      useEffect(() => {
+        if (showNew) {
+          setOnlySelected(false);
+          setPage(1);
+          first.current?.scrollIntoView?.({ block: 'nearest' });
+        }
+      }, [newIds, showNew]);
+      const changeFilter = (key) => (value) => { setPage(1); onFilter(key, value); };
+      const rows = pageRows(filtered, currentPage).map((table, index) => {
+        const { id, enabled, freshness, sourceComment } = table;
+        const name = names.get(id);
+        return h('tr', { key: id, ref: index === 0 ? first : undefined, className: newIds.has(id) ? 'ds-new' : undefined },
+          cell(check(`选择数据表 ${name}`, chosen.has(id), (value) => onChoose([id], value))),
+          cell(h('div', { className: 'ds-actions' }, link(name, () => onInspect(id)), newIds.has(id) && tag('新增'))),
+          cell(sourceComment || '—', { className: 'ds-ellipsis' }),
+          cell(freshness?.empty == null ? '未知' : freshness.empty ? '是' : '否'), cell(h(Freshness, { data: freshness })),
+          cell(button('', () => void onStatus([id], !enabled), { className: 'ds-switch', role: 'switch', 'aria-checked': enabled, 'aria-label': `启用 ${name}`, disabled })));
+      });
+      return h(React.Fragment, null,
+        h('div', { className: 'ds-filters' }, searchInput('搜索表名或原始注释', filters.search, changeFilter('search')),
+          selectInput('筛选时效', filters.days, changeFilter('days'), [['', '全部时效'], ['30', '近30天'], ['60', '近60天'], ['120', '近120天']]),
+          selectInput('筛选业务域', filters.domain, changeFilter('domain'), [['', '全部业务域'], ...domains.map((domain) => [domain, domain])]),
+          selectInput('筛选空表', filters.empty, changeFilter('empty'), [['', '全部表'], ['yes', '空表'], ['no', '非空表'], ['unknown', '未知']]),
+          showNew && link('返回全部表', () => { setPage(1); onShowAll(); })),
+        h('div', { className: 'ds-row ds-space' }, h('div', { className: 'ds-actions' },
+          h('span', { className: 'ds-muted', role: 'status' }, `已选 ${selection.length} 张表`),
+          link('清除所有勾选', () => { setPage(1); onClear(); }, { disabled: !selection.length }),
+          h('label', { className: 'ds-check' }, check('仅看已选', onlySelected, (value) => { setPage(1); setOnlySelected(value); }), '仅看已选')),
+          h('div', { className: 'ds-actions' }, ...[[true, '批量启用'], [false, '批量停用']].map(([enabled, label]) =>
+            button(label, () => void onStatus(selection.map(({ id }) => id), enabled), { key: label, disabled: disabled || !selection.length })))),
+        h(DataTable, { className: 'ds-catalog-table', testId: 'catalog-table', rows, labels: [
+          h(SelectAll, { label: '全选当前筛选数据表', rows: filtered, chosen, onChange: (value) => onChoose(filtered.map(({ id }) => id), value) }),
+          '表英文名', '原始注释', '是否空表', '最近数据时间', '启用'] }),
+        h(Pagination, { page: currentPage, count: filtered.length, onPage: setPage }));
+    }
+
+    function FlowDetail({ item, onBack, onCatalog, openSession, initialScan }) {
+      const [flow, setFlow] = useState(null), [loading, setLoading] = useState(true), [busy, setBusy] = useState('');
+      const [notice, setNotice] = useState(null), [sessionId, setSessionId] = useState(null), [toast, setToast] = useState(0);
+      const [chosen, setChosen] = useState(() => new Set()), [filters, setFilters] = useState(emptyFilters);
+      const [newIds, setNewIds] = useState(() => new Set()), [showNew, setShowNew] = useState(false), [inspect, setInspect] = useState(null);
+      const [aiOpen, setAiOpen] = useState(false), [resultOpen, setResultOpen] = useState(false);
+      const [refreshAt, setRefreshAt] = useState(null), [startedAt, setStartedAt] = useState(0);
+      const lifetime = useRef(null), state = useRef(null), active = useRef(null);
+      const enabled = flow?.enabled ?? item.enabled;
+      const catalog = flow?.catalog;
+      const tables = catalog?.tables || [];
+      const names = tableNames(tables);
+      const inspected = tables.find(({ id }) => id === inspect);
+      const hasRecommendation = resultOpen && !!flow?.draft;
+      const hasModal = aiOpen || hasRecommendation || !!inspected;
+      const applyState = (value) => {
+        const previous = state.current;
+        state.current = value;
+        setFlow(value);
+        if (!value.draft) setResultOpen(false);
+        onCatalog(item.id, item.connectionVersion, value.catalog?.tables.length ?? null);
+        if (value.removedTableIds?.length) setChosen((current) => withChecked(current, value.removedTableIds, false));
+        if (previous?.catalog && value.addedTableIds?.length) {
+          setNewIds(new Set(value.addedTableIds));
+          setFilters(emptyFilters);
+          setShowNew(true);
+          setToast(value.addedTableIds.length);
+        }
+      };
+      const read = async (signal) => {
+        const { state: value } = await api('flow-state', { id: item.id }, signal);
+        if (!signal.aborted) applyState(value);
+      };
+      const run = async (action, values = {}) => {
+        const signal = lifetime.current.signal;
+        if (active.current || signal.aborted) return false;
+        const controller = new AbortController();
+        const operation = { id: operationId(), controller, cancellable: !!operationLabels[action], canceling: false };
+        active.current = operation;
+        setStartedAt(Date.now());
+        setBusy(action);
+        setNotice(null);
+        try {
+          const result = await api('flow-action', { id: item.id, action, revision: state.current?.revision, operationId: operation.id, ...values }, controller.signal);
+          if (signal.aborted || controller.signal.aborted) return false;
+          applyState(result.state);
+          if (action !== 'cancel') setSessionId(result.sessionId || null);
+          return true;
+        } catch (error) {
+          if (signal.aborted || controller.signal.aborted || operation.canceling) return false;
+          setNotice(errorNotice(error));
+          if (error.sessionId) setSessionId(error.sessionId);
+          if (error.status === 409) {
+            try { await read(signal); } catch { /* Keep the conflict visible. */ }
+          }
+          return false;
+        } finally {
+          if (active.current === operation) active.current = null;
+          if (!signal.aborted) setBusy('');
+        }
+      };
+      const cancel = async (leaving = false) => {
+        const operation = active.current;
+        if (!operation || operation.canceling) return;
+        if (!operation.cancellable) { if (leaving) operation.controller.abort(); return; }
+        operation.canceling = true;
+        if (leaving) operation.controller.abort();
+        try {
+          const { state: value } = await api('flow-action', { id: item.id, action: 'cancel', operationId: operation.id });
+          if (!leaving && !lifetime.current.signal.aborted && active.current === operation) {
+            applyState(value);
+            operation.controller.abort();
+          }
+        } catch (error) { if (!leaving && !lifetime.current.signal.aborted) setNotice(errorNotice(error)); }
+        finally { operation.canceling = false; }
+      };
+      const refresh = async (automatic = false, open = false) => {
+        setRefreshAt(null);
+        if (await run(automatic ? 'ensure-scan' : 'scan', automatic ? { open } : {})) setRefreshAt(Date.now() + pendingRefresh);
+      };
+      const load = async () => {
+        const { signal } = lifetime.current;
+        setLoading(true);
+        setNotice(null);
+        try {
+          if (initialScan) await initialScan.catch(() => {});
+          if (!signal.aborted) await read(signal);
+        } catch (error) { if (!signal.aborted) setNotice(errorNotice(error)); }
+        finally { if (!signal.aborted) setLoading(false); }
+        if (!signal.aborted && (state.current?.enabled ?? item.enabled) && state.current) await refresh(true, true);
+      };
+      useEffect(() => {
+        const controller = new AbortController();
+        lifetime.current = controller;
+        void load();
+        return () => { controller.abort(); void cancel(true); };
+      }, []);
+      useEffect(() => {
+        if (!enabled || loading || busy || hasModal || !refreshAt) return undefined;
+        const timer = window.setTimeout(() => void refresh(true), Math.max(0, refreshAt - Date.now()));
+        return () => window.clearTimeout(timer);
+      }, [enabled, loading, busy, hasModal, refreshAt]);
+      useEffect(() => {
+        if (!toast) return undefined;
+        const timer = window.setTimeout(() => setToast(0), 4500);
+        return () => window.clearTimeout(timer);
+      }, [toast, newIds]);
+      const setTables = (tableIds, nextEnabled) => run('set-tables', { tableIds, enabled: nextEnabled });
+      const onSession = () => {
+        try { if (openSession(sessionId)) return; } catch { /* The session identifier remains available. */ }
+        setNotice({ type: 'info', text: `会话 ID ${sessionId}` });
+      };
+      const discardDraft = async () => {
+        if (!state.current?.draft || await run('cancel', { draftId: state.current.draft.id })) setResultOpen(false);
+      };
+      const submitBasis = async (values) => {
+        if (await run('suggest', values)) { setAiOpen(false); setResultOpen(true); }
+      };
+      const locked = !!busy;
+      return h(React.Fragment, null,
+        h('div', { className: 'ds-space' }, link('返回数据源', onBack)),
+        h('header', { className: 'ds-header' }, h('div', null, h('h1', null, item.name),
+          h('p', { className: 'ds-muted' }, [engineName(item.engine), catalog ? `${tables.length} 张表` : '尚未扫描', !enabled && '已停用'].filter(Boolean).join(' · '))),
+        h('div', { className: 'ds-actions' }, sessionId && link('查看分析会话', onSession),
+          button('刷新目录', () => void refresh(), { disabled: !enabled || !flow || locked }),
+          button('时效检测', () => void run('detect-freshness'), { disabled: !enabled || !tables.length || locked }),
+          flow?.draft ? button('查看推荐结果', () => setResultOpen(true), { disabled: locked, className: 'ds-button primary' }) :
+            button('AI 辅助选表', () => setAiOpen(true), { disabled: !enabled || !tables.length || locked, className: 'ds-button primary' }))),
+        noticeView(!aiOpen && !resultOpen ? notice : null),
+        operationLabels[busy] && !aiOpen && h(LoadingBar, { action: busy, startedAt, onCancel: () => void cancel() }),
+        loading ? h('p', { role: 'status' }, '正在加载目录…') :
+          !flow ? button('重新加载', () => void load()) :
+            catalog && h(React.Fragment, null,
+              h('p', { className: 'ds-muted' }, `最近刷新 ${formatDate(catalog.scannedAt, true)}`),
+              h(CatalogTable, { tables, names, filters, onFilter: (key, value) => setFilters((current) => ({ ...current, [key]: value })), newIds, showNew,
+                onShowAll: () => { setShowNew(false); setToast(0); }, chosen, onChoose: (ids, checked) => setChosen((current) => withChecked(current, ids, checked)),
+                onClear: () => setChosen(new Set()), disabled: locked, onStatus: setTables, onInspect: setInspect })),
+        toast > 0 && h('div', { className: 'ds-notice ds-toast', role: 'status' }, `发现 ${toast} 张新表`, link('关闭提示', () => setToast(0))),
+        inspected && h(TableDialog, { key: `${catalog.id}:${inspect}`, table: inspected, name: names.get(inspect), sourceId: item.id,
+          snapshotId: catalog.id, canSample: enabled && inspected.tableKind === 'table', onClose: () => setInspect(null) }),
+        aiOpen && h(BasisDialog, { sourceId: item.id, initialQuestions: flow.questions || [], domains: catalog.domains || [], names, tables, enabled,
+          busy, startedAt, notice, onAction: run,
+          onGeneralize: async (selected) => await run('generalize-question', { questions: selected.map(({ id, version }) => ({ id, version })) })
+            ? { draft: state.current.questionDraft, questions: state.current.questions } : null,
+          onQuestionsChanged: (questions) => applyState({ ...state.current, questions }),
+          onConfirmQuestions: async (values) => await run('confirm-question-draft', values) ? state.current.questions : null,
+          onClose: () => { setAiOpen(false); setNotice(null); }, onCancel: () => void cancel(),
+          onDetect: () => run('detect-domains'), onSuggest: submitBasis }),
+        resultOpen && flow?.draft && h(RecommendationDialog, { key: flow.draft.id, draft: flow.draft, tables, names, busy: locked, notice,
+          onClose: discardDraft, onConfirm: async (selectedTableIds) => {
+            if (await run('confirm-selection', { draftId: flow.draft.id, selectedTableIds })) setResultOpen(false);
+          } }));
+    }
+
+    const questionOrigin = (question) => ({ original: '原问题', generated: '泛化问题' }[question.origin] || '来源待确认');
+
+    function TableLinks({ links, tables, names, questionVersion }) {
+      const byId = new Map(tables.map((table) => [table.id, table]));
+      return h('div', { className: 'ds-table-links' }, links.map((entry) => {
+        const table = byId.get(entry.tableId);
+        const fieldNames = entry.fields?.map((name) => {
+          const comment = table?.fields?.find((field) => field.name === name)?.sourceComment;
+          return comment ? `${name}（${comment}）` : name;
+        }).join('、');
+        return h('div', { key: entry.tableId, className: 'ds-table-link' },
+          h('div', { className: 'ds-table-link-head' }, h('span', { className: 'ds-table-name' }, names.get(entry.tableId) || table?.name || entry.tableId),
+            table?.sourceComment && h('span', { className: 'ds-muted' }, table.sourceComment),
+            questionVersion !== undefined && (!table || entry.structureHash !== table.structureHash || entry.questionVersion !== questionVersion) && tag('待重新分析')),
+          h('details', { className: 'ds-link-details' }, h('summary', null, '关联详情'),
+            h('dl', null, h('dt', null, '字段'), h('dd', null, fieldNames || '—'),
+              h('dt', null, '依据'), h('dd', null, entry.reason || '—'))));
+      }));
+    }
+
+    function QuestionDialog({ question, names, tables, sourceId, onClose, onSaved }) {
+      const [draft, setDraft] = useState(() => ({ text: question?.text || '', answer: question?.answer || '' }));
+      const [busy, setBusy] = useState(false), [notice, setNotice] = useState(null);
+      const request = useRef(null);
+      useEffect(() => () => request.current?.abort(), []);
+      const save = async (event) => {
+        event.preventDefault();
+        if (request.current) return;
+        const text = draft.text.trim();
+        if (!text) { setNotice({ type: 'error', text: '请填写问题。' }); return; }
+        const controller = new AbortController();
+        request.current = controller;
+        setBusy(true);
+        setNotice(null);
+        const current = question ? { id: question.id, version: question.version } : {};
+        try {
+          const { item } = await api('questions-save', { ...current, text, answer: draft.answer.trim() }, controller.signal);
+          if (!controller.signal.aborted) await onSaved(item, controller.signal);
+        } catch (error) { if (!controller.signal.aborted) setNotice(errorNotice(error)); }
+        finally { request.current = null; if (!controller.signal.aborted) setBusy(false); }
+      };
+      const change = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
+      const links = question?.links?.filter((entry) => entry.sourceId === sourceId) || [];
+      return h(Dialog, { title: question ? '编辑问题' : '新增问题', testId: 'question-dialog', busy, onClose,
+        formProps: { onSubmit: (event) => void save(event) },
+        footer: h('div', { className: 'ds-modal-foot' }, button('取消', onClose, { disabled: busy }),
+          h('button', { type: 'submit', className: 'ds-button primary', disabled: busy }, busy ? '正在保存…' : '保存')) },
+        noticeView(notice), h('div', { className: 'ds-stack' },
+          h(Field, { name: 'text', label: '问题', draft, change, multiline: true, rows: 3, required: true, disabled: busy, autoFocus: true }),
+          h(Field, { name: 'answer', label: '答案（选填）', draft, change, multiline: true, rows: 3, disabled: busy }),
+          question && h('section', null, h('h3', null, '关联数据表'), links.length
+            ? h(TableLinks, { links, tables, names, questionVersion: question.version })
+            : h('p', { className: 'ds-muted' }, question.analysisStatus === 'empty' ? '已分析未找到关联表'
+              : question.analysisStatus === 'stale' ? '关联待重新分析' : '尚未分析关联'))));
+    }
+
+    function QuestionsDialog({ questions, chosen, onChoose, onChooseMany, onEdit, onRemove, onGeneralize, onClose, notice, busy, startedAt, onCancel }) {
+      const [search, setSearch] = useState(''), [page, setPage] = useState(1);
+      const filtered = questions.filter(({ text, answer }) => matches(search, text, answer));
+      const currentPage = shownPage(page, filtered);
+      const selected = questions.filter(({ id }) => chosen.has(id));
+      const rows = pageRows(filtered, currentPage).map((question) => h('tr', { key: question.id },
+        cell(check(`参考问题 ${question.text}`, chosen.has(question.id), (value) => onChoose(question.id, value), { disabled: !!busy })),
+        cell(h('div', { className: 'ds-question-text' }, h('span', { className: 'ds-text' }, question.text), tag(questionOrigin(question)))),
+        cell(h('div', { className: 'ds-text ds-ellipsis' }, question.answer || '—')),
+        cell(h('div', { className: 'ds-question-actions' }, button('编辑', () => onEdit(question), { disabled: !!busy, 'aria-label': `查看或编辑 ${question.text}` }),
+          button('删除', () => onRemove(question), { disabled: !!busy, className: 'ds-button danger', 'aria-label': `删除 ${question.text}` })))));
+      return h(Dialog, { title: '问题列表', testId: 'questions-dialog', onClose, wide: true, busy: !!busy,
+        footer: h(React.Fragment, null, h(Pagination, { page: currentPage, count: filtered.length, onPage: setPage }),
+          h('div', { className: 'ds-modal-foot' }, button('完成', onClose, { disabled: !!busy }))) },
+        noticeView(notice), operationLabels[busy] && h(LoadingBar, { action: busy, startedAt, onCancel }),
+        h('div', { className: 'ds-row ds-space' }, h('div', { className: 'ds-filters' }, searchInput('搜索问题或答案', search, (value) => { setSearch(value); setPage(1); })),
+          h('div', { className: 'ds-actions' }, button('泛化问题', onGeneralize, { disabled: !!busy || !questions.some(({ origin }) => origin === 'original') }),
+            button('新增问题', () => onEdit(null), { disabled: !!busy, className: 'ds-button primary' }))),
+        h('div', { className: 'ds-row ds-space' },
+          h('span', { className: 'ds-muted', role: 'status' }, `已选 ${selected.length} / ${questions.length} 个问题`),
+          h('div', { className: 'ds-actions' },
+            button(`删除已选（${selected.length}）`, () => onRemove(selected), { className: 'ds-button danger compact', disabled: !!busy || !selected.length }),
+            h('label', { className: 'ds-check' }, h(SelectAll, { label: '全选当前搜索问题', rows: filtered, chosen, disabled: !!busy,
+              onChange: (value) => onChooseMany(filtered.map(({ id }) => id), value) }), '全选'))),
+        h(DataTable, { className: 'ds-questions-table', labels: ['参考', '问题', '答案', '操作'], rows, empty: '没有匹配的问题' }));
+    }
+
+    function OriginalQuestionsDialog({ questions, chosen, onChoose, onClose, onStart, busy }) {
+      const [search, setSearch] = useState('');
+      const originals = questions.filter(({ origin }) => origin === 'original');
+      const filtered = originals.filter(({ text, answer }) => matches(search, text, answer));
+      const selected = originals.filter(({ id }) => chosen.has(id));
+      return h(Dialog, { title: '选择原问题', testId: 'original-questions-dialog', size: 'originals', internalScroll: true, busy: !!busy, onClose,
+        footer: h('div', { className: 'ds-modal-foot' }, button('取消', onClose, { disabled: !!busy }),
+          button('开始泛化', () => void onStart(selected), { className: 'ds-button primary', disabled: !!busy || !selected.length })) },
+        h('div', { className: 'ds-row ds-space' }, h('div', { className: 'ds-filters', style: { flex: 1, margin: 0 } }, searchInput('搜索原问题或答案', search, setSearch)),
+          h('label', { className: 'ds-check' }, h(SelectAll, { label: '全选当前搜索原问题', rows: filtered, chosen, disabled: !!busy,
+            onChange: (value) => onChoose(filtered.map(({ id }) => id), value) }), '全选')),
+        h('p', { className: 'ds-muted', role: 'status' }, `已选 ${selected.length} / ${originals.length} 个原问题`),
+        h('div', { className: 'ds-stack ds-reference-list' }, filtered.map((question) => h('label', { key: question.id, className: 'ds-question-option' },
+          check(`泛化参考 ${question.text}`, chosen.has(question.id), (value) => onChoose([question.id], value), { disabled: !!busy }),
+          h('span', { className: 'ds-text' }, question.text))),
+        !filtered.length && h('p', { className: 'ds-empty' }, '没有匹配的原问题')));
+    }
+
+    function QuestionDraftDialog({ draft, questions, tables, names, busy, notice, onClose, onConfirm }) {
+      const [candidates, setCandidates] = useState(() => draft.candidates.map((candidate) => ({ ...candidate })));
+      const [chosen, setChosen] = useState(() => new Set(draft.candidates.map(({ id }) => id)));
+      const [error, setError] = useState(null);
+      const selected = candidates.filter(({ id }) => chosen.has(id));
+      const confirm = () => {
+        if (!selected.length || selected.length > 20 || selected.some(({ text }) => !text.trim())) {
+          setError({ type: 'error', text: '请选择 1～20 个问题，并填写所选问题内容。' });
+          return;
+        }
+        setError(null);
+        void onConfirm(selected.map(({ id, text }) => ({ id, text: text.trim() })));
+      };
+      return h(Dialog, { title: '泛化问题候选', testId: 'question-draft-dialog', wide: true, internalScroll: true, busy: !!busy, onClose,
+        footer: h('div', { className: 'ds-modal-foot' }, button('取消', onClose, { disabled: !!busy }),
+          button('保存所选', confirm, { className: 'ds-button primary', disabled: !!busy || !selected.length })) },
+        noticeView(error || notice),
+        h('details', { className: 'ds-link-details ds-reference-summary' }, h('summary', null, `参考 ${draft.questions.length} 个原问题`),
+          h('div', { className: 'ds-stack' }, draft.questions.map(({ id, version }) => {
+            const question = questions.find((entry) => entry.id === id && entry.version === version);
+            return h('div', { key: id }, h('p', { className: 'ds-text' }, question?.text || id), question?.answer && h('p', { className: 'ds-muted ds-text' }, question.answer));
+          }))),
+        draft.reason && h('p', { className: 'ds-muted ds-space' }, draft.reason),
+        draft.sampleNote && h('p', { className: 'ds-muted ds-space' }, draft.sampleNote),
+        busy && h('p', { role: 'status' }, busy === 'cancel' ? '正在取消…' : '正在保存所选问题…'),
+        h('div', { className: 'ds-row' }, h('label', { className: 'ds-check' },
+          h(SelectAll, { label: '全选泛化候选', rows: candidates, chosen, disabled: !!busy,
+            onChange: (value) => setChosen((current) => withChecked(current, candidates.map(({ id }) => id), value)) }), '全选'),
+          h('span', { className: 'ds-muted' }, `已选 ${selected.length} / ${candidates.length} 个问题`)),
+        h('div', { className: 'ds-stack ds-draft-list' }, candidates.map((candidate, index) => h('div', { key: candidate.id, className: 'ds-draft-candidate' },
+          h('div', { className: 'ds-draft-editor' },
+            check(`选择泛化候选 ${index + 1}`, chosen.has(candidate.id), (value) => setChosen((current) => withChecked(current, [candidate.id], value)), { disabled: !!busy }),
+            h('textarea', { 'aria-label': `泛化候选 ${index + 1}`, value: candidate.text, rows: 2, disabled: !!busy,
+              onChange: (event) => setCandidates((current) => current.map((entry) => entry.id === candidate.id ? { ...entry, text: event.target.value } : entry)) })),
+          candidate.text.trim() !== draft.candidates.find(({ id }) => id === candidate.id).text.trim() && h('p', { className: 'ds-muted' }, '内容已修改，关联待重新分析'),
+          h(TableLinks, { links: candidate.links || [], tables, names })))));
+    }
+
+    function BasisDialog({ sourceId, initialQuestions, domains, names, tables, enabled, busy, startedAt, notice, onClose, onCancel, onDetect, onSuggest, onAction, onGeneralize, onConfirmQuestions, onQuestionsChanged }) {
+      const [questions, setQuestions] = useState(initialQuestions);
+      const [chosen, setChosen] = useState(() => new Set(initialQuestions.map(({ id }) => id)));
+      const [chosenDomains, setChosenDomains] = useState(() => new Set());
+      const [more, setMore] = useState(false), [editing, setEditing] = useState(null), [deleting, setDeleting] = useState(null);
+      const [error, setError] = useState(null), [questionDraft, setQuestionDraft] = useState(null);
+      const [originalsOpen, setOriginalsOpen] = useState(false), [generalizeChosen, setGeneralizeChosen] = useState(() => new Set());
+      const [suggestLabel, setSuggestLabel] = useState('');
+      useEffect(() => {
+        const controller = new AbortController();
+        api('questions-list', { id: sourceId }, controller.signal).then(({ items }) => {
+          if (!controller.signal.aborted) setQuestions(items);
+        }).catch((failure) => { if (!controller.signal.aborted) setError(errorNotice(failure)); });
+        return () => controller.abort();
+      }, [sourceId]);
+      const chooseMany = (ids, checked) => setChosen((current) => withChecked(current, ids, checked));
+      const choose = (id, checked) => chooseMany([id], checked);
+      const selectedQuestions = questions.filter(({ id }) => chosen.has(id));
+      const questionIds = selectedQuestions.map(({ id }) => id);
+      const reusableCount = selectedQuestions.filter(({ analysisStatus }) => analysisStatus === 'linked').length;
+      const emptyCount = selectedQuestions.filter(({ analysisStatus }) => analysisStatus === 'empty').length;
+      const analysisCount = selectedQuestions.length - reusableCount - emptyCount;
+      const selectedDomains = domains.filter(({ name }) => chosenDomains.has(name)).map(({ name }) => name);
+      const submit = () => {
+        if (!questionIds.length && !selectedDomains.length) {
+          setError({ type: 'error', text: '请至少选择一个问题或业务域。' });
+          return;
+        }
+        setError(null);
+        setSuggestLabel(analysisCount ? `正在复用 ${reusableCount} 个问题关联，分析 ${analysisCount} 个问题` : '正在合并已分析结果');
+        void onSuggest({ questionIds, domains: selectedDomains });
+      };
+      const startEdit = (question) => { setError(null); setEditing({ question }); };
+      const saveQuestion = async (question, signal) => {
+        const { items } = await api('questions-list', { id: sourceId }, signal);
+        if (signal.aborted) return;
+        setQuestions(items);
+        onQuestionsChanged(items);
+        if (!editing.question) choose(question.id, true);
+        setEditing(null);
+      };
+      const removeQuestion = async ({ id, version }, signal) => {
+        await api('questions-remove', { id, version }, signal);
+        if (signal.aborted) return;
+        setQuestions((current) => current.filter((question) => question.id !== id));
+        choose(id, false);
+        setGeneralizeChosen((current) => withChecked(current, [id], false));
+      };
+      const generalize = async (selected) => {
+        setError(null);
+        setOriginalsOpen(false);
+        const result = await onGeneralize(selected);
+        if (result) {
+          setQuestions(result.questions);
+          setQuestionDraft(result.draft);
+        }
+      };
+      const cancelQuestionDraft = async () => {
+        if (await onAction('cancel', { questionDraftId: questionDraft.id })) setQuestionDraft(null);
+      };
+      const confirmQuestionDraft = async (candidates) => {
+        const updated = await onConfirmQuestions({ draftId: questionDraft.id, candidates });
+        if (!updated) return;
+        const previousIds = new Set(questions.map(({ id }) => id));
+        setChosen((current) => withChecked(current, updated.filter(({ id }) => !previousIds.has(id)).map(({ id }) => id), true));
+        setQuestions(updated);
+        setQuestionDraft(null);
+      };
+      return h(React.Fragment, null,
+        h(Dialog, { title: 'AI 选表依据', testId: 'ai-selection-dialog', wide: true, size: 'basis', busy: !!busy, onClose,
+          footer: h('div', { className: 'ds-modal-foot' }, button('取消', onClose, { disabled: !!busy }),
+            button('AI 选表', submit, { className: 'ds-button primary', disabled: !enabled || !!busy })) },
+          noticeView(error || notice), operationLabels[busy] && h(LoadingBar, { action: busy, startedAt, onCancel, label: busy === 'suggest' ? suggestLabel : undefined }),
+          h('div', { className: 'ds-basis' },
+            h('section', null, h('div', { className: 'ds-row' }, h('h3', null, '数据集辅助'), link('查看问题', () => { setMore(true); setError(null); }, { disabled: !!busy })),
+              h('div', { className: 'ds-row ds-space' }, h('span', { className: 'ds-muted' }, `已选 ${questionIds.length} / ${questions.length} 个问题`),
+                h('label', { className: 'ds-check' }, h(SelectAll, { label: '全选问题', rows: questions, chosen, disabled: !!busy,
+                  onChange: (value) => chooseMany(questions.map(({ id }) => id), value) }), '全选')),
+              h('p', { className: 'ds-muted' }, `可复用关联 ${reusableCount} 个，已分析无关联 ${emptyCount} 个，待分析 ${analysisCount} 个`),
+              h('div', { className: 'ds-stack ds-basis-list' }, questions.map((question) => h('label', { key: question.id, className: 'ds-question-option' },
+                check(`参考问题 ${question.text}`, chosen.has(question.id), (value) => choose(question.id, value), { disabled: !!busy }),
+                h('span', { className: 'ds-text' }, question.text))),
+                !questions.length && link('新增问题', () => startEdit(null), { disabled: !!busy }))),
+            h('section', null, h('div', { className: 'ds-row' }, h('h3', null, '业务域辅助'),
+              link(domains.length ? '重新识别' : '识别业务域', () => { setError(null); void onDetect(); }, { disabled: !enabled || !!busy })),
+              h('div', { className: 'ds-row ds-space' }, h('span', { className: 'ds-muted' }, `已选 ${selectedDomains.length} / ${domains.length} 个业务域`),
+                h('label', { className: 'ds-check' }, h(SelectAll, { label: '全选业务域', rows: domains.map(({ name }) => ({ id: name })), chosen: chosenDomains, disabled: !!busy,
+                  onChange: (value) => setChosenDomains((current) => withChecked(current, domains.map(({ name }) => name), value)) }), '全选')),
+              h('div', { className: 'ds-stack ds-basis-list' }, domains.map(({ name, description }) => h('label', { key: name, className: 'ds-check', title: description },
+                check(`参考业务域 ${name}`, chosenDomains.has(name), (value) => setChosenDomains((current) => withChecked(current, [name], value)), { disabled: !!busy }), name)))))),
+        more && h(QuestionsDialog, { questions, chosen, onChoose: choose, onChooseMany: chooseMany, onClose: () => { setMore(false); setError(null); },
+          onEdit: startEdit, onRemove: (items) => setDeleting(Array.isArray(items) ? items : [items]), onGeneralize: () => { setOriginalsOpen(true); setError(null); }, notice: error || notice, busy, startedAt, onCancel }),
+        originalsOpen && h(OriginalQuestionsDialog, { questions, chosen: generalizeChosen, onChoose: (ids, value) => setGeneralizeChosen((current) => withChecked(current, ids, value)),
+          onClose: () => setOriginalsOpen(false), onStart: generalize, busy }),
+        questionDraft && h(QuestionDraftDialog, { key: questionDraft.id, draft: questionDraft, questions, tables, names, busy, notice,
+          onClose: () => void cancelQuestionDraft(), onConfirm: confirmQuestionDraft }),
+        editing && h(QuestionDialog, { question: editing.question, names, tables, sourceId, onClose: () => setEditing(null), onSaved: saveQuestion }),
+        deleting && h(DeleteDialog, { title: '删除问题', kind: '问题', items: deleting, onClose: () => setDeleting(null), onRemove: removeQuestion }));
+    }
+
+    function RecommendationDialog({ draft, tables, names, busy, notice, onClose, onConfirm }) {
+      const [search, setSearch] = useState('');
+      const permitted = new Set(draft.tableIds);
+      const candidates = tables.filter(({ id }) => permitted.has(id));
+      const recommended = new Set(draft.recommendations.map(({ tableId }) => tableId));
+      const domainMatches = new Map();
+      for (const { tableId, domain } of draft.domainMatches || []) domainMatches.set(tableId, [...(domainMatches.get(tableId) || []), domain]);
+      const [selected, setSelected] = useState(() => new Set(draft.selectedTableIds));
+      const filtered = candidates.filter((table) => matches(search, names.get(table.id), table.sourceComment, domainOf(table)));
+      const rows = filtered.map((table) => {
+        const { id, enabled, sourceComment } = table;
+        const name = names.get(id);
+        return h('tr', { key: id }, cell(check(`确认启用 ${name}`, selected.has(id), (value) => setSelected((current) => withChecked(current, [id], value)), { disabled: busy })),
+          cell(name), cell(sourceComment || '—'), cell(domainOf(table)), cell(h(React.Fragment, null,
+            enabled && tag('已启用'), recommended.has(id) && tag('AI 推荐'),
+            (domainMatches.get(id) || []).map((domain) => h('span', { key: domain, className: 'ds-tag' }, `匹配业务域：${domain}`)))));
+      });
+      const selectedTableIds = candidates.filter(({ id }) => selected.has(id)).map(({ id }) => id);
+      return h(Dialog, { title: '确认推荐结果', testId: 'recommendation-dialog', wide: true, internalScroll: true, busy, onClose,
+        footer: h('div', { className: 'ds-modal-foot' }, button('取消', onClose, { disabled: busy }),
+          button('确认启用状态', () => void onConfirm(selectedTableIds), { className: 'ds-button primary', disabled: busy })) },
+        noticeView(notice), h('div', { className: 'ds-row ds-space' }, h('div', { className: 'ds-filters' },
+          searchInput('搜索推荐范围', search, setSearch)),
+          h('span', { className: 'ds-muted', role: 'status' }, `已选 ${selectedTableIds.length} / ${candidates.length} 张表`)),
+        h(DataTable, { className: 'ds-recommendation-table', testId: 'recommendation-table', labels: [
+          h(SelectAll, { label: '全选当前筛选推荐表', rows: filtered, chosen: selected, disabled: busy,
+            onChange: (value) => setSelected((current) => withChecked(current, filtered.map(({ id }) => id), value)) }), '表英文名', '原始注释', '业务域', '推荐'], rows }));
     }
     return { name: 'sql', inject: ['slots', 'layout'], apply };
   },

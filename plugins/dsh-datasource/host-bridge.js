@@ -25,7 +25,7 @@ function sanitize(error, code, message) {
 }
 
 /**
- * Installed rc.5 Host session bridge. The caller persists run/batch/sessionId
+ * Installed rc.5 Host session bridge. The caller binds the session's scope
  * before send(); this class does not own authorization or business completion.
  * Prompt admission, durable session flush, and structured tool commit are
  * separate milestones. An uncertain send must not be automatically replayed.
@@ -33,6 +33,7 @@ function sanitize(error, code, message) {
 export class DatasourceSessionBridge {
   #ctx;
   #closed = false;
+  #observers = new Set();
 
   constructor(ctx) {
     if (!ctx || !['create', 'prompt', 'resolveAgent', 'cancel'].every((name) => typeof ctx.sessionController?.[name] === 'function') ||
@@ -65,7 +66,7 @@ export class DatasourceSessionBridge {
     }
   }
 
-  async send({ sessionId, requestId, text } = {}) {
+  async send({ sessionId, requestId, text, signal } = {}) {
     this.#open();
     identity(sessionId, '后台会话标识');
     identity(requestId, '后台消息标识');
@@ -75,7 +76,7 @@ export class DatasourceSessionBridge {
     try {
       const admitted = await this.#ctx.sessionController.prompt({
         sessionId, requestId, mode: 'queue', content: [{ type: 'text', text }],
-      });
+      }, signal);
       if (admitted?.accepted !== true) {
         throw failure('SESSION_ADMISSION_FAILED', '后台会话未受理消息。');
       }
@@ -94,6 +95,75 @@ export class DatasourceSessionBridge {
     } catch (error) {
       throw sanitize(error, 'SESSION_SEND_FAILED', '后台消息发送或持久化确认失败，请查看任务状态。');
     }
+  }
+
+  /**
+   * Subscribe before sending the prompt. Readiness only confirms the listener;
+   * onEnd reports a native turn boundary, never a successful business commit.
+   * Cleanup and caller abort release the stream without cancelling the Agent.
+   */
+  async observe({ sessionId, signal, onEnd } = {}) {
+    this.#open();
+    identity(sessionId, '后台会话标识');
+    if (typeof onEnd !== 'function') throw failure('SESSION_INVALID_INPUT', '请指定后台会话结束处理函数。');
+    if (typeof this.#ctx.sessionController.observeEvent !== 'function') {
+      throw failure('SESSION_OBSERVE_UNAVAILABLE', '后台会话事件订阅不可用。');
+    }
+    const controller = new AbortController();
+    let stopped = false;
+    let ready = false;
+    let ended = false;
+    let resolveReady;
+    let rejectReady;
+    const readiness = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    const abort = () => { stopped = true; controller.abort(); };
+    const notify = (error) => {
+      if (stopped || ended) return;
+      ended = true;
+      if (error === undefined) onEnd();
+      else onEnd(error);
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+    let consuming;
+    const cleanup = async () => {
+      abort();
+      await consuming;
+    };
+    this.#observers.add(cleanup);
+    consuming = (async () => {
+      try {
+        for await (const frame of this.#ctx.sessionController.observeEvent({ address: { kind: 'session', sessionId } }, controller.signal)) {
+          if (stopped) break;
+          if (!ready) {
+            if (frame?.type !== 'ready') throw failure('SESSION_OBSERVE_FAILED', '后台会话事件订阅未确认就绪。');
+            ready = true;
+            resolveReady();
+            continue;
+          }
+          if (frame?.type !== 'event' || !frame.event || typeof frame.event.type !== 'string') {
+            throw failure('SESSION_OBSERVE_FAILED', '后台会话事件订阅返回无效数据。');
+          }
+          if (frame.event.type === 'turn/end') {
+            notify(frame.event.data?.reason?.kind === 'error'
+              ? failure('SESSION_TURN_FAILED', '后台会话执行失败，请查看会话。') : undefined);
+            break;
+          }
+        }
+        if (!stopped && !ended) throw failure('SESSION_OBSERVE_FAILED', '后台会话事件订阅意外结束。');
+      } catch (error) {
+        if (!ready) rejectReady(stopped
+          ? failure('SESSION_OBSERVE_CANCELLED', '后台会话事件订阅已取消。')
+          : sanitize(error, 'SESSION_OBSERVE_FAILED', '无法订阅后台会话事件。'));
+        else if (!stopped) notify(sanitize(error, 'SESSION_OBSERVE_FAILED', '后台会话事件订阅失败。'));
+      } finally {
+        if (!ready) rejectReady(failure('SESSION_OBSERVE_CANCELLED', '后台会话事件订阅已取消。'));
+        signal?.removeEventListener('abort', abort);
+        this.#observers.delete(cleanup);
+      }
+    })();
+    await readiness;
+    return cleanup;
   }
 
   /**
@@ -121,7 +191,7 @@ export class DatasourceSessionBridge {
     identity(sessionId, '后台会话标识');
     try {
       // Installed controller cancels the current turn with keepInbox:true.
-      // Caller must first mark its run cancelled and reject late tool commits.
+      // Caller must first revoke this operation's permission to commit.
       const result = await this.#ctx.sessionController.cancel({ sessionId });
       if (result?.accepted !== true) throw failure('SESSION_CANCEL_FAILED', '后台会话未确认取消请求。');
       return { accepted: true };
@@ -131,8 +201,7 @@ export class DatasourceSessionBridge {
   }
 
   async close() {
-    // No listeners, polling timers, Agents or user sessions are owned here.
-    // An already admitted message can still run after this bridge is closed.
     this.#closed = true;
+    await Promise.all([...this.#observers].map((cleanup) => cleanup()));
   }
 }
