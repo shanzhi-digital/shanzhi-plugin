@@ -1,6 +1,6 @@
 # DSH 数据源接入
 
-本地定制版 `dsh-sql 0.9.0-local.9`，支持 MySQL、PostgreSQL、SQLite 的只读接入、原始目录管理、源表启停、问题及业务域辅助选表。通过 `datasourceCatalog` 宿主服务为独立的数据标注插件提供目录、标注存储和会话绑定；标注页面与 AI 标注由 `dsh-data-annotation` 提供。Cube.js 建模和查询接入留待后续，本版字段启停仅作为标注范围保存，不改变普通 SQL 查询权限。
+本地定制版 `dsh-sql 0.9.0-local.10`，支持 MySQL、PostgreSQL、SQLite 的只读接入、原始目录管理、源表启停、问题及业务域辅助选表。通过 `datasourceCatalog` 宿主服务为独立的数据标注插件提供目录、标注存储和会话绑定；标注页面与 AI 标注由 `dsh-data-annotation` 提供。Cube.js 建模和查询接入留待后续，本版字段启停仅作为标注范围保存，不改变普通 SQL 查询权限。
 
 ## 初始化独立管理库
 

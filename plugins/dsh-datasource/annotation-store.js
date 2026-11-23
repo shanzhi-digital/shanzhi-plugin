@@ -28,10 +28,11 @@ async function load(connection, profileId, sourceId) {
     }),
   }));
   const required = projected.flatMap(table => [table.annotation, ...table.fields.filter(field => field.enabled).map(field => field.annotation)]);
-  const status = !projected.length || !required.some(item => item.text.trim()) ? 'unannotated'
+  const annotatedCount = required.filter(item => item.text.trim()).length;
+  const status = !projected.length || !annotatedCount ? 'unannotated'
     : required.every(item => item.status === 'confirmed') ? 'complete' : 'partial';
   const updatedAt = required.map(item => item.updatedAt).filter(Boolean).sort().at(-1) ?? null;
-  const summary = { enabledTableCount: projected.length, status, updatedAt };
+  const summary = { enabledTableCount: projected.length, annotatedCount, requiredCount: required.length, status, updatedAt };
   const revision = digest([source.revision, source.connection_version, source.enabled, catalog, tables, tableRows, fieldRows]);
   return { source, tables, tableMap, fieldMap, result: { source: { id: sourceId, name: json(source.metadata).name }, revision, tables: projected, summary } };
 }

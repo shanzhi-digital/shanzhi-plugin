@@ -12,7 +12,7 @@ import { DatasourceStore } from '../store.js';
 const finalTables = ['dsh_management_profiles', 'dsh_management_migrations', 'dsh_sources', 'dsh_source_catalogs',
   'dsh_source_tables', 'dsh_questions', 'dsh_question_links', 'dsh_flow_bindings', 'dsh_table_annotations', 'dsh_field_annotations'];
 const retiredTables = ['dsh_flow_states', 'dsh_flow_entities', 'dsh_legacy_imports', 'dsh_flow_runs', 'dsh_flow_batches', 'dsh_flow_receipts'];
-const sqlFile = name => readFile(new URL(`../${name}`, import.meta.url), 'utf8');
+const sqlFile = async name => (await readFile(new URL(`../${name}`, import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
 const statements = sql => sql.replace(/^--.*$/gm, '').split(';').map(value => value.trim()).filter(Boolean);
 const config = { host: 'fixture', user: 'fixture-user', database: 'custom_management', profileId: 'test' };
 const now = 1700000000123;
@@ -687,6 +687,8 @@ test('标注的编辑确认、版本冲突、AI保护及字段清理', async t =
   const annotations = createAnnotationStore({ db, store });
   let page = await annotations.catalog('a');
   assert.equal(page.summary.status, 'unannotated');
+  assert.equal(page.summary.requiredCount, 2);
+  assert.equal(page.summary.annotatedCount, 0);
   const act = (operation, kind, items) => annotations.action({ sourceId: 'a', revision: page.revision, operation, kind, items });
   const oldRevision = page.revision;
   page = await act('edit', 'table', [{ tableId: 't', text: '订单' }]);
@@ -697,10 +699,13 @@ test('标注的编辑确认、版本冲突、AI保护及字段清理', async t =
   page = await act('edit', 'table', [{ tableId: 't', text: '订单' }]);
   assert.equal(page.tables[0].annotation.status, 'confirmed');
   page = await act('edit', 'field', [{ tableId: 't', fieldName: 'id', text: '编号' }]);
+  assert.equal(page.summary.annotatedCount, 2);
+  assert.equal(page.summary.status, 'partial');
   pool.sqlite.exec("INSERT INTO dsh_flow_bindings VALUES ('test', 'session', 'a', 0)");
   page = await annotations.aiSave({ sourceId: 'a', revision: page.revision, sessionId: 'session', kind: 'field', items: [{ tableId: 't', fieldName: 'id', text: 'AI编号' }] });
   page = await act('confirm', 'field', [{ tableId: 't', fieldName: 'id' }]);
   assert.equal(page.summary.status, 'complete');
+  assert.equal(page.summary.annotatedCount, page.summary.requiredCount);
   await applyCatalog(store, 'a', catalog('rescan', [{ ...enabled, sourceComment: '新表备注', fields: [{ ...enabled.fields[0], sourceComment: '新字段备注' }] }]));
   page = await annotations.catalog('a');
   assert.equal(page.tables[0].annotation.status, 'pending');

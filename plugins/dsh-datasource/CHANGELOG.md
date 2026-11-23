@@ -2,6 +2,10 @@
 
 此插件独立于 DataHub 应用，仅涉及本仓插件及用户本机 DSH；不修改 DataHub 服务源码、业务数据库、受管提示词或部署。
 
+## 0.9.0-local.10
+
+- 标注存储摘要增加 `annotatedCount` 与 `requiredCount`，供标注概览进度条统计；状态判定逻辑不变。
+
 ## 0.9.0-local.9
 
 - 提供 `datasourceCatalog` 宿主服务，为独立数据标注插件共享启用目录、标注持久化和受限会话绑定。
