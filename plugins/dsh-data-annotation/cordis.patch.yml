@@ -1,0 +1,4 @@
+- insert:
+    - id: data-annotation
+      name: 'dsh-data-annotation'
+      config: {}

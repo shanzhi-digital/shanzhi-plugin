@@ -11,6 +11,7 @@
 | [问数增强](plugins/datahub-query-enhance/README.md) | `@local/datahub-query-enhance` | 0.1.1 | 引导读取公共查询规范、设置中文结果列名、输出数据洞察，并自动显示指标可信状态 |
 | [公文全流程处理专家](plugins/gongwen/README.md) | `gongwen-skill` | 2.15.0-local.3 | 上游公文工具的本地适配版本，提供生成、检查、修复、模板与版式处理及 DSH 集成 |
 | [数据源](plugins/dsh-datasource/README.md) | `dsh-sql` | 0.9.0-local.10 | 只读数据源接入、源表启停、问题泛化与辅助选表；向标注插件提供共享目录、标注存储和管理库服务 |
+| [数据标注](plugins/dsh-data-annotation/README.md) | `dsh-data-annotation` | 0.1.0-local.8 | 独立表/字段标注、人工确认、批量操作、字段启停与 AI 辅助标注；依赖 dsh-sql 0.9.0-local.10 及管理库 v6 |
 
 ## 安装与升级
 
