@@ -14,6 +14,7 @@
     items: window.__fixtureEmpty ? [] : clone(sources), states: Object.fromEntries(sources.map((item) => [item.id, initial(item)])),
     questions, analysisRecords: [], originalAnalysisLinks: {}, suggestionLinks: {}, aiResults: [], candidateCount: 3, calls: [], sessions: [], registered: [], stateReads: 0, holdActions: new Set(), pending: new Map(), added: [],
     failNextAction: null, failSourceId: null, failRemoveIds: new Set(), failQuestionRemoveIds: new Set(), connectionFailures: { 'fixture-pg': '无法连接报表库。' },
+    tasks: {}, latestTasks: {}, taskCounter: 0, holdCancellation: false, loseStartResponse: false, failStartRequest: false, holdTaskReads: false, taskReads: [],
     management: { configured: !window.__fixtureUnconfigured, ready: !window.__fixtureUnconfigured, settings: { host: '127.0.0.1', port: 3306, database: 'fixture_management', user: 'fixture_manager' } },
   };
   let questionCounter = 12, sourceCounter = 0, snapshotCounter = 0;
@@ -137,9 +138,56 @@
     return stateResponse(state, {}, ['suggest', 'detect-domains'].includes(action) ? 'fixture-session' : undefined);
   };
   window.fetch = async (url, options = {}) => {
-    const operation = String(url).split('/').at(-1), payload = options.body ? JSON.parse(options.body) : undefined;
-    fixture.calls.push({ operation, payload: clone(payload || {}), method: options.method });
+    const [pathname, query = ''] = String(url).split('?');
+    const operation = pathname.endsWith('/ai-tasks/cancel') ? 'ai-tasks/cancel' : pathname.split('/').at(-1);
+    const params = Object.fromEntries(query.split('&').filter(Boolean).map((entry) => entry.split('=').map(decodeURIComponent)));
+    const payload = options.body ? JSON.parse(options.body) : undefined;
+    fixture.calls.push({ operation, payload: clone(payload || params), method: options.method });
     if (options.signal?.aborted) throw abortError();
+    if (operation === 'ai-tasks/cancel') {
+      const task = fixture.tasks[payload.taskId];
+      if (!task) return failure('任务不存在。', 404);
+      if (['running', 'cancelling'].includes(task.status)) {
+        task.status = 'cancelling';
+        if (!fixture.holdCancellation) fixture.pending.get(task.taskId)?.cancel();
+      }
+      return response({ task });
+    }
+    if (operation === 'ai-tasks') {
+      if (!payload) {
+        const task = fixture.tasks[params.taskId || fixture.latestTasks[params.sourceId]] || null;
+        if (params.taskId && !task) return failure('任务不存在。', 404);
+        if (params.taskId && fixture.holdTaskReads) return new Promise((resolve, reject) => {
+          const finish = () => { options.signal?.removeEventListener('abort', abort); resolve(response({ task })); };
+          const abort = () => reject(abortError());
+          options.signal?.addEventListener('abort', abort, { once: true });
+          fixture.taskReads.push(finish);
+        });
+        return response({ task });
+      }
+      if (fixture.failStartRequest) { fixture.failStartRequest = false; throw new TypeError('模拟请求未送达'); }
+      const state = fixture.states[payload.id];
+      if (!state) return failure('数据源不存在。', 404);
+      const previous = fixture.tasks[fixture.latestTasks[payload.id]];
+      if (previous && ['running', 'cancelling'].includes(previous.status)) return failure('任务正在运行。', 409);
+      const task = { taskId: `task-${++fixture.taskCounter}`, sourceId: payload.id, kind: payload.action, status: 'running', startedAt: instant(), finishedAt: null, sessionId: 'fixture-session', result: null, error: null };
+      fixture.tasks[task.taskId] = task;
+      fixture.latestTasks[payload.id] = task.taskId;
+      const cleanup = () => fixture.pending.delete(task.taskId);
+      const finish = async () => {
+        cleanup();
+        const result = fixture.failNextAction === payload.action ? (fixture.failNextAction = null, failure('目录已更新，请重试。', 409)) : execute(payload, state);
+        const value = await result.json();
+        task.status = result.ok ? 'succeeded' : 'failed';
+        task.result = result.ok ? { revision: state.revision, draftId: state.draft?.id, questionDraftId: state.questionDraft?.id } : null;
+        task.error = result.ok ? null : { message: value.error };
+        task.finishedAt = instant();
+      };
+      fixture.pending.set(task.taskId, { finish, cancel() { cleanup(); task.status = 'cancelled'; task.finishedAt = instant(); } });
+      if (!fixture.holdActions.has(payload.action)) await finish();
+      if (fixture.loseStartResponse) { fixture.loseStartResponse = false; throw new TypeError('模拟受理响应丢失'); }
+      return response({ task }, 202);
+    }
     if (operation === 'management-status') return response(fixture.management);
     if (operation === 'management-save') {
       const { password, ...settings } = payload;
@@ -214,7 +262,7 @@
   };
   let root, Page;
   fixture.render = () => { root ||= ReactDOM.createRoot(document.getElementById('root')); root.render(React.createElement(Page)); };
-  fixture.unmount = () => root?.unmount();
+  fixture.unmount = () => { root?.unmount(); root = null; };
   window.__ModuleLoader__ = { load(definition) {
     const plugin = definition.factory((name) => { if (name !== 'react') throw new Error(`Unexpected dependency: ${name}`); return React; });
     fixture.loaderId = definition.id;

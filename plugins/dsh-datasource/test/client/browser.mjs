@@ -151,6 +151,7 @@ async function verify(viewport) {
     await checkbox(originalQuestions, '泛化参考 测试问题 01').check();
     await btn(originalQuestions, '开始泛化').click();
     const questionDraft = page.getByTestId('question-draft-dialog');
+    await questionDraft.waitFor();
     assert.equal((await calls(page, 'questions-save')).length, 1);
     assert.deepEqual(await page.evaluate(() => ({ ...window.__fixture.aiResults.find(({ action }) => action === 'generalize-question').reply })),
       { ok: true, originalAnalysesPersisted: true, draftReady: true, candidatesPersisted: false });
@@ -233,11 +234,60 @@ async function verifyManagement() {
   } finally { await context.close(); }
 }
 
+async function verifyAiTasks() {
+  const { context, page, errors } = await setup({ width: 1366, height: 768 });
+  try {
+    await btn(page, '测试业务库').click();
+    await btn(page, 'AI 辅助选表').click();
+    await page.evaluate(() => { window.__fixture.holdActions.add('suggest'); window.__fixture.loseStartResponse = true; });
+    await btn(page.getByTestId('ai-selection-dialog'), 'AI 选表').click();
+    await page.getByText('正在复用 0 个问题关联，分析 12 个问题', { exact: false }).waitFor();
+    assert.equal((await calls(page, 'suggest')).length, 1);
+    const scans = (await calls(page, 'ensure-scan')).length;
+    await page.evaluate(() => window.__fixture.unmount());
+    assert.equal((await calls(page, 'ai-tasks/cancel')).length, 0);
+    assert.equal(await page.evaluate(() => window.__fixture.pending.size), 1);
+    await page.evaluate(() => window.__fixture.render());
+    await btn(page, '测试业务库').click();
+    await page.getByText('正在分析选表依据', { exact: false }).waitFor();
+    assert.equal((await calls(page, 'ensure-scan')).length, scans);
+    await page.evaluate(async () => { await [...window.__fixture.pending.values()][0].finish(); });
+    await btn(page, '查看推荐结果').waitFor();
+    assert.equal(await page.getByTestId('recommendation-dialog').count(), 0);
+    await btn(page, '查看推荐结果').click();
+    await page.getByTestId('recommendation-dialog').waitFor();
+    await btn(page.getByTestId('recommendation-dialog'), '取消').click();
+    await btn(page, 'AI 辅助选表').click();
+    await page.evaluate(() => { window.__fixture.holdCancellation = true; });
+    await btn(page.getByTestId('ai-selection-dialog'), 'AI 选表').click();
+    await btn(page.getByTestId('ai-selection-dialog'), '取消操作').click();
+    assert.equal(await page.evaluate(() => window.__fixture.tasks[window.__fixture.latestTasks['fixture-mysql']].status), 'cancelling');
+    assert.equal(await btn(page.getByTestId('ai-selection-dialog'), 'AI 选表').isDisabled(), true);
+    await page.evaluate(async () => { await [...window.__fixture.pending.values()][0].finish(); });
+    await page.getByTestId('recommendation-dialog').waitFor();
+    assert.equal((await calls(page, 'ai-tasks/cancel')).length, 1);
+    await btn(page.getByTestId('recommendation-dialog'), '取消').click();
+    await btn(page, 'AI 辅助选表').click();
+    await page.evaluate(() => { window.__fixture.holdCancellation = false; });
+    await btn(page.getByTestId('ai-selection-dialog'), 'AI 选表').click();
+    await btn(page.getByTestId('ai-selection-dialog'), '取消操作').click();
+    await page.getByText('操作已取消。', { exact: true }).waitFor();
+    assert.equal(await btn(page.getByTestId('ai-selection-dialog'), 'AI 选表').isDisabled(), false);
+    assert.equal(await page.evaluate(() => window.__fixture.pending.size), 0);
+    assert.deepEqual(errors, []);
+    results.push({ viewport: { width: 1366, height: 768 }, aiTasks: 'passed' });
+  } finally { await context.close(); }
+}
+
 try {
-  await verify({ width: 1366, height: 768 });
-  await verify({ width: 475, height: 820 });
-  await verifyManagement();
-  const report = { client: clientPath, sha256: createHash('sha256').update(client).digest('hex'), results, management: 'passed' };
+  if (process.env.DSH_CLIENT_TASKS_ONLY !== '1') {
+    await verify({ width: 1366, height: 768 });
+    await verify({ width: 475, height: 820 });
+    await verifyManagement();
+  }
+  await verifyAiTasks();
+  const report = { client: clientPath, sha256: createHash('sha256').update(client).digest('hex'), results,
+    management: process.env.DSH_CLIENT_TASKS_ONLY === '1' ? 'not-run' : 'passed' };
   await writeFile(path.join(output, 'v4-browser-report.json'), JSON.stringify(report, null, 2));
   console.log(`Browser fixture passed in ${results.length} viewports. Report: ${path.join(output, 'v4-browser-report.json')}`);
 } finally { await browser.close(); }

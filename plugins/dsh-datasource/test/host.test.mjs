@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
+import { createServer } from 'node:net';
 import { API_PREFIX, createSecrets, registerRoutes, applyWithServices } from '../index.js';
 import { DatasourceRuntime } from '../runtime.js';
 import { DatasourceStore } from '../store.js';
@@ -158,11 +159,11 @@ test('question routes support CRUD with source-filtered links and reject stale v
   assert.deepEqual((await json(await call(routes, 'questions-list', { data: { id: source.id } }))).items, []);
 });
 
-test('flow route wrappers forward Request signal and return success or failure sessionId', async t => {
+test('flow route wrappers forward Request signal for non-AI operations', async t => {
   const { routes, flow } = await setup(t), controller = new AbortController();
   let seen;
-  flow.action = async (input, signal) => { seen = signal; assert.equal(input.action, 'suggest'); return { revision: 4, draft: { id: 'draft' }, sessionId: 'session-123' }; };
-  assert.deepEqual(await json(await call(routes, 'flow-action', { data: { action: 'suggest' }, signal: controller.signal })), { state: { revision: 4, draft: { id: 'draft' } }, sessionId: 'session-123' });
+  flow.action = async (input, signal) => { seen = signal; assert.equal(input.action, 'scan'); return { revision: 4 }; };
+  assert.deepEqual(await json(await call(routes, 'flow-action', { data: { action: 'scan' }, signal: controller.signal })), { state: { revision: 4 } });
   assert.equal(seen.aborted, false); controller.abort(); assert.equal(seen.aborted, true);
   flow.sampleTable = async (_input, signal) => { assert.ok(signal instanceof AbortSignal); return { samples: [[1]] }; };
   assert.deepEqual(await json(await call(routes, 'flow-samples', { data: {} })), { samples: [[1]] });
@@ -214,16 +215,89 @@ function hostFixture(credentials = new CredentialRecords()) {
 function serviceFixture() {
   let closed = false;
   const runtime = { list: async () => [{ id: 'fixture-source' }], getTools: () => ['sql_list', 'sql_query', 'sql_schema'].map(name => ({ name, execute: async () => ({ executed: name }) })) };
-  const flow = { scopedSql: (_name, args, execution, execute) => execute(args, execution), getTool: () => ({ execute: async () => ({ persisted: true }) }) };
+  const flow = { scopedSql: (_name, args, execution, execute) => execute(args, execution), executor: { getTool: () => ({ execute: async () => ({ persisted: true }) }) } };
   return { runtime, flow, store: new DatasourceStore(), close: async () => { closed = true; }, get closed() { return closed; } };
 }
+
+test('task routes validate requests, expose conflict ids and detach execution from HTTP signals', async t => {
+  const f = hostFixture(), service = serviceFixture();
+  const entered = Promise.withResolvers();
+  let executionSignal;
+  service.flow.ai = async (_input, signal, report) => {
+    executionSignal = signal;
+    report({ sessionId: 'diagnostic-session' });
+    entered.resolve();
+    await new Promise((resolve, reject) => {
+      if (signal.aborted) reject(new Error('cancelled'));
+      else signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+    });
+  };
+  await applyWithServices(f.ctx, {}, { initialServices: service });
+  t.after(() => f.close());
+  assert.ok(f.ctx.datasourceHttp);
+  assert.equal(f.ctx.datasourceHttp.enabled, false);
+  assert.equal(f.ctx.datasourceHttp.routes.has(API_PREFIX + '/management-save'), false);
+  const route = f.routes.get(API_PREFIX + '/ai-tasks');
+  const query = value => route.fetch(new Request('http://localhost' + route.path + value));
+  const post = (input, signal) => route.fetch(new Request('http://localhost' + route.path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal }));
+  const input = { id: 'fixture-source', action: 'detect-domains', revision: 0 };
+  for (const invalid of [{ ...input, cwd: '/private' }, { ...input, action: 'scan' }, { ...input, revision: '0' }]) await json(await post(invalid), invalid.revision === '0' ? 409 : 400);
+  for (const value of ['', '?sourceId=', '?taskId=x&sourceId=y', '?taskId=x&taskId=y', '?other=x']) await json(await query(value), 400);
+  assert.deepEqual(await json(await query('?sourceId=none')), { task: null });
+  await json(await query('?taskId=missing'), 404);
+  const controller = new AbortController();
+  const accepted = await json(await post(input, controller.signal), 202);
+  await entered.promise;
+  controller.abort();
+  assert.equal(executionSignal.aborted, false);
+  const snapshot = (await json(await query('?taskId=' + accepted.task.taskId))).task;
+  assert.equal(snapshot.sessionId, 'diagnostic-session');
+  assert.equal(snapshot.status, 'running');
+  assert.equal((await json(await post(input), 409)).taskId, accepted.task.taskId);
+  assert.equal((await json(await query('?sourceId=fixture-source'))).task.taskId, accepted.task.taskId);
+  await json(await call(f.routes, 'flow-action', { data: input }), 400);
+  assert.equal((await json(await call(f.routes, 'ai-tasks/cancel', { data: { taskId: accepted.task.taskId } }))).task.status, 'cancelling');
+  await f.close();
+  assert.equal((await json(await query('?taskId=' + accepted.task.taskId))).task.status, 'cancelled');
+});
+test('listener startup failure closes created datasource services', async t => {
+  const occupied = createServer();
+  await new Promise((resolve, reject) => { occupied.once('error', reject); occupied.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise(resolve => occupied.close(resolve)));
+  const f = hostFixture(), service = serviceFixture();
+  await assert.rejects(applyWithServices(f.ctx, { internalApi: { enabled: true, port: occupied.address().port } }, { initialServices: service }), { code: 'EADDRINUSE' });
+  assert.equal(service.closed, true);
+  assert.equal(f.ctx.datasourceHttp.server, null);
+  assert.equal(f.ctx.datasourceHttp.routes.size, 0);
+});
+
+test('disposal cancels and settles tasks before closing flow services', async () => {
+  const f = hostFixture(), service = serviceFixture(), entered = Promise.withResolvers(), order = [];
+  service.flow.ai = async (_input, signal) => {
+    entered.resolve();
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    assert.equal(service.closed, false);
+    assert.equal(f.ctx.datasourceHttp.accepting, false);
+    order.push('task');
+    throw new Error('cancelled');
+  };
+  const originalClose = service.close;
+  service.close = async () => { order.push('services'); await originalClose(); };
+  await applyWithServices(f.ctx, {}, { initialServices: service });
+  const route = f.routes.get(API_PREFIX + '/ai-tasks');
+  await json(await route.fetch(new Request('http://localhost' + route.path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'source', action: 'detect-domains', revision: 0 }) })), 202);
+  await entered.promise;
+  await f.close();
+  assert.deepEqual(order, ['task', 'services']);
+});
+
 const managementInput = { host: 'management.invalid', port: 3306, user: 'fixture_manager', database: 'fixture_management', password: 'synthetic-management-password' };
 
 test('unconfigured Host binds all routes and tools, then activates after private bootstrap', async t => {
   const f = hostFixture(), service = serviceFixture(); let opened = 0;
   await applyWithServices(f.ctx, {}, { createServices: async options => { opened++; assert.equal(options.managementConfig.password, managementInput.password); assert.match(options.profileId, /^[a-f0-9]{64}$/); return service; } });
   t.after(() => f.close());
-  assert.equal(f.routes.size, 13); assert.deepEqual([...f.tools.keys()].sort(), ['datasource_task', 'sql_list', 'sql_query', 'sql_schema']);
+  assert.equal(f.routes.size, 15); assert.deepEqual([...f.tools.keys()].sort(), ['datasource_task', 'sql_list', 'sql_query', 'sql_schema']);
   assert.deepEqual(await json(await call(f.routes, 'management-status')), { configured: false, ready: false, message: '请先在数据源页面配置 MySQL 管理库。' });
   assert.match((await json(await call(f.routes, 'list'), 503)).error, /管理库/);
   for (const tool of f.tools.values()) await assert.rejects(tool.execute({}), /管理库/);
@@ -235,7 +309,7 @@ test('unconfigured Host binds all routes and tools, then activates after private
   await json(await call(f.routes, 'management-save', { data: { ...managementInput, password: '' } }));
   await json(await call(f.routes, 'management-save', { data: { ...managementInput, database: 'another_management' } }), 409);
   await json(await call(f.routes, 'management-save', { data: { ...managementInput, password: 'changed-password' } }), 409);
-  assert.equal(opened, 1); assert.equal(f.routes.size, 13); assert.equal(f.tools.size, 4);
+  assert.equal(opened, 1); assert.equal(f.routes.size, 15); assert.equal(f.tools.size, 4);
 });
 
 test('stored bootstrap restarts services without exposing management passwords', async t => {

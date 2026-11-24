@@ -1,11 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { isAbsolute, resolve } from 'node:path';
-import { categories, domainResult, fail, object, questionCandidates, selectedIds, selectionBasis, selectionDraft, suggestionResult, text, updateEnabled } from './selection-flow.js';
-import { auxiliaryPrompt } from './task-prompts.js';
+import { resolve } from 'node:path';
+import { domainResult, fail, object, questionCandidates, selectedIds, selectionBasis, selectionDraft, suggestionResult, text, updateEnabled } from './selection-flow.js';
+import { DatasourceAiExecutor, PAGE_SIZE, SAMPLE_SIZE } from './ai-executor.js';
 import { questionAnalysisStatus, readAnalysisContext, writeAnalysisContext } from './flow-store.js';
 
-const PAGE_SIZE = 20;
-const SAMPLE_SIZE = 2;
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const error = (message, status = 409) => Object.assign(new Error(message), { publicMessage: message, status });
 const tableMap = state => new Map((state.catalog?.tables ?? []).map(table => [table.id, table]));
@@ -68,17 +66,37 @@ function checkSnapshot(state, source, operation) {
   }
 }
 
-/** Current access configuration and request-owned operations. */
+export function validateAiInput(input) {
+  object(input, ['id', 'action', 'revision', 'questionIds', 'domains', 'questions'], 'AI 任务');
+  text(input.id, '数据源 ID', 128);
+  if (!['detect-domains', 'suggest', 'generalize-question'].includes(input.action)) fail('不支持此 AI 操作。');
+  if (!Number.isSafeInteger(input.revision) || input.revision < 0) fail('请先读取页面最新状态。', 409);
+  for (const key of ['questionIds', 'domains', 'questions']) {
+    if (input[key] !== undefined && !Array.isArray(input[key])) fail('AI 任务参数格式无效。');
+  }
+}
+
+/** Business snapshots, transactions and drafts for datasource operations. */
 export class DatasourceFlow {
   constructor({ store, runtime, bridge, defaultCwd = process.cwd(), timeoutMs = 15 * 60 * 1000, now = Date.now }) {
     this.store = store;
     this.runtime = runtime;
-    this.bridge = bridge;
     this.defaultCwd = resolve(defaultCwd);
     this.timeoutMs = timeoutMs;
     this.now = now;
     this.operations = new Map();
-    this.sessions = new Map();
+    this.executor = new DatasourceAiExecutor({ bridge, callbacks: {
+      bindSession: (...args) => this.store.bindSession(...args),
+      assertOperation: operation => this._assertOperation(operation),
+      assertSession: (operation, signal) => this._assertSession(operation, signal),
+      sample: (operation, ids, signal) => this._sample(operation, ids, signal),
+      verify: (operation, result) => operation.kind === 'generalize-question'
+        ? questionCandidates(result, operation.tables, operation.allQuestions, operation.originalAnalysisQuestions)
+        : operation.kind === 'detect-domains' ? domainResult(result, operation.tables) : suggestionResult(result, operation.tables, operation.questions),
+      commit: (operation, verified, signal, payloadHash) => operation.kind === 'generalize-question'
+        ? this._saveQuestionDraft(operation, verified, signal, payloadHash)
+        : this._saveAiResult(operation, verified, operation.kind === 'detect-domains', signal, payloadHash),
+    } });
     this.drafts = new Map();
     this.questionDrafts = new Map();
     this.closed = false;
@@ -166,6 +184,7 @@ export class DatasourceFlow {
       operationId: text(input.operationId ?? randomUUID(), '操作标识', 128),
       controller: new AbortController(),
       pages: new Set(),
+      report: input.report,
     };
     operation.abort = () => { if (!operation.committed) operation.controller.abort(); };
     let release;
@@ -191,11 +210,9 @@ export class DatasourceFlow {
       clearTimeout(timer);
       signal?.removeEventListener('abort', operation.abort);
       try {
-        if (operation.sessionId) this.sessions.delete(operation.sessionId);
-        await operation.cleanup?.().catch(() => {});
+        await this.executor.finish(operation);
       } finally {
         if (operation.sessionId) {
-          if (!operation.committed) await this.bridge.cancel(operation.sessionId).catch(() => {});
           await this.store.retireSession(operation.sessionId).catch(() => {});
         }
         if (this.operations.get(id) === operation) this.operations.delete(id);
@@ -275,44 +292,16 @@ export class DatasourceFlow {
         });
         if (!operation.questions.length) return this._saveSelectionDraft(operation, signal);
       }
-      const cwd = input.cwd === undefined ? this.defaultCwd : text(input.cwd, '执行工作区', 4096);
-      if (!isAbsolute(cwd)) fail('执行工作区必须为绝对路径。');
       this._assertOperation(operation);
-      return this._session(operation, cwd);
+      return this.executor.run(operation, this.defaultCwd);
     });
   }
 
-  async _session(operation, cwd) {
-    let rejectDone;
-    const done = new Promise((resolveDone, reject) => { operation.resolve = resolveDone; rejectDone = reject; });
-    done.catch(() => {});
-    operation.reject = cause => {
-      if (operation.committed) return;
-      if (operation.submitting) {
-        operation.pendingError ??= cause;
-        return;
-      }
-      operation.failure ??= cause;
-      rejectDone(operation.failure);
-    };
-    const signal = operation.controller.signal;
-    const aborted = () => operation.reject(error('操作已取消或超时。'));
-    signal.addEventListener('abort', aborted, { once: true });
-    try {
-      const { sessionId } = await this.bridge.create({ cwd });
-      operation.sessionId = sessionId;
-      this.sessions.set(sessionId, operation);
-      const bound = await this.store.bindSession(sessionId, { sourceId: operation.id, connectionVersion: operation.source.connectionVersion, retired: signal.aborted });
-      if (bound === false) fail('数据源状态已更新，本次会话已失效。', 409);
-      this._assertOperation(operation);
-      operation.cleanup = await this.bridge.observe({ sessionId, signal, onEnd: cause => operation.reject(cause || error('会话已结束，未提交有效结果。')) });
-      await this._assertSession(operation);
-      const sending = this.bridge.send({ sessionId, requestId: randomUUID(), text: auxiliaryPrompt(operation), signal }).catch(operation.reject);
-      const [, result] = await Promise.all([sending, done]);
-      return result;
-    } finally {
-      signal.removeEventListener('abort', aborted);
-    }
+  async ai(input, signal, report) {
+    this._assertOpen();
+    validateAiInput(input);
+    checkSignal(signal);
+    return this._ai({ ...input, id: input.id.trim(), report }, signal);
   }
 
   async action(input, signal) {
@@ -336,7 +325,6 @@ export class DatasourceFlow {
     switch (input.action) {
       case 'scan': case 'ensure-scan': return this._scan(input, signal);
       case 'detect-freshness': return this._detectFreshness(input, signal);
-      case 'detect-domains': case 'suggest': case 'generalize-question': return this._ai(input, signal);
       case 'confirm-question-draft': return this._confirmQuestionDraft(input, signal);
       case 'set-tables': return this._setTables(input, signal);
       case 'confirm-selection': return this._confirmSelection(input, signal);
@@ -420,7 +408,7 @@ export class DatasourceFlow {
     checkSignal(execution?.signal);
     this._assertOpen();
     const sessionId = execution?.agent?.session?.id;
-    if (sessionId && (this.sessions.has(sessionId) || await this.store.findBinding(sessionId))) fail('数据源接入会话只可使用 datasource_task。', 409);
+    if (sessionId && (this.executor.hasSession(sessionId) || await this.store.findBinding(sessionId))) fail('数据源接入会话只可使用 datasource_task。', 409);
     checkSignal(execution?.signal);
     return execute(args, execution);
   }
@@ -445,50 +433,6 @@ export class DatasourceFlow {
     return { ...samples.get(tableId), fieldNames: table.fields.map(field => field.name) };
   }
 
-  async task(input, execution) {
-    const task = input?.operation;
-    const keys = { read: ['cursor'], sample: ['tableIds'], submit: ['result'], fail: [] };
-    if (typeof task !== 'string' || !Object.hasOwn(keys, task)) fail('operation 必须是 read、sample、submit 或 fail。');
-    object(input, ['operation', ...keys[task]], '工具输入');
-    const signal = execution?.signal;
-    checkSignal(signal);
-    const operation = this.sessions.get(execution?.agent?.session?.id);
-    if (!operation) fail('此工具仅接受当前接入会话的调用。', 409);
-    if (task === 'submit') return this._submit(operation, input.result, signal);
-    if (operation.committed) fail('本次结果已保存。', 409);
-    await this._assertSession(operation, signal);
-    switch (task) {
-      case 'read': return this._read(operation, input.cursor);
-      case 'sample': return this._sample(operation, input.tableIds, signal);
-      case 'fail':
-        operation.reject(error('未能形成有效结果，请查看会话后重试。'));
-        return { ok: false };
-    }
-  }
-
-  _read(operation, cursor = 0) {
-    const tables = [...operation.tables.values()];
-    const pageCount = Math.ceil(tables.length / PAGE_SIZE);
-    if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor >= pageCount) fail('分页游标无效。');
-    operation.pages.add(cursor);
-    const { id, name, engine } = operation.source;
-    return structuredClone({
-      source: { id, name, engine },
-      kind: operation.kind,
-      snapshotId: operation.state.catalog.id,
-      questions: cursor === 0 ? (operation.questions ?? []).map(({ id, text, answer, origin = 'unknown', sourceQuestionId = null }) => ({ id, text, answer, ...(operation.kind === 'generalize-question' ? { origin, sourceQuestionId } : {}) })) : [],
-      ...(operation.kind === 'generalize-question' ? {
-        originalAnalysisQuestions: cursor === 0 ? operation.originalAnalysisQuestions.map(({ id, text, answer }) => ({ id, text, answer })) : [],
-        habitQuestions: cursor === 0 ? operation.allQuestions.filter(item => item.origin === 'original' && !operation.questions.some(reference => reference.id === item.id)).map(({ id, text, answer }) => ({ id, text, answer })) : [],
-        existingQuestions: cursor === 0 ? operation.allQuestions.map(({ id, text }) => ({ id, text })) : [],
-      } : {}),
-      domains: cursor === 0 ? operation.domains ?? [] : [],
-      tables: tables.slice(cursor * PAGE_SIZE, (cursor + 1) * PAGE_SIZE),
-      cursor,
-      nextCursor: cursor + 1 < pageCount ? cursor + 1 : null,
-    });
-  }
-
   async _sample(operation, tableIds, signal) {
     if (!['suggest', 'generalize-question'].includes(operation.kind)) fail('只有辅助选表或问题泛化可请求业务样例。');
     if (operation.kind === 'generalize-question' && operation.pages.size !== Math.ceil(operation.tables.size / PAGE_SIZE)) fail('请先读完全部目录页，再按需采样。');
@@ -510,33 +454,6 @@ export class DatasourceFlow {
     const sampled = tables.map(table => ({ tableId: table.id, ...results.get(table.id), fieldNames: table.fields.map(field => field.name) }));
     if (operation.sampleResults) for (const item of sampled) operation.sampleResults.set(item.tableId, { tableId: item.tableId, sampleStatus: item.sampleStatus, sampleTruncated: item.sampleTruncated });
     return { tables: sampled };
-  }
-
-  async _submit(operation, result, signal) {
-    this._assertOperation(operation);
-    const detecting = operation.kind === 'detect-domains';
-    const generalizing = operation.kind === 'generalize-question';
-    const verified = generalizing ? questionCandidates(result, operation.tables, operation.allQuestions, operation.originalAnalysisQuestions) : detecting ? domainResult(result, operation.tables) : suggestionResult(result, operation.tables, operation.questions);
-    const payloadHash = hash(detecting ? [verified.domains, [...verified.classifications]] : verified);
-    if (!operation.committed) await this._assertSession(operation, signal);
-    if (operation.committed || operation.submitPromise) {
-      await operation.submitPromise;
-      if (operation.committed && operation.payloadHash === payloadHash) return { ok: true, ...(generalizing ? { originalAnalysesPersisted: true, draftReady: true, candidatesPersisted: false } : { persisted: true }), duplicate: true };
-      fail('本次结果已保存，不能覆盖。', 409);
-    }
-    if (operation.pages.size !== Math.ceil(operation.tables.size / PAGE_SIZE)) fail('请先读完全部目录页。');
-    operation.submitting = true;
-    operation.submitPromise = generalizing ? this._saveQuestionDraft(operation, verified, signal, payloadHash) : this._saveAiResult(operation, verified, detecting, signal, payloadHash);
-    try {
-      await operation.submitPromise;
-      return { ok: true, ...(generalizing ? { originalAnalysesPersisted: true, draftReady: true, candidatesPersisted: false } : { persisted: true }) };
-    } finally {
-      operation.submitting = false;
-      if (!operation.committed) {
-        operation.submitPromise = null;
-        if (operation.pendingError) operation.reject(operation.pendingError);
-      }
-    }
   }
 
   async _saveQuestionDraft(operation, verified, signal, payloadHash) {
@@ -633,34 +550,6 @@ export class DatasourceFlow {
     operation.resolve(result);
   }
 
-  getTool() {
-    const string = { type: 'string' };
-    const strings = { type: 'array', items: string };
-    const rows = properties => ({ type: 'array', items: { type: 'object', properties, required: Object.keys(properties), additionalProperties: false } });
-    const analysisRows = rows({ questionId: string, links: rows({ tableId: string, fields: strings, reason: string }) });
-    return {
-      name: 'datasource_task',
-      description: '读取当前数据源接入会话的全部目录、问题及泛化参考，辅助选表或问题泛化时可按需读取普通表的限量样例，并提交结构化结果。read 按 nextCursor 读完后 submit，无法完成用 fail。',
-      parameters: { type: 'object', additionalProperties: false, required: ['operation'], properties: {
-        operation: { type: 'string', enum: ['read', 'sample', 'submit', 'fail'] },
-        cursor: { type: 'integer', minimum: 0 },
-        tableIds: { ...strings, minItems: 1, maxItems: SAMPLE_SIZE },
-        result: { type: 'object', additionalProperties: false, properties: {
-          candidates: { ...rows({ text: string, answer: { type: 'string', enum: [''] }, links: { ...rows({ tableId: string, fields: { ...strings, minItems: 1 }, reason: string }), minItems: 1 } }), minItems: 1, maxItems: 20 },
-          reason: string,
-          domains: rows({ name: string, description: string }),
-          classifications: rows({ tableId: string, category: { ...string, enum: categories }, domain: string, reason: string }),
-          recommendations: rows({ tableId: string, reason: string }),
-          analyses: analysisRows,
-          originalAnalyses: analysisRows,
-        } },
-      } },
-      output: { schema: { type: 'object' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
-      timeoutMs: 60_000,
-      execute: (input, execution) => this.task(input, execution),
-    };
-  }
-
   async close() {
     if (this.closed) return;
     this.closed = true;
@@ -669,6 +558,6 @@ export class DatasourceFlow {
     await Promise.allSettled(operations.map(operation => operation.finished));
     this.drafts.clear();
     this.questionDrafts.clear();
-    await this.bridge.close();
+    await this.executor.close();
   }
 }

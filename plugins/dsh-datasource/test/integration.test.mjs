@@ -44,18 +44,33 @@ async function fixture(t) {
   const store = new DatasourceStore(), runtime = new DatasourceRuntime({ store, secrets: createSecrets(ctx.credentials) });
   const flow = new DatasourceFlow({ store, runtime, bridge: new DatasourceSessionBridge(ctx), defaultCwd: directory, timeoutMs: 10000 });
   await runtime.initialize(); await flow.initialize();
-  await applyWithServices(ctx, { workingDirectory: directory }, { initialServices: { runtime, flow, store } });
+  await applyWithServices(ctx, { workingDirectory: directory, internalApi: { enabled: true, port: 0 } }, { initialServices: { runtime, flow, store } });
   t.after(async () => { await dispose(); await rm(directory, { force: true, recursive: true }); });
-  async function request(operation, body, signal) {
-    const route = routes.get('/api/datasources/' + operation); assert.ok(route, 'registered ' + operation);
-    const method = route.methods[0], response = await route.fetch(new Request('http://localhost' + route.path, {
-      method, ...(method === 'POST' ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) } : {}), ...(signal ? { signal } : {}),
-    }));
+  async function request(operation, body, signal, internal = false) {
+    const [pathname, query = ''] = operation.split('?');
+    const route = routes.get('/api/datasources/' + pathname); assert.ok(route, 'registered ' + operation);
+    const method = body === undefined ? 'GET' : 'POST';
+    const url = (internal ? `http://127.0.0.1:${ctx.datasourceHttp.port}` : 'http://localhost') + route.path + (query ? '?' + query : '');
+    const init = { method, ...(method === 'POST' ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}), ...(signal ? { signal } : {}) };
+    const response = internal ? await fetch(url, init) : await route.fetch(new Request(url, init));
     return { status: response.status, ...await response.json() };
   }
   const saved = await request('save', { name: 'isolated fixture', engine: 'sqlite', file: database }); assert.equal(saved.status, 200); const id = saved.item.id;
   const state = async () => (await request('flow-state', { id })).state;
-  const action = async (name, input = {}, signal) => request('flow-action', { id, revision: (await state()).revision, action: name, operationId: 'operation-' + ++nextOperation, ...input }, signal);
+  const waitTask = async taskId => {
+    for (;;) {
+      const result = await request('ai-tasks?taskId=' + taskId);
+      if (!['running', 'cancelling'].includes(result.task.status)) return result.task;
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+  const action = async (name, input = {}, signal) => {
+    const ai = ['suggest', 'detect-domains', 'generalize-question'].includes(name);
+    const response = await request(ai ? 'ai-tasks' : 'flow-action', { id, revision: (await state()).revision, action: name, ...(!ai ? { operationId: 'operation-' + ++nextOperation } : {}), ...input }, signal);
+    if (!ai || response.status !== 202) return response;
+    const task = await waitTask(response.task.taskId);
+    return { status: task.status === 'succeeded' ? 200 : 409, task, sessionId: task.sessionId, state: await state(), error: task.error?.message };
+  };
   const exec = sessionId => ({ agent: agents.get(sessionId), signal: new AbortController().signal });
   const task = (sessionId, operation, input = {}) => tools.get('datasource_task').execute({ operation, ...input }, exec(sessionId));
   async function readAll(sessionId) {
@@ -71,13 +86,13 @@ async function fixture(t) {
   }
   const sampleTables = runtime.sampleTables.bind(runtime);
   runtime.sampleTables = (sourceId, version, tables, signal) => { sampleRequests.push(tables.map(table => table.name)); return sampleTables(sourceId, version, tables, signal); };
-  return { database, directory, runtime, store, flow, tools, routes, prompts, sampleRequests, cancellations, request, state, action, start, task, readAll, exec, id };
+  return { database, directory, runtime, store, flow, tools, routes, prompts, sampleRequests, cancellations, request, state, action, start, task, readAll, exec, id, waitTask, internalHttp: ctx.datasourceHttp };
 }
 
 test('plugin exposes exact current APIs and refresh saves disabled tables without business sampling or MAX', async t => {
   const f = await fixture(t), before = await readFile(f.database);
   assert.deepEqual([...f.tools.keys()].sort(), ['datasource_task', 'sql_list', 'sql_query', 'sql_schema']);
-  assert.deepEqual([...f.routes.keys()].sort(), ['flow-action', 'flow-samples', 'flow-state', 'list', 'management-save', 'management-status', 'questions-list', 'questions-save', 'questions-remove', 'source-status', 'remove', 'save', 'test'].map(name => '/api/datasources/' + name).sort());
+  assert.deepEqual([...f.routes.keys()].sort(), ['ai-tasks', 'ai-tasks/cancel', 'flow-action', 'flow-samples', 'flow-state', 'list', 'management-save', 'management-status', 'questions-list', 'questions-save', 'questions-remove', 'source-status', 'remove', 'save', 'test'].map(name => '/api/datasources/' + name).sort());
   const initial = await f.state(); assert.equal(initial.defaultCwd, f.directory); assert.equal(initial.enabled, true); assert.equal(initial.revision, 0);
   let detections = 0; const detect = f.runtime.detectFreshness.bind(f.runtime); f.runtime.detectFreshness = (...args) => { detections++; return detect(...args); };
   const scanned = await f.action('scan'); assert.equal(scanned.status, 200, scanned.error);
@@ -260,4 +275,38 @@ test('generalization explicit empty original analysis survives candidate cancel 
   assert.equal(reused.status, 200, reused.error);
   assert.equal(f.prompts.length, 1);
   assert.deepEqual(reused.state.draft.selectedTableIds, []);
+});
+
+test('loopback and DSH observe one detached AI task and share results and cancellation', async t => {
+  const f = await fixture(t);
+  await f.action('scan');
+  assert.equal(f.internalHttp.routes.has('/api/datasources/management-status'), false);
+  assert.equal(f.internalHttp.routes.get('/api/datasources/ai-tasks'), f.routes.get('/api/datasources/ai-tasks'));
+  const input = { id: f.id, action: 'detect-domains', revision: (await f.state()).revision };
+  const controller = new AbortController();
+  const accepted = await f.request('ai-tasks', input, controller.signal, true);
+  assert.equal(accepted.status, 202);
+  const taskId = accepted.task.taskId;
+  controller.abort();
+  let observed;
+  do {
+    observed = await f.request('ai-tasks?taskId=' + taskId);
+    if (!observed.task.sessionId || !f.prompts.some(prompt => prompt.sessionId === observed.task.sessionId)) await new Promise(resolve => setImmediate(resolve));
+  } while (!observed.task.sessionId || !f.prompts.some(prompt => prompt.sessionId === observed.task.sessionId));
+  assert.equal(observed.task.status, 'running');
+  assert.equal((await f.request('ai-tasks?sourceId=' + f.id)).task.taskId, taskId);
+  const duplicate = await f.request('ai-tasks', input);
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.taskId, taskId);
+  const tables = await f.readAll(observed.task.sessionId);
+  await f.task(observed.task.sessionId, 'submit', { result: { domains: [], classifications: tables.map(table => ({ tableId: table.id, category: 'SYSTEM', domain: '', reason: '合成测试' })) } });
+  const succeeded = await f.waitTask(taskId);
+  assert.equal(succeeded.status, 'succeeded');
+  assert.deepEqual(succeeded.result, { revision: (await f.state()).revision });
+  assert.equal((await f.request('ai-tasks?taskId=' + taskId, undefined, undefined, true)).task.status, 'succeeded');
+  const running = await f.request('ai-tasks', { ...input, revision: (await f.state()).revision });
+  assert.equal(running.status, 202);
+  const canceled = await f.request('ai-tasks/cancel', { taskId: running.task.taskId }, undefined, true);
+  assert.ok(['cancelling', 'cancelled'].includes(canceled.task.status));
+  assert.equal((await f.waitTask(running.task.taskId)).status, 'cancelled');
 });

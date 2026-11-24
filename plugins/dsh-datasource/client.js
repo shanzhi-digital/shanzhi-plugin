@@ -475,6 +475,8 @@ window.__ModuleLoader__.load({
           try {
             const ok = await testConnection(item);
             if (!ok || !needsScan || controller.signal.aborted || opening.current === id) return;
+            const { task } = await api(`ai-tasks?sourceId=${encodeURIComponent(id)}`, undefined, controller.signal);
+            if (task && ['running', 'cancelling'].includes(task.status)) return;
             scan.request = api('flow-action', { id, action: 'ensure-scan', open: true, operationId: operationId() }, controller.signal);
             const { state } = await scan.request;
             if (!controller.signal.aborted) setTableCount(id, connectionVersion, state.catalog?.tables.length ?? null);
@@ -686,21 +688,22 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = useState(null), [sessionId, setSessionId] = useState(null), [toast, setToast] = useState(0);
       const [chosen, setChosen] = useState(() => new Set()), [filters, setFilters] = useState(emptyFilters);
       const [newIds, setNewIds] = useState(() => new Set()), [showNew, setShowNew] = useState(false), [inspect, setInspect] = useState(null);
-      const [aiOpen, setAiOpen] = useState(false), [resultOpen, setResultOpen] = useState(false);
+      const [aiOpen, setAiOpen] = useState(false), [resultOpen, setResultOpen] = useState(false), [questionResultOpen, setQuestionResultOpen] = useState(false);
       const [refreshAt, setRefreshAt] = useState(null), [startedAt, setStartedAt] = useState(0);
-      const lifetime = useRef(null), state = useRef(null), active = useRef(null);
+      const lifetime = useRef(null), state = useRef(null), active = useRef(null), latestTaskId = useRef(null);
       const enabled = flow?.enabled ?? item.enabled;
       const catalog = flow?.catalog;
       const tables = catalog?.tables || [];
       const names = tableNames(tables);
       const inspected = tables.find(({ id }) => id === inspect);
       const hasRecommendation = resultOpen && !!flow?.draft;
-      const hasModal = aiOpen || hasRecommendation || !!inspected;
+      const hasModal = aiOpen || hasRecommendation || questionResultOpen || !!inspected;
       const applyState = (value) => {
         const previous = state.current;
         state.current = value;
         setFlow(value);
         if (!value.draft) setResultOpen(false);
+        if (!value.questionDraft) setQuestionResultOpen(false);
         onCatalog(item.id, item.connectionVersion, value.catalog?.tables.length ?? null);
         if (value.removedTableIds?.length) setChosen((current) => withChecked(current, value.removedTableIds, false));
         if (previous?.catalog && value.addedTableIds?.length) {
@@ -714,17 +717,70 @@ window.__ModuleLoader__.load({
         const { state: value } = await api('flow-state', { id: item.id }, signal);
         if (!signal.aborted) applyState(value);
       };
+      const taskRunning = (task) => task && ['running', 'cancelling'].includes(task.status);
+      const taskQuery = (key, value, signal) => api(`ai-tasks?${key}=${encodeURIComponent(value)}`, undefined, signal);
+      const observeTask = async (operation, initial) => {
+        const { signal } = operation.controller;
+        let task = initial;
+        while (!signal.aborted) {
+          operation.taskId = task.taskId;
+          latestTaskId.current = task.taskId;
+          operation.action = task.kind;
+          setBusy(task.kind);
+          setStartedAt(Date.parse(task.startedAt) || Date.now());
+          if (task.sessionId) setSessionId(task.sessionId);
+          if (operation.cancelRequested && taskRunning(task)) {
+            operation.cancelRequested = false;
+            try { await api('ai-tasks/cancel', { taskId: task.taskId }, signal); }
+            catch (error) { if (!signal.aborted) setNotice(errorNotice(error)); }
+            if (signal.aborted) return false;
+          }
+          if (!taskRunning(task)) {
+            await read(signal);
+            if (signal.aborted) return false;
+            if (task.status === 'failed') setNotice(errorNotice(new Error(task.error?.message || 'AI 任务失败，请重试。')));
+            if (task.status === 'cancelled') setNotice({ type: 'info', text: '操作已取消。' });
+            return task.status === 'succeeded';
+          }
+          await new Promise((resolve) => {
+            const stop = () => { window.clearTimeout(timer); resolve(); };
+            const timer = window.setTimeout(() => { signal.removeEventListener('abort', stop); resolve(); }, 1000);
+            signal.addEventListener('abort', stop, { once: true });
+          });
+          if (signal.aborted) return false;
+          ({ task } = await taskQuery('taskId', task.taskId, signal));
+        }
+        return false;
+      };
       const run = async (action, values = {}) => {
         const signal = lifetime.current.signal;
         if (active.current || signal.aborted) return false;
         const controller = new AbortController();
-        const operation = { id: operationId(), controller, cancellable: !!operationLabels[action], canceling: false };
+        const isAi = ['detect-domains', 'suggest', 'generalize-question'].includes(action);
+        const operation = { id: operationId(), controller, isAi, cancellable: !!operationLabels[action], canceling: false };
         active.current = operation;
         setStartedAt(Date.now());
         setBusy(action);
         setNotice(null);
+        if (isAi) setRefreshAt(null);
+        const inputRevision = state.current?.revision;
         try {
-          const result = await api('flow-action', { id: item.id, action, revision: state.current?.revision, operationId: operation.id, ...values }, controller.signal);
+          const input = { id: item.id, action, revision: inputRevision, ...values };
+          if (isAi) {
+            let task, accepted = true;
+            try { ({ task } = await api('ai-tasks', input, controller.signal)); }
+            catch (error) {
+              if (signal.aborted || controller.signal.aborted) return false;
+              // A lost acceptance response must be recovered by observation, never by resubmitting.
+              if (error.status && error.status !== 409) throw error;
+              accepted = error.status !== 409;
+              ({ task } = await taskQuery('sourceId', item.id, controller.signal));
+              if (!task || (!taskRunning(task) && task.taskId === latestTaskId.current)) throw error;
+            }
+            const succeeded = await observeTask(operation, task);
+            return accepted && succeeded && task.kind === action;
+          }
+          const result = await api('flow-action', { ...input, operationId: operation.id }, controller.signal);
           if (signal.aborted || controller.signal.aborted) return false;
           applyState(result.state);
           if (action !== 'cancel') setSessionId(result.sessionId || null);
@@ -742,19 +798,23 @@ window.__ModuleLoader__.load({
           if (!signal.aborted) setBusy('');
         }
       };
-      const cancel = async (leaving = false) => {
+      const cancel = async () => {
         const operation = active.current;
-        if (!operation || operation.canceling) return;
-        if (!operation.cancellable) { if (leaving) operation.controller.abort(); return; }
+        if (!operation || operation.canceling || !operation.cancellable) return;
         operation.canceling = true;
-        if (leaving) operation.controller.abort();
         try {
-          const { state: value } = await api('flow-action', { id: item.id, action: 'cancel', operationId: operation.id });
-          if (!leaving && !lifetime.current.signal.aborted && active.current === operation) {
-            applyState(value);
-            operation.controller.abort();
+          if (operation.isAi) {
+            if (!operation.taskId) { operation.cancelRequested = true; return; }
+            await api('ai-tasks/cancel', { taskId: operation.taskId }, operation.controller.signal);
+            // Keep observing: cancellation can race with a successful business commit.
+          } else {
+            const { state: value } = await api('flow-action', { id: item.id, action: 'cancel', operationId: operation.id }, operation.controller.signal);
+            if (!lifetime.current.signal.aborted && active.current === operation) {
+              applyState(value);
+              operation.controller.abort();
+            }
           }
-        } catch (error) { if (!leaving && !lifetime.current.signal.aborted) setNotice(errorNotice(error)); }
+        } catch (error) { if (!lifetime.current.signal.aborted) setNotice(errorNotice(error)); }
         finally { operation.canceling = false; }
       };
       const refresh = async (automatic = false, open = false) => {
@@ -765,18 +825,32 @@ window.__ModuleLoader__.load({
         const { signal } = lifetime.current;
         setLoading(true);
         setNotice(null);
+        let recovered = false;
         try {
           if (initialScan) await initialScan.catch(() => {});
-          if (!signal.aborted) await read(signal);
+          const { task } = await taskQuery('sourceId', item.id, signal);
+          if (signal.aborted) return;
+          recovered = !!task;
+          latestTaskId.current = task?.taskId || null;
+          if (task?.sessionId) setSessionId(task.sessionId);
+          await read(signal);
+          if (signal.aborted) return;
+          if (taskRunning(task)) {
+            const operation = { controller: new AbortController(), isAi: true, cancellable: true, canceling: false };
+            active.current = operation;
+            setLoading(false);
+            try { await observeTask(operation, task); }
+            finally { if (active.current === operation) active.current = null; if (!signal.aborted) setBusy(''); }
+          } else if (task?.status === 'failed') setNotice(errorNotice(new Error(task.error?.message || 'AI 任务失败，请重试。')));
         } catch (error) { if (!signal.aborted) setNotice(errorNotice(error)); }
         finally { if (!signal.aborted) setLoading(false); }
-        if (!signal.aborted && (state.current?.enabled ?? item.enabled) && state.current) await refresh(true, true);
+        if (!recovered && !signal.aborted && (state.current?.enabled ?? item.enabled) && state.current) await refresh(true, true);
       };
       useEffect(() => {
         const controller = new AbortController();
         lifetime.current = controller;
         void load();
-        return () => { controller.abort(); void cancel(true); };
+        return () => { controller.abort(); active.current?.controller.abort(); };
       }, []);
       useEffect(() => {
         if (!enabled || loading || busy || hasModal || !refreshAt) return undefined;
@@ -807,6 +881,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'ds-actions' }, sessionId && link('查看分析会话', onSession),
           button('刷新目录', () => void refresh(), { disabled: !enabled || !flow || locked }),
           button('时效检测', () => void run('detect-freshness'), { disabled: !enabled || !tables.length || locked }),
+          flow?.questionDraft && button('查看泛化结果', () => setQuestionResultOpen(true), { disabled: locked }),
           flow?.draft ? button('查看推荐结果', () => setResultOpen(true), { disabled: locked, className: 'ds-button primary' }) :
             button('AI 辅助选表', () => setAiOpen(true), { disabled: !enabled || !tables.length || locked, className: 'ds-button primary' }))),
         noticeView(!aiOpen && !resultOpen ? notice : null),
@@ -829,6 +904,10 @@ window.__ModuleLoader__.load({
           onConfirmQuestions: async (values) => await run('confirm-question-draft', values) ? state.current.questions : null,
           onClose: () => { setAiOpen(false); setNotice(null); }, onCancel: () => void cancel(),
           onDetect: () => run('detect-domains'), onSuggest: submitBasis }),
+        questionResultOpen && flow?.questionDraft && h(QuestionDraftDialog, { key: flow.questionDraft.id, draft: flow.questionDraft,
+          questions: flow.questions || [], tables, names, busy, notice,
+          onClose: async () => { if (await run('cancel', { questionDraftId: flow.questionDraft.id })) setQuestionResultOpen(false); },
+          onConfirm: async (candidates) => { if (await run('confirm-question-draft', { draftId: flow.questionDraft.id, candidates })) setQuestionResultOpen(false); } }),
         resultOpen && flow?.draft && h(RecommendationDialog, { key: flow.draft.id, draft: flow.draft, tables, names, busy: locked, notice,
           onClose: discardDraft, onConfirm: async (selectedTableIds) => {
             if (await run('confirm-selection', { draftId: flow.draft.id, selectedTableIds })) setResultOpen(false);
