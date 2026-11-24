@@ -46,6 +46,7 @@ const saveResults = async annotations => annotations.resultsSave({ sourceId: 's'
 
 test('关系草稿、原子确认、布局、无变化提交、全局保存与旧revision拒绝', async t => {
   const { annotations, sqlite, calls } = await fixture(t);
+  assert.equal((await annotations.results('s')).saved, false);
   await assert.rejects(annotations.readSavedResults('s'), error => error.status === 409);
   let current = await annotations.relationSave({ sourceId: 's', revision: await revision(annotations), canvas: canvas() });
   assert.equal(current.canvas.confirmed, false);
@@ -53,6 +54,8 @@ test('关系草稿、原子确认、布局、无变化提交、全局保存与�
   current = await annotations.relationConfirm({ sourceId: 's', revision: current.revision, canvasId: current.canvas.id });
   assert.equal(current.canvas.confirmed, true);
   const saved = await saveResults(annotations), result = await annotations.readSavedResults('s');
+  assert.equal(result.saved, true);
+  assert.equal((await annotations.results('s')).saved, true);
   assert.equal(result.relations.length, 1);
   assert.equal(result.relations[0].status, 'unannotated');
   assert.equal(result.tables.length, 3);
@@ -60,16 +63,23 @@ test('关系草稿、原子确认、布局、无变化提交、全局保存与�
   assert.equal(current.canvas.confirmed, true);
   assert.notEqual(current.revision, saved.revision);
   assert.equal((await annotations.readSavedResults('s')).fingerprint, result.fingerprint);
+  assert.equal((await annotations.results('s')).saved, true);
   assert.equal((await annotations.relationSave({ sourceId: 's', revision: current.revision, canvas: current.canvas })).revision, current.revision);
+  assert.equal((await annotations.results('s')).saved, true);
   await assert.rejects(annotations.relationSave({ sourceId: 's', revision: saved.revision, canvas: current.canvas }), error => error.status === 409);
   const original = current.canvas;
   current = await annotations.relationSave({ sourceId: 's', revision: current.revision, canvas: { ...original, description: '修改' } });
   assert.equal(current.canvas.confirmed, false);
+  assert.equal((await annotations.results('s')).saved, false);
   current = await annotations.relationConfirm({ sourceId: 's', revision: current.revision, canvas: original });
   assert.equal(current.canvas.confirmed, true);
+  assert.equal((await annotations.results('s')).saved, false);
   await assert.rejects(annotations.readSavedResults('s'), error => error.status === 409);
   await saveResults(annotations); await saveResults(annotations);
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM dsh_annotation_results WHERE source_id = ?').get('s').count, 1);
+  assert.equal((await annotations.results('s')).saved, true);
+  sqlite.prepare('UPDATE dsh_annotation_results SET saved_fingerprint = ? WHERE source_id = ?').run('outdated', 's');
+  assert.equal((await annotations.results('s')).saved, false);
   assert.ok(calls.some(call => call.sql.includes('dsh_sources') && call.sql.endsWith('FOR UPDATE')));
 });
 
@@ -97,7 +107,9 @@ test('目录扫描只变化时间保留认可，删除引用持久保留草稿�
   const original = await store.get('s');
   await store.change('s', state => { state.catalog.scannedAt = 'later'; state.revision++; return { state }; });
   await annotations.readSavedResults('s');
+  assert.equal((await annotations.results('s')).saved, true);
   await store.change('s', state => { state.catalog.tables = state.catalog.tables.filter(table => table.id !== 'b'); state.revision++; return { state }; });
+  assert.equal((await annotations.results('s')).saved, false);
   let relation = (await annotations.relations('s')).items[0];
   assert.equal(relation.id, current.canvas.id); assert.equal(relation.confirmed, false);
   assert.ok(relation.invalid.some(value => value.tableId === 'b'));

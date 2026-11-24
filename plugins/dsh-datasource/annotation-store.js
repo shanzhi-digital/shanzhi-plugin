@@ -175,7 +175,7 @@ export function createAnnotationStore({ db, store }) {
     const map = new Map(tables.map(table => [table.tableId, table]));
     const relations = state.canvases.filter(canvas => canvas.confirmed && canvas.valid).map(canvas => ({ ...publicCanvas(canvas),
       tables: canvas.content.nodes.map(node => { const table = map.get(node.tableId); return { tableId: node.tableId, tableName: table.tableName, annotation: table.annotation }; }) }));
-    return { revision: state.result.revision, tables, relations, summary: { tableCount: tables.length,
+    return { revision: state.result.revision, saved: Boolean(state.saved?.saved_fingerprint && state.saved.saved_fingerprint === fingerprint(state)), tables, relations, summary: { tableCount: tables.length,
       completeTableCount: tables.filter(table => table.status === 'complete').length, relationCount: relations.length,
       completeRelationCount: relations.filter(canvas => canvas.status === 'complete').length } };
   }

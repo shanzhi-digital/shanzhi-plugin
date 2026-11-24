@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const source = await readFile(new URL('../client.js', import.meta.url), 'utf8');
 // Exercise the actual loader factory with an in-memory hooks renderer. Browser
-// pointer interactions live in test/client/browser.mjs and need no app server.
+// focus, timers and pointer interactions live in test/client/browser.mjs.
 function load() {
   const state = [], effects = [];
   let cursor = 0, exports;
@@ -16,18 +16,37 @@ function load() {
   return { exports, state, render(component, props) { cursor = 0; return exports[component](props); } };
 }
 const ann = { text: '中文名', status: 'confirmed' };
-const tables = [{ id: 'a', name: 'table_a', annotation: ann, fields: [{ name: 'id', enabled: true, annotation: ann }] }, { id: 'b', name: 'table_b', annotation: ann, fields: [{ name: 'ref', enabled: true, annotation: ann }, { name: 'old', enabled: false, annotation: ann }] }];
+const tables = [{ id: 'a', name: 'table_a', annotation: ann, fields: [{ name: 'id', enabled: true, annotation: ann }, { name: 'tenant_id', enabled: true, annotation: ann }, { name: 'unused', enabled: true, annotation: ann }] }, { id: 'b', name: 'table_b', annotation: ann, fields: [{ name: 'ref', enabled: true, annotation: ann }, { name: 'tenant_id', enabled: true, annotation: ann }, { name: 'old', enabled: false, annotation: ann }] }];
 function all(node, predicate) { if (!node || typeof node !== 'object') return []; return [...(predicate(node) ? [node] : []), ...(node.children || []).flatMap(child => all(child, predicate))]; }
 const button = (tree, name) => all(tree, node => node.type === 'button' && (node.props['aria-label'] === name || node.children.includes(name)))[0];
+const connectionButtons = tree => all(tree, node => node.type === 'button' && node.props['aria-label']?.startsWith('连接字段 '));
+const canvasWithPairs = () => ({ id: 'existing', name: '关系', description: '', content: { nodes: [{ tableId: 'a', label: 'A' }, { tableId: 'b', label: 'B' }], edges: [{ id: 'e', fromTableId: 'a', toTableId: 'b', pairs: [{ fromField: 'id', toField: 'ref' }, { fromField: 'tenant_id', toField: 'tenant_id' }], cardinality: 'N:1' }] }, layout: { a: { x: 50, y: 50 }, b: { x: 400, y: 50 } } });
+
+test('table choices add only through their independent button and zero-edge nodes start collapsed', () => {
+  const harness = load(), props = { tables, busy: false, onClose() {}, onSave() {} };
+  let tree = harness.render('RelationCanvas', props);
+  const choices = all(tree, node => node.props.className?.split(' ').includes('da-canvas-table-choice'));
+  assert.equal(choices.length, 2);
+  assert.ok(choices.every(node => node.type !== 'button' && !node.props.onClick));
+  button(tree, '添加表 table_a').props.onClick(); tree = harness.render('RelationCanvas', props);
+  assert.equal(harness.state[0].content.nodes.length, 1);
+  assert.equal(connectionButtons(tree).length, 0);
+  button(tree, '展开字段 table_a').props.onClick(); tree = harness.render('RelationCanvas', props);
+  assert.equal(connectionButtons(tree).length, 3);
+  button(tree, '收起字段 table_a').props.onClick(); tree = harness.render('RelationCanvas', props);
+  assert.equal(connectionButtons(tree).length, 0);
+});
 
 test('canvas point connection, compound pairs, cardinality and node removal use actual state transitions', () => {
   const harness = load(), props = { tables, busy: false, onClose() {}, onSave() {} };
   let tree = harness.render('RelationCanvas', props);
-  button(tree, '+ table_a · 中文名').props.onClick(); tree = harness.render('RelationCanvas', props);
-  button(tree, '+ table_b · 中文名').props.onClick(); tree = harness.render('RelationCanvas', props);
+  button(tree, '添加表 table_a').props.onClick(); tree = harness.render('RelationCanvas', props);
+  button(tree, '添加表 table_b').props.onClick(); tree = harness.render('RelationCanvas', props);
   assert.equal(harness.state[0].content.rootTableId, 'a');
   all(tree, node => node.props['aria-label'] === '主表')[0].props.onChange({ target: { value: 'b' } });
   tree = harness.render('RelationCanvas', props);
+  button(tree, '展开字段 table_a').props.onClick(); tree = harness.render('RelationCanvas', props);
+  button(tree, '展开字段 table_b').props.onClick(); tree = harness.render('RelationCanvas', props);
   button(tree, '连接字段 table_a.id').props.onClick(); tree = harness.render('RelationCanvas', props);
   button(tree, '连接字段 table_b.ref').props.onClick(); tree = harness.render('RelationCanvas', props);
   assert.equal(harness.state[0].content.edges.length, 1);
@@ -40,6 +59,26 @@ test('canvas point connection, compound pairs, cardinality and node removal use 
   assert.equal(harness.state[0].content.edges.length, 0);
   assert.equal(harness.state[0].content.nodes.length, 1);
   assert.equal(harness.state[0].content.rootTableId, undefined);
+});
+
+test('collapsed nodes preserve every composite field and anchor while expansion stays view-only', () => {
+  const harness = load(), canvas = canvasWithPairs(), props = { canvas, tables };
+  let tree = harness.render('RelationCanvas', props);
+  const initial = JSON.stringify(harness.state[0]);
+  const paths = tree => all(tree, node => node.type === 'path' && node.props.className?.split(' ').includes('da-canvas-edge')).map(node => node.props.d);
+  const before = paths(tree);
+  assert.equal(connectionButtons(tree).length, 4);
+  assert.equal(button(tree, '连接字段 table_a.unused'), undefined);
+  assert.equal(button(tree, '已保存').props.disabled, true);
+  button(tree, '展开字段 table_a').props.onClick(); tree = harness.render('RelationCanvas', props);
+  assert.ok(button(tree, '连接字段 table_a.unused'));
+  assert.equal(JSON.stringify(harness.state[0]), initial);
+  assert.equal(button(tree, '已保存').props.disabled, true);
+  button(tree, '收起字段 table_a').props.onClick(); tree = harness.render('RelationCanvas', props);
+  assert.deepEqual(paths(tree), before);
+  assert.equal(before.length, 2);
+  assert.equal(connectionButtons(tree).length, 4);
+  assert.equal(JSON.stringify(harness.state[0]), initial);
 });
 
 test('unavailable references remain visible and permit replacing the unavailable table', () => {
@@ -56,19 +95,42 @@ test('unavailable references remain visible and permit replacing the unavailable
   assert.equal(button(tree, '连接字段 table_b.missing').props.disabled, true);
 });
 
-test('legacy draft opens and saves without forcing a root table, and selecting a root preserves it in requests', async () => {
+test('legacy draft preserves an absent root, starts saved, and root changes restore the save action', async () => {
   const harness = load(), canvas = { id: 'legacy', name: '旧画布', description: '', content: { nodes: [{ tableId: 'a', label: 'A' }], edges: [] }, layout: {} }, requests = [];
   const props = { canvas, tables, onSave: async payload => { requests.push(payload); return payload; } };
   let tree = harness.render('RelationCanvas', props);
   assert.equal(all(tree, node => node.props['aria-label'] === '主表')[0].props.value, '');
   assert.equal(harness.state[0].content.rootTableId, undefined);
-  await button(tree, '保存').props.onClick();
+  assert.equal(button(tree, '已保存').props.disabled, true);
+  await button(tree, '确认').props.onClick();
   assert.equal(requests[0].content.rootTableId, undefined);
   tree = harness.render('RelationCanvas', props);
   all(tree, node => node.props['aria-label'] === '主表')[0].props.onChange({ target: { value: 'a' } });
   tree = harness.render('RelationCanvas', props);
+  assert.equal(button(tree, '保存').props.disabled, false);
   await button(tree, '保存').props.onClick();
   assert.equal(requests[1].content.rootTableId, 'a');
+  tree = harness.render('RelationCanvas', props);
+  assert.equal(button(tree, '已保存').props.disabled, true);
+});
+
+test('canvas save exposes pending state and failure keeps changes available for retry', async () => {
+  const harness = load();
+  let rejectSave, resolveSave, attempts = 0;
+  const props = { canvas: canvasWithPairs(), tables, onSave: payload => { attempts++; return new Promise((resolve, reject) => { rejectSave = reject; resolveSave = () => resolve(payload); }); } };
+  let tree = harness.render('RelationCanvas', props);
+  all(tree, node => node.props['aria-label'] === '画布名称')[0].props.onChange({ target: { value: '已修改' } });
+  tree = harness.render('RelationCanvas', props);
+  const failed = button(tree, '保存').props.onClick(); tree = harness.render('RelationCanvas', props);
+  assert.equal(button(tree, '保存中…').props.disabled, true);
+  rejectSave(new Error('保存失败测试')); await failed; tree = harness.render('RelationCanvas', props);
+  assert.equal(button(tree, '保存').props.disabled, false);
+  assert.ok(all(tree, node => node.props.role === 'alert' && node.children.includes('保存失败测试')).length);
+  const retried = button(tree, '保存').props.onClick(); resolveSave(); await retried;
+  tree = harness.render('RelationCanvas', props);
+  assert.equal(button(tree, '已保存').props.disabled, true);
+  assert.equal(attempts, 2);
+  assert.equal(harness.state[0].name, '已修改');
 });
 
 test('canvas request projection excludes server confirmation and validation metadata', () => {
