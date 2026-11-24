@@ -1,5 +1,7 @@
 -- Destructive manual reset: stop plugin instances and select the dedicated management database first.
--- Run migrations/001-management.sql after this script to create the v6 schema.
+-- Run migrations/001-management.sql after this script to create the v7 schema.
+DROP TABLE IF EXISTS dsh_annotation_results;
+DROP TABLE IF EXISTS dsh_relation_canvases;
 DROP TABLE IF EXISTS dsh_field_annotations;
 DROP TABLE IF EXISTS dsh_table_annotations;
 DROP TABLE IF EXISTS dsh_question_links;

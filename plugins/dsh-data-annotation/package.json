@@ -1,7 +1,7 @@
 {
   "name": "dsh-data-annotation",
-  "version": "0.1.0-local.9",
-  "description": "数据标注：表与字段标注、人工确认、批量操作和字段启停。",
+  "version": "0.1.0-local.10",
+  "description": "数据标注：表、字段和关系画布标注、AI 草稿、人工确认与全局保存。",
   "type": "module",
   "main": "./index.js",
   "exports": { ".": "./index.js", "./client": "./client.js", "./package.json": "./package.json", "./cordis.patch.yml": "./cordis.patch.yml" },
@@ -9,6 +9,6 @@
   "scripts": { "test": "node --test test/*.test.mjs", "check": "node --check index.js && node --check routes.js && node --check client.js && node --check flow.js && node --check task-prompts.js" },
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" }, "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-sidebar", "@deepseek-ai/dsh-client-connection"] } },
   "engines": { "node": ">=24.0.0", "dsh": ">=0.2.1-rc.5" },
-  "peerDependencies": { "dsh-sql": "0.9.0-local.11" },
+  "peerDependencies": { "dsh-sql": "0.9.0-local.12" },
   "license": "MIT"
 }

@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { annotationPrompt } from './task-prompts.js';
 
 const fail = message => { throw Object.assign(new Error(message), { publicMessage: message, status: 409 }); };
-const key = (kind, item) => JSON.stringify(kind === 'table' ? [item.tableId] : [item.tableId, item.fieldName]);
+const key = (kind, item) => JSON.stringify(kind === 'field' ? [item.tableId, item.fieldName] : [item.tableId]);
 const validText = value => typeof value === 'string' && value.trim().length > 0;
 
 export class AnnotationFlow {
@@ -18,9 +18,9 @@ export class AnnotationFlow {
   }
 
   validate(input) {
-    if (!input || !validText(input.sourceId) || !validText(input.revision) || !['table', 'field'].includes(input.kind) || !Array.isArray(input.items) || !input.items.length) throw Object.assign(new Error('标注任务参数无效。'), { status: 400 });
+    if (!input || !validText(input.sourceId) || !validText(input.revision) || !['table', 'field', 'relation'].includes(input.kind) || !Array.isArray(input.items) || !input.items.length) throw Object.assign(new Error('标注任务参数无效。'), { status: 400 });
     for (const item of input.items) {
-      if (!item || !validText(item.tableId) || (input.kind === 'field' && !validText(item.fieldName)) || (input.kind === 'table' && item.fieldName !== undefined)) throw Object.assign(new Error('标注对象无效。'), { status: 400 });
+      if (!item || !validText(item.tableId) || (input.kind === 'field' && !validText(item.fieldName)) || (input.kind !== 'field' && item.fieldName !== undefined)) throw Object.assign(new Error('标注对象无效。'), { status: 400 });
     }
   }
 
@@ -50,16 +50,24 @@ export class AnnotationFlow {
       op.selected = new Map();
       const requested = new Set();
       for (const item of input.items) {
-        if (!item || !validText(item.tableId) || (op.kind === 'field' && !validText(item.fieldName)) || (op.kind === 'table' && item.fieldName !== undefined)) fail('标注对象无效。');
+        if (!item || !validText(item.tableId) || (op.kind === 'field' && !validText(item.fieldName)) || (op.kind !== 'field' && item.fieldName !== undefined)) fail('标注对象无效。');
         const table = tables.get(item.tableId);
-        const target = op.kind === 'table' ? table : table?.fields.find(field => field.name === item.fieldName);
+        const target = op.kind === 'field' ? table?.fields.find(field => field.name === item.fieldName) : table;
         const id = key(op.kind, item);
-        if (!target || (op.kind === 'field' && !target.enabled) || requested.has(id)) fail('标注对象不存在、已停用或重复。');
+        if (!target || table.enabled === false || (op.kind === 'field' && !target.enabled) || requested.has(id)) fail('标注对象不存在、已停用或重复。');
         requested.add(id);
-        if (target.annotation?.status === 'confirmed') continue;
-        op.selected.set(id, { table, target, item: op.kind === 'table' ? { tableId: table.id } : { tableId: table.id, fieldName: target.name } });
+        if (op.kind !== 'relation' && target.annotation?.status === 'confirmed') continue;
+        op.selected.set(id, { table, target, item: op.kind === 'field' ? { tableId: table.id, fieldName: target.name } : { tableId: table.id } });
       }
       if (!op.selected.size) fail('没有可标注的对象。');
+      if (op.kind === 'relation') {
+        if (op.selected.size < 2 || op.selected.size !== tables.size) fail('关系分析必须包含当前数据源全部启用表，且至少两张表。');
+        const existing = await this.service.relations(op.sourceId);
+        this._active(op);
+        if (existing.revision !== op.revision) fail('数据已更新，请重新加载。');
+        op.relations = existing.items.map(canvas => ({ id: canvas.id, name: canvas.name, confirmed: Boolean(canvas.confirmed), valid: Boolean(canvas.valid), edges: canvas.content.edges }));
+        op.readPages = new Set();
+      }
       let resolveDone, rejectDone;
       const done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
       done.catch(() => {});
@@ -117,15 +125,15 @@ export class AnnotationFlow {
       const cursor = input.cursor ?? 0;
       const selected = [...op.selected.values()];
       let pages;
-      if (op.kind === 'table') {
+      if (op.kind !== 'field') {
         pages = [];
         for (const { table, item } of selected) {
-          const fields = table.fields.filter(field => field.enabled).map(field => ({ name: field.name, type: field.type ?? '', sourceComment: field.sourceComment ?? '' }));
+          const fields = table.fields.filter(field => field.enabled).map(field => ({ name: field.name, type: field.type ?? '', sourceComment: field.sourceComment ?? '', ...(op.kind === 'relation' ? { primaryKey: field.primaryKey ?? null, notNull: field.notNull ?? null, annotation: field.annotation?.text ?? '' } : {}) }));
           for (let offset = 0; offset < fields.length || offset === 0; offset += 100) {
             const chunk = fields.slice(offset, offset + 100);
             let page = pages.at(-1);
             if (!page || page.length >= 20 || page.reduce((count, row) => count + row.fields.length, 0) + chunk.length > 100) pages.push(page = []);
-            page.push({ ...item, table: { id: table.id, name: table.name, schema: table.schema ?? '', sourceComment: table.sourceComment ?? '' }, fields: chunk, fieldOffset: offset, moreFields: offset + chunk.length < fields.length });
+            page.push({ ...item, table: { id: table.id, name: table.name, schema: table.schema ?? '', sourceComment: table.sourceComment ?? '', ...(op.kind === 'relation' ? { annotation: table.annotation?.text ?? '' } : {}) }, fields: chunk, fieldOffset: offset, moreFields: offset + chunk.length < fields.length });
           }
         }
       } else {
@@ -139,8 +147,13 @@ export class AnnotationFlow {
         }
       }
       if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor >= pages.length) fail('分页游标无效。');
-      return { kind: op.kind, items: pages[cursor], cursor, nextCursor: cursor + 1 < pages.length ? cursor + 1 : null };
+      if (op.kind === 'relation') {
+        op.pageCount = pages.length;
+        op.readPages.add(cursor);
+      }
+      return { kind: op.kind, items: pages[cursor], cursor, nextCursor: cursor + 1 < pages.length ? cursor + 1 : null, ...(op.kind === 'relation' ? { relations: op.relations } : {}) };
     }
+    if (op.kind === 'relation') return this._submitRelations(op, input);
     if (!Array.isArray(input.annotations)) fail('缺少 annotations 标注数组。');
     if (input.annotations.length !== op.selected.size) {
       const expected = op.kind === 'table' ? '表标注（每张表一条，仅含 tableId 和 text）' : '字段标注（每个字段一条，含 tableId、fieldName 和 text）';
@@ -168,13 +181,51 @@ export class AnnotationFlow {
     }
   }
 
+  async _submitRelations(op, input) {
+    if (!op.pageCount || op.readPages.size !== op.pageCount) fail('请先分页读取全部关系结构。');
+    if (!Array.isArray(input.relations) || input.annotations !== undefined) fail('请使用 relations 数组提交关系建议。');
+    if (Buffer.byteLength(JSON.stringify(input)) > 1048576) throw Object.assign(new Error('关系建议内容过长。'), { publicMessage: '关系建议内容过长。', status: 413 });
+    const allowed = new Set(['fromTableId', 'toTableId', 'pairs', 'cardinality', 'name', 'description']);
+    const relations = input.relations.map(relation => {
+      if (!relation || Object.keys(relation).some(key => !allowed.has(key)) || !validText(relation.fromTableId) || !validText(relation.toTableId) || relation.fromTableId === relation.toTableId || !['1:1', '1:N', 'N:1'].includes(relation.cardinality) || !Array.isArray(relation.pairs) || !relation.pairs.length) fail('关系建议格式无效。');
+      const from = op.selected.get(key('relation', { tableId: relation.fromTableId }))?.table;
+      const to = op.selected.get(key('relation', { tableId: relation.toTableId }))?.table;
+      if (!from || !to) fail('关系包含未知或停用表。');
+      const seen = new Set();
+      const pairs = relation.pairs.map(pair => {
+        if (!pair || Object.keys(pair).some(key => !['fromField', 'toField'].includes(key)) || !validText(pair.fromField) || !validText(pair.toField)) fail('关系字段配对无效。');
+        if (!from.fields.some(field => field.name === pair.fromField && field.enabled) || !to.fields.some(field => field.name === pair.toField && field.enabled)) fail('关系包含未知或停用字段。');
+        const id = JSON.stringify([pair.fromField, pair.toField]);
+        if (seen.has(id)) fail('关系字段配对重复。');
+        seen.add(id);
+        return { fromField: pair.fromField, toField: pair.toField };
+      });
+      for (const name of ['name', 'description']) if (relation[name] !== undefined && typeof relation[name] !== 'string') fail('关系名称和说明必须为文本。');
+      return { fromTableId: from.id, toTableId: to.id, pairs, cardinality: relation.cardinality, ...(relation.name !== undefined ? { name: relation.name.trim() } : {}), ...(relation.description !== undefined ? { description: relation.description.trim() } : {}) };
+    });
+    op.submitting = true;
+    try {
+      const result = await this.service.aiRelationSave({ sourceId: op.sourceId, revision: op.revision, sessionId: op.sessionId, relations });
+      op.committed = true;
+      op.resolve({ revision: result.revision, count: result.count, canvasId: result.canvas?.id ?? null });
+      return { ok: true };
+    } finally {
+      op.submitting = false;
+      if (!op.committed && op.pendingError) op.reject(op.pendingError);
+    }
+  }
+
   getTool() {
     return {
       name: 'data_annotation_task',
-      description: '分页读取本次选中的标注对象并完整提交：每个选中对象一条；表标注只填 tableId 和 text，字段标注填 tableId、fieldName 和 text。',
+      description: '分页读取本次全部结构后提交。表/字段标注通过 annotations 每对象一条；关系建议通过 relations 提交0到多条，只引用真实启用表字段，不能设置ID、布局或人工确认。',
       parameters: { type: 'object', required: ['action'], additionalProperties: false, properties: {
         action: { type: 'string', enum: ['read', 'submit'] }, cursor: { type: 'integer', minimum: 0 },
         annotations: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['tableId', 'text'], properties: { tableId: { type: 'string' }, fieldName: { type: 'string' }, text: { type: 'string' } } } },
+        relations: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['fromTableId', 'toTableId', 'pairs', 'cardinality'], properties: {
+          fromTableId: { type: 'string' }, toTableId: { type: 'string' }, cardinality: { type: 'string', enum: ['1:1', '1:N', 'N:1'] }, name: { type: 'string' }, description: { type: 'string' },
+          pairs: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false, required: ['fromField', 'toField'], properties: { fromField: { type: 'string' }, toField: { type: 'string' } } } },
+        } } },
       } },
       output: { schema: { type: 'object' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
       timeoutMs: 60_000,

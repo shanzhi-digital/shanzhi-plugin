@@ -5,11 +5,19 @@ export function createDatasourceService(current) {
     return value;
   };
   return Object.freeze({
-    version: 1,
+    version: 2,
     list: () => annotations().list(),
     catalog: sourceId => annotations().catalog(sourceId),
     action: input => annotations().action(input),
     aiSave: input => annotations().aiSave(input),
+    relations: sourceId => annotations().relations(sourceId),
+    relationSave: input => annotations().relationSave(input),
+    relationConfirm: input => annotations().relationConfirm(input),
+    relationRemove: input => annotations().relationRemove(input),
+    results: sourceId => annotations().results(sourceId),
+    resultsSave: input => annotations().resultsSave(input),
+    readSavedResults: sourceId => annotations().readSavedResults(sourceId),
+    aiRelationSave: input => annotations().aiRelationSave(input),
     bindSession: (sessionId, sourceId) => current().store.bindSession(sessionId, { sourceId, retired: false }),
     retireSession: sessionId => current().store.retireSession(sessionId),
     async assertSession(sessionId, sourceId) {

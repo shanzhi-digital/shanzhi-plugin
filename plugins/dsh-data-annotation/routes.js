@@ -7,6 +7,13 @@ export function createRoutes(service, tasks) {
     ['sources', 'GET', () => service.list()],
     ['catalog', 'POST', input => service.catalog(input.sourceId)],
     ['action', 'POST', input => service.action(input)],
+    ['relations', 'POST', input => service.relations(input.sourceId)],
+    ['relation-save', 'POST', input => service.relationSave(input)],
+    ['relation-confirm', 'POST', input => service.relationConfirm(input)],
+    ['relation-remove', 'POST', input => service.relationRemove(input)],
+    ['results', 'POST', input => service.results(input.sourceId)],
+    ['results-save', 'POST', input => service.resultsSave(input)],
+    ['saved-results', 'POST', input => service.readSavedResults(input.sourceId)],
     ['ai-tasks', 'POST', input => ({ task: tasks.start(input) }), 202],
     ['ai-tasks', 'GET', (_input, request) => {
       const params = new URL(request.url).searchParams;

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { registerRoutes } from '../routes.js';
 import { AnnotationFlow } from '../flow.js';
+import { apply } from '../index.js';
 import { AiTasks } from 'dsh-sql/ai-tasks';
 import { createDatasourceService } from 'dsh-sql/service.js';
 
@@ -176,6 +177,67 @@ test('任务查询形状、显式取消与异步业务失败', async () => {
   const failed = await (await other.call('ai-tasks?sourceId=s')).json();
   assert.equal(failed.task.status, 'failed'); assert.deepEqual(failed.task.error, { message: '目录已更新，请刷新。' });
   await failing.close(); other.unregister();
+});
+
+test('标注插件拒绝旧共享服务并接受版本2', async () => {
+  for (const version of [undefined, 1]) assert.throws(() => apply({ datasourceCatalog: version ? { version } : undefined }), /版本2/);
+  const dsh = new Map(), internal = new Map();
+  let dispose, tool;
+  const register = map => route => { map.set(route.path, route); return () => map.delete(route.path); };
+  apply({
+    datasourceCatalog: { version: 2 },
+    connection: { fetch: { register: register(dsh) } }, datasourceHttp: { register: register(internal) },
+    tools: { register: value => { tool = value; } },
+    sessionController: { create() {}, prompt() {}, resolveAgent() {}, cancel() {} },
+    sessions: { flush() {}, get() {} }, agents: { get() {} },
+    on: (event, callback) => { assert.equal(event, 'dispose'); dispose = callback; },
+  });
+  assert.equal(tool.name, 'data_annotation_task');
+  assert.equal(dsh.get('/api/data-annotation/relations'), internal.get('/api/data-annotation/relations'));
+  await dispose(); assert.equal(dsh.size, 0); assert.equal(internal.size, 0);
+});
+
+test('七个关系与成果接口由DSH和内部HTTP共享同一服务与错误契约', async () => {
+  const calls = [];
+  const service = Object.fromEntries(['relations', 'relationSave', 'relationConfirm', 'relationRemove', 'results', 'resultsSave', 'readSavedResults'].map(method => [method, async input => { calls.push([method, input]); return { method, revision: 'r2', input }; }]));
+  const h = host(service, {});
+  const endpoints = [['relations', 'relations', true], ['relation-save', 'relationSave'], ['relation-confirm', 'relationConfirm'], ['relation-remove', 'relationRemove'], ['results', 'results', true], ['results-save', 'resultsSave'], ['saved-results', 'readSavedResults', true]];
+  for (const [path, method, sourceOnly] of endpoints) {
+    const input = { sourceId: 's', revision: 'r1', canvasId: 'canvas' };
+    const route = h.dsh.get('/api/data-annotation/' + path);
+    assert.equal(route, h.internal.get(route.path));
+    for (const transport of [h.dsh, h.internal]) {
+      const response = await h.call(path, input, transport);
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).method, method);
+      assert.deepEqual(calls.at(-1), [method, sourceOnly ? 's' : input]);
+    }
+    assert.equal((await h.call(path)).status, 405);
+  }
+  service.readSavedResults = async () => { throw Object.assign(new Error('请先在标注确认中保存当前成果。'), { status: 409 }); };
+  for (const transport of [h.dsh, h.internal]) {
+    const response = await h.call('saved-results', { sourceId: 's' }, transport);
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: '请先在标注确认中保存当前成果。' });
+  }
+  h.unregister();
+});
+
+test('关系任务跨入口观察投影画布ID与零建议结果，仍与表任务共享每源互斥', async () => {
+  let finish;
+  const tasks = taskFixture(async () => new Promise(resolve => { finish = resolve; }));
+  const h = host({}, tasks);
+  const input = { ...taskInput, kind: 'relation', items: [{ tableId: 'a' }, { tableId: 'b' }] };
+  const response = await h.call('ai-tasks', input, h.internal);
+  assert.equal(response.status, 202); const { task } = await response.json(); await tick();
+  assert.equal((await h.call('ai-tasks', taskInput)).status, 409);
+  finish({ revision: 'r2', count: 3, canvasId: 'canvas' }); await tick();
+  const completed = await (await h.call(`ai-tasks?taskId=${task.taskId}`)).json();
+  assert.equal(completed.task.kind, 'relation');
+  assert.deepEqual(completed.task.result, { revision: 'r2', count: 3, canvasId: 'canvas' });
+  await h.call('ai-tasks', input); await tick(); finish({ revision: 'r2', count: 0, canvasId: null }); await tick();
+  assert.deepEqual((await (await h.call('ai-tasks?sourceId=s', undefined, h.internal)).json()).task.result, { revision: 'r2', count: 0, canvasId: null });
+  await tasks.close(); h.unregister();
 });
 
 test('共享服务持久绑定隔离及不可用提示', async () => {
