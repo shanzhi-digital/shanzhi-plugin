@@ -2,20 +2,20 @@ import { createHash } from 'node:crypto';
 import { lstat } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadConfig, saveConfig, resolveConfigPath } from './config-store.js';
-import { ApiError, MAX_DOWNLOAD_BYTES, defaultApiClient } from './api-client.js';
+import { ApiError, MAX_DOWNLOAD_BYTES, defaultApiClient, safeErrorMessage } from './api-client.js';
 
 export const REMOTE_SERVICE_NAME = 'contractSure';
 
 export const PREVIEW_ERRORS = Object.freeze({
   INVALID_REQUEST: '请求参数无效',
   ACCESS_DENIED: '无会话访问权限',
-  UNAUTHORIZED: '认证失败或令牌已过期，请先在「设置 → 履约无忧配置」重新配置。',
+  UNAUTHORIZED: '履约系统账户的授权已失效或过期，请在「设置 → 履约无忧配置」重新连接账户。',
   DOWNLOAD_FAILED: '原件下载失败，请重试',
   TOO_LARGE: '原件文件超过 50MB 预览上限',
   TIMEOUT: '原件下载超时，请重试',
   CANCELLED: '已取消原件加载',
   CACHE_ERROR: '原件缓存无法读取',
+  INTERNAL_ERROR: '操作失败，请稍后重试',
 });
 
 export class ContractSureRemoteError extends Error {
@@ -45,22 +45,26 @@ function defaultCachePath(...segments) {
   return join(tmpdir(), 'dsh-cache', ...segments);
 }
 
+// 会话资源的访问校验。拿不到宿主 remoteAccess 服务时一律拒绝（服务类已声明 inject remoteAccess）。
 async function assertSessionAccess(accessCtx, sessionId) {
-  const remoteAccess =
-    typeof accessCtx?.get === 'function' ? accessCtx.get('remoteAccess') : accessCtx?.remoteAccess;
-  if (!remoteAccess?.allows) return;
+  const remoteAccess = typeof accessCtx?.get === 'function' ? accessCtx.get('remoteAccess') : undefined;
+  if (typeof remoteAccess?.allows !== 'function') {
+    throw new ContractSureRemoteError('ACCESS_DENIED', PREVIEW_ERRORS.ACCESS_DENIED);
+  }
   const allowed = await remoteAccess.allows({ kind: 'session', id: sessionId });
   if (!allowed) {
     throw new ContractSureRemoteError('ACCESS_DENIED', PREVIEW_ERRORS.ACCESS_DENIED);
   }
 }
 
+// RPC 报错：固定错误码 + 安全文案。ApiError 的文案是插件自己写的固定文案；其他异常一律不回显 message。
 function wrapError(error) {
   if (error instanceof ContractSureRemoteError) return error;
   if (error instanceof ApiError) {
-    return new ContractSureRemoteError(String(error.code || 'API_ERROR'), error.message);
+    const code = typeof error.code === 'string' && /^[A-Z][A-Z0-9_]*$/u.test(error.code) ? error.code : 'API_ERROR';
+    return new ContractSureRemoteError(code, safeErrorMessage(error, PREVIEW_ERRORS.INTERNAL_ERROR));
   }
-  return new ContractSureRemoteError('INTERNAL_ERROR', error?.message || '请求执行失败');
+  return new ContractSureRemoteError('INTERNAL_ERROR', PREVIEW_ERRORS.INTERNAL_ERROR);
 }
 
 /**
@@ -68,94 +72,62 @@ function wrapError(error) {
  */
 export function createContractSureRemoteHandlers(ctx, deps = {}) {
   const apiClient = deps.apiClient || defaultApiClient;
+  const accounts = deps.accounts;
   const cachePath = typeof deps.cachePath === 'function' ? deps.cachePath : defaultCachePath;
-  const configOptions = { ctx, configPath: deps.configPath };
   const maxBytes = deps.maxBytes ?? MAX_DOWNLOAD_BYTES;
   const fetchImpl = deps.fetchImpl;
   const confirmDraftFn = deps.confirmDraft;
   const pendingDownloads = new Map();
 
+  if (!accounts) {
+    throw new TypeError('createContractSureRemoteHandlers 需要 deps.accounts（账户管理器）。');
+  }
+
+  // 约定 C 的授权提示在 RPC 里转成 UNAUTHORIZED 错误，界面照旧按错误处理。
+  const backendValue = (result) => {
+    if (!result.ok) throw new ContractSureRemoteError('UNAUTHORIZED', result.authRequired.message);
+    return result.value;
+  };
+  const guard = async (fn) => {
+    try {
+      return await fn();
+    } catch (error) {
+      throw wrapError(error);
+    }
+  };
+
   return {
-    async getConfig() {
-      const cfg = loadConfig(configOptions);
-      return {
-        ...cfg,
-        ocrApiKeyEnvSet: Boolean((process.env.DEEPSEEK_API_KEY || '').trim()),
-        configPath: resolveConfigPath(configOptions),
-      };
+    // 接口约定 B：账户与设置。这些方法不触及会话资源，由宿主网关按 global 资源做访问控制。
+    getState() {
+      return guard(() => accounts.getState());
     },
 
-    async saveConfig(patch) {
-      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
-        throw new ContractSureRemoteError('INVALID_REQUEST', '配置参数格式无效。');
-      }
-      const saved = saveConfig(patch, configOptions);
-      return {
-        ok: true,
-        config: saved,
-        configPath: resolveConfigPath(configOptions),
-      };
+    saveSettings(patch) {
+      return guard(() => accounts.saveSettings(patch));
     },
 
-    async testConnection(patch, signal) {
-      const current = loadConfig(configOptions);
-      const merged =
-        patch && typeof patch === 'object' && !Array.isArray(patch)
-          ? {
-              serverUrl: patch.serverUrl?.trim() || current.serverUrl,
-              apiToken: patch.apiToken !== undefined ? String(patch.apiToken).trim() : current.apiToken,
-              ocrApiUrl: patch.ocrApiUrl?.trim() || current.ocrApiUrl,
-              ocrApiKey: patch.ocrApiKey !== undefined ? String(patch.ocrApiKey).trim() : current.ocrApiKey,
-            }
-          : current;
-      try {
-        const user = await apiClient.getMe(merged, { signal, ...(fetchImpl ? { fetchImpl } : {}) });
-        return {
-          ok: true,
-          connected: true,
-          serverUrl: merged.serverUrl,
-          user,
-        };
-      } catch (error) {
-        const wrapped = wrapError(error);
-        return {
-          ok: false,
-          connected: false,
-          serverUrl: merged.serverUrl,
-          code: wrapped.code,
-          error: wrapped.message,
-        };
-      }
+    testConnection(signal) {
+      return guard(() => accounts.testConnection(signal));
     },
 
-    async loginToken(serverUrl, username, password, ttlDays = 90, signal) {
-      if (!username || !password) {
-        throw new ContractSureRemoteError('INVALID_REQUEST', '请输入用户名和密码。');
-      }
-      const current = loadConfig(configOptions);
-      const targetUrl = typeof serverUrl === 'string' && serverUrl.trim() ? serverUrl.trim() : current.serverUrl;
-      const days = Number.isFinite(Number(ttlDays)) ? Math.min(365, Math.max(1, Math.round(Number(ttlDays)))) : 90;
-      try {
-        const result = await apiClient.exchangePluginToken(
-          { serverUrl: targetUrl, username: String(username).trim(), password: String(password), ttlDays: days },
-          { signal, ...(fetchImpl ? { fetchImpl } : {}) },
-        );
-        if (!result?.token) {
-          throw new ContractSureRemoteError('AUTH_FAILED', '后端未返回长期访问令牌。');
-        }
-        const saved = saveConfig({ serverUrl: targetUrl, apiToken: result.token }, configOptions);
-        return {
-          ok: true,
-          token: result.token,
-          userId: result.userId ?? null,
-          username: result.username ?? String(username).trim(),
-          realName: result.realName ?? '',
-          expiresInDays: result.expiresInDays ?? days,
-          serverUrl: saved.serverUrl,
-        };
-      } catch (error) {
-        throw wrapError(error);
-      }
+    startAuthorization(signal) {
+      return guard(() => accounts.startAuthorization(signal));
+    },
+
+    pollAuthorization(requestId) {
+      return guard(() => accounts.pollAuthorization(requestId));
+    },
+
+    cancelAuthorization(requestId) {
+      return guard(() => accounts.cancelAuthorization(requestId));
+    },
+
+    setActiveAccount(accountId) {
+      return guard(() => accounts.setActiveAccount(accountId));
+    },
+
+    disconnectAccount(accountId) {
+      return guard(() => accounts.disconnectAccount(accountId));
     },
 
     async confirmDraft(sessionId, draftId, editedDraft, signal, accessCtx = ctx) {
@@ -170,12 +142,10 @@ export function createContractSureRemoteHandlers(ctx, deps = {}) {
         throw new ContractSureRemoteError('NOT_CONFIGURED', '草稿确认服务未初始化。');
       }
       try {
-        return await confirmDraftFn({
-          sessionId,
-          draftId,
-          draft: editedDraft,
-          signal,
-        });
+        const result = await accounts.withBackend((cfg, backend) =>
+          confirmDraftFn({ sessionId, draftId, draft: editedDraft, signal, cfg, backend }),
+        );
+        return backendValue(result);
       } catch (error) {
         throw wrapError(error);
       }
@@ -197,9 +167,22 @@ export function createContractSureRemoteHandlers(ctx, deps = {}) {
         throw new ContractSureRemoteError('CANCELLED', PREVIEW_ERRORS.CANCELLED);
       }
 
+      // 先确认当前履约账户，再看缓存：缓存按「服务器 + 账户 + 会话」分开，切换或断开账户后不会拿到别的账户下载的原件。
+      let resolved;
+      try {
+        resolved = await accounts.resolveBackend();
+      } catch (error) {
+        throw wrapError(error);
+      }
+      const cfg = backendValue(resolved.ok ? { ok: true, value: resolved.cfg } : resolved);
+      if (signal?.aborted) {
+        throw new ContractSureRemoteError('CANCELLED', PREVIEW_ERRORS.CANCELLED);
+      }
+
       const displayName = typeof fileName === 'string' && fileName.trim() ? fileName.trim() : `document-${numericDocId}.pdf`;
       const safeName = safeOriginalFilename(displayName);
-      const absolutePath = cachePath('contract-sure', hash(sessionId), String(numericDocId), safeName);
+      const cacheScope = hash([cfg.serverUrl, cfg.accountId, sessionId]);
+      const absolutePath = cachePath('contract-sure', cacheScope, String(numericDocId), safeName);
       const result = { sessionId, absolutePath, documentName: displayName };
 
       try {
@@ -218,19 +201,19 @@ export function createContractSureRemoteHandlers(ctx, deps = {}) {
         throw new ContractSureRemoteError('CANCELLED', PREVIEW_ERRORS.CANCELLED);
       }
 
-      const cfg = loadConfig(configOptions);
       let entry = pendingDownloads.get(absolutePath);
       if (!entry) {
         const controller = new AbortController();
         entry = { controller, consumers: new Set() };
         pendingDownloads.set(absolutePath, entry);
-        entry.promise = Promise.resolve()
-          .then(() =>
+        entry.promise = accounts
+          .runBackend(cfg, () =>
             apiClient.downloadDocumentToCache(cfg, numericDocId, absolutePath, controller.signal, {
               maxBytes,
               ...(fetchImpl ? { fetchImpl } : {}),
             }),
           )
+          .then(backendValue)
           .finally(() => {
             if (pendingDownloads.get(absolutePath) === entry) {
               pendingDownloads.delete(absolutePath);
@@ -301,33 +284,66 @@ export function registerContractSureRemote(ctx, deps = {}) {
       for (const init of initializers) init.call(this);
     }
 
-    async getConfig() {
+    // RPC 方法形参名即 args 键名；不用默认值、解构、剩余参数，最后一个形参叫 signal。
+    async getState(signal) {
       try {
-        return await handlers.getConfig();
+        return await handlers.getState();
       } catch (error) {
         throw toRemoteError(error);
       }
     }
 
-    async saveConfig(patch) {
+    async saveSettings(patch, signal) {
       try {
-        return await handlers.saveConfig(patch);
+        return await handlers.saveSettings(patch);
       } catch (error) {
         throw toRemoteError(error);
       }
     }
 
-    async testConnection(patch, signal) {
+    async testConnection(signal) {
       try {
-        return await handlers.testConnection(patch, signal);
+        return await handlers.testConnection(signal);
       } catch (error) {
         throw toRemoteError(error);
       }
     }
 
-    async loginToken(serverUrl, username, password, ttlDays, signal) {
+    async startAuthorization(signal) {
       try {
-        return await handlers.loginToken(serverUrl, username, password, ttlDays, signal);
+        return await handlers.startAuthorization(signal);
+      } catch (error) {
+        throw toRemoteError(error);
+      }
+    }
+
+    async pollAuthorization(requestId, signal) {
+      try {
+        return await handlers.pollAuthorization(requestId);
+      } catch (error) {
+        throw toRemoteError(error);
+      }
+    }
+
+    async cancelAuthorization(requestId, signal) {
+      try {
+        return await handlers.cancelAuthorization(requestId);
+      } catch (error) {
+        throw toRemoteError(error);
+      }
+    }
+
+    async setActiveAccount(accountId, signal) {
+      try {
+        return await handlers.setActiveAccount(accountId);
+      } catch (error) {
+        throw toRemoteError(error);
+      }
+    }
+
+    async disconnectAccount(accountId, signal) {
+      try {
+        return await handlers.disconnectAccount(accountId);
       } catch (error) {
         throw toRemoteError(error);
       }
@@ -367,10 +383,14 @@ export function registerContractSureRemote(ctx, deps = {}) {
     }
   };
 
-  decorate('getConfig');
-  decorate('saveConfig');
+  decorate('getState');
+  decorate('saveSettings');
   decorate('testConnection');
-  decorate('loginToken');
+  decorate('startAuthorization');
+  decorate('pollAuthorization');
+  decorate('cancelAuthorization');
+  decorate('setActiveAccount');
+  decorate('disconnectAccount');
   decorate('confirmDraft', { resources: { session: (sessionId) => sessionId } });
   decorate('cacheOriginalDocument', { resources: { session: (sessionId) => sessionId } });
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, truncateSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readDocument, callDeepSeekOcr, normalizeOcrResponse } from './doc-reader.js';
@@ -38,8 +38,11 @@ test('electronic PDF (!isScanned && totalChars >= 50) uses backend text layer an
   const longText = '--- 第 1 页 ---\n销售合同编号：HT-2026-001，甲方：善治科技有限公司，乙方：数智服务有限公司，合同总额人民币 500,000.00 元整。';
   let ocrCalled = false;
   const mockApiClient = {
-    async extractPdfText(_cfg, filePath) {
-      assert.equal(filePath, pdfPath);
+    async extractPdfText(_cfg, file) {
+      // 传进来的是已经读好的文件对象，不再按路径重读。
+      assert.equal(file.fileName, 'HT-2026-001.pdf');
+      assert.ok(Buffer.isBuffer(file.bytes));
+      assert.equal(file.bytes.toString('utf8'), '%PDF-1.4\n% mock electronic pdf');
       return {
         fileName: 'HT-2026-001.pdf',
         pageCount: 2,
@@ -71,10 +74,13 @@ test('electronic PDF (!isScanned && totalChars >= 50) uses backend text layer an
 
 test('scanned PDF (isScanned: true) falls back to DeepSeek OCR API with multipart purpose=rich_layout_recognition', async () => {
   const pdfPath = join(workDir, 'scanned-contract.pdf');
-  writeFileSync(pdfPath, Buffer.from('%PDF-1.4\n% scanned pdf bytes'));
+  const original = Buffer.from('%PDF-1.4\n% scanned pdf bytes');
+  writeFileSync(pdfPath, original);
 
   const mockApiClient = {
     async extractPdfText() {
+      // 抽字期间文件被换掉：OCR 仍然用最初读入、检查过的那份字节。
+      writeFileSync(pdfPath, Buffer.from('%PDF-1.4\n% swapped after extraction, should never be sent'));
       return {
         fileName: 'scanned-contract.pdf',
         pageCount: 2,
@@ -91,13 +97,17 @@ test('scanned PDF (isScanned: true) falls back to DeepSeek OCR API with multipar
   let capturedAuth = null;
   let capturedPurpose = null;
   let capturedFilename = null;
+  let capturedBytes = null;
+  let capturedRedirect = null;
 
   const fetchImpl = async (url, init) => {
     capturedUrl = url;
     capturedAuth = init.headers.Authorization;
+    capturedRedirect = init.redirect;
     assert.ok(init.body instanceof FormData);
     capturedPurpose = init.body.get('purpose');
     capturedFilename = init.body.get('file')?.name;
+    capturedBytes = Buffer.from(await init.body.get('file').arrayBuffer());
     return new Response(
       JSON.stringify({
         pages: [
@@ -128,6 +138,9 @@ test('scanned PDF (isScanned: true) falls back to DeepSeek OCR API with multipar
   assert.equal(capturedAuth, 'Bearer sk-deepseek-1234');
   assert.equal(capturedPurpose, 'rich_layout_recognition');
   assert.equal(capturedFilename, 'scanned-contract.pdf');
+  assert.deepEqual(capturedBytes, original);
+  // 第 3 条：OCR 请求不跟随重定向。
+  assert.equal(capturedRedirect, 'error');
   assert.match(result.text, /--- 第 1 页 ---/);
   assert.match(result.text, /CG-2026-009/);
   assert.match(result.text, /--- 第 2 页 ---/);
@@ -159,6 +172,7 @@ test('image files invoke DeepSeek OCR directly and support OpenAI-compatible /ch
     { ocrApiUrl: 'https://example.com/v1/chat/completions', ocrApiKey: 'sk-vision' },
     {
       fetchImpl: async (_url, init) => {
+        assert.equal(init.redirect, 'error');
         capturedBody = JSON.parse(init.body);
         return new Response(
           JSON.stringify({
@@ -187,7 +201,7 @@ test('missing OCR API key (neither config nor DEEPSEEK_API_KEY env) produces act
       (err) => {
         assert.equal(err.code, 'OCR_KEY_MISSING');
         assert.match(err.message, /设置 → 履约无忧配置/);
-        assert.match(err.message, /contract_config/);
+        assert.doesNotMatch(err.message, /contract_config/);
         assert.match(err.message, /DEEPSEEK_API_KEY/);
         return true;
       },
@@ -205,6 +219,20 @@ test('missing OCR API key (neither config nor DEEPSEEK_API_KEY env) produces act
       },
     });
     assert.equal(res.text, '收款回单识别结果');
+
+    // 环境变量只发给官方 api.deepseek.com，自定义 OCR 地址不用。
+    let customCalled = false;
+    await assert.rejects(
+      () =>
+        callDeepSeekOcr(jpgPath, { ocrApiUrl: 'https://ocr.example.com/v1/ocr', ocrApiKey: '' }, undefined, {
+          fetchImpl: async () => {
+            customCalled = true;
+            throw new Error('should not call fetch');
+          },
+        }),
+      (err) => err.code === 'OCR_KEY_MISSING',
+    );
+    assert.equal(customCalled, false);
   } finally {
     if (prevEnv !== undefined) process.env.DEEPSEEK_API_KEY = prevEnv;
     else delete process.env.DEEPSEEK_API_KEY;
@@ -228,4 +256,98 @@ test('Excel files redirect user to contract_manage_flow(action="import_excel") a
   assert.equal(normalizeOcrResponse({ text: 'world' }).text, 'world');
   assert.equal(normalizeOcrResponse({ data: { text: 'nested' } }).text, 'nested');
   assert.equal(normalizeOcrResponse({ choices: [{ message: { content: 'vision' } }] }).text, 'vision');
+});
+
+test('readDocument rejects formats outside the whitelist, directories and files over 20MB before any network call', async () => {
+  let fetchCalled = false;
+  const fetchImpl = async () => {
+    fetchCalled = true;
+    throw new Error('should not call fetch');
+  };
+  const webpPath = join(workDir, 'photo.webp');
+  writeFileSync(webpPath, Buffer.from('RIFF0000WEBP'));
+  await assert.rejects(() => readDocument(webpPath, { ocrApiKey: 'sk-x' }, { fetchImpl }), (err) => err.code === 'UNSUPPORTED_FORMAT');
+
+  const jsonPath = join(workDir, 'dsh-config.json');
+  writeFileSync(jsonPath, '{"apiToken":"secret"}');
+  await assert.rejects(() => readDocument(jsonPath, {}, { fetchImpl }), (err) => err.code === 'UNSUPPORTED_FORMAT');
+
+  const dirPath = join(workDir, 'scans.png');
+  mkdirSync(dirPath);
+  await assert.rejects(() => readDocument(dirPath, { ocrApiKey: 'sk-x' }, { fetchImpl }), (err) => err.code === 'INVALID_FILE');
+
+  const bigPath = join(workDir, 'huge.png');
+  writeFileSync(bigPath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  truncateSync(bigPath, 20 * 1024 * 1024 + 1);
+  await assert.rejects(() => readDocument(bigPath, { ocrApiKey: 'sk-x' }, { fetchImpl }), (err) => err.code === 'TOO_LARGE');
+
+  assert.equal(fetchCalled, false);
+});
+
+test('OCR errors use fixed messages: no response body, no low-level exception text, no key with control characters', async () => {
+  const pngPath = join(workDir, 'receipt-errors.png');
+  writeFileSync(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  const cfg = { ocrApiUrl: 'https://api.deepseek.com/v1/tools/ocr', ocrApiKey: 'sk-secret-ocr-key-123' };
+
+  // 服务端把请求头回显在错误正文里。
+  await assert.rejects(
+    () =>
+      callDeepSeekOcr(pngPath, cfg, undefined, {
+        fetchImpl: async () =>
+          new Response(JSON.stringify({ error: { message: 'bad Authorization: Bearer sk-secret-ocr-key-123' } }), {
+            status: 400,
+            headers: { 'content-type': 'application/json' },
+          }),
+      }),
+    (err) => err.code === 'OCR_FAILED' && /HTTP 400/u.test(err.message) && !/sk-secret|Authorization/u.test(err.message),
+  );
+  await assert.rejects(
+    () =>
+      callDeepSeekOcr(pngPath, cfg, undefined, {
+        fetchImpl: async () => new Response('invalid key sk-secret-ocr-key-123', { status: 401 }),
+      }),
+    (err) => err.code === 'OCR_UNAUTHORIZED' && !/sk-secret/u.test(err.message),
+  );
+  // 底层异常（例如无效请求头时 Node 带出的 header 值、重定向被拒）不回显。
+  await assert.rejects(
+    () =>
+      callDeepSeekOcr(pngPath, cfg, undefined, {
+        fetchImpl: async () => {
+          throw new TypeError('Invalid header value: "Bearer sk-secret-ocr-key-123"');
+        },
+      }),
+    (err) => err.code === 'OCR_ERROR' && !/sk-secret|Invalid header/u.test(err.message),
+  );
+  // Key 里有换行：直接拒绝，不发请求。
+  let called = false;
+  await assert.rejects(
+    () =>
+      callDeepSeekOcr(pngPath, { ...cfg, ocrApiKey: 'sk-secret\nInjected: 1' }, undefined, {
+        fetchImpl: async () => {
+          called = true;
+          return new Response('{}');
+        },
+      }),
+    (err) => err.code === 'OCR_KEY_INVALID' && !/sk-secret|Injected/u.test(err.message),
+  );
+  assert.equal(called, false);
+});
+
+test('a link whose target type differs from its extension is rejected (an image name pointing at a text file is not sent to OCR)', async () => {
+  const notesPath = join(workDir, 'private-notes.txt');
+  writeFileSync(notesPath, 'secret notes');
+  const disguised = join(workDir, 'disguised-scan.png');
+  symlinkSync(notesPath, disguised);
+  let called = false;
+  await assert.rejects(
+    () =>
+      readDocument(disguised, { ocrApiKey: 'sk-x' }, {
+        fetchImpl: async () => {
+          called = true;
+          return new Response('{}');
+        },
+      }),
+    (err) => err.code === 'UNSUPPORTED_FORMAT',
+  );
+  assert.equal(called, false);
 });

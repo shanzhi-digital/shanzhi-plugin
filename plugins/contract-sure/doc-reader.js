@@ -1,12 +1,11 @@
-import { readFile, stat } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
-import { DEFAULT_CONFIG, resolveOcrApiKey } from './config-store.js';
-import { ApiError, defaultApiClient, mimeTypeForFile } from './api-client.js';
+import { DEFAULT_CONFIG, isHeaderSafeSecret, resolveOcrApiKey } from './config-store.js';
+import { ApiError, MAX_LOCAL_FILE_BYTES, defaultApiClient, mimeTypeForFile, readLocalFile } from './api-client.js';
 
 export const PLAIN_TEXT_EXTENSIONS = new Set(['.txt', '.md']);
-export const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+export const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png']);
 export const SUPPORTED_EXTENSIONS = new Set(['.pdf', ...IMAGE_EXTENSIONS, ...PLAIN_TEXT_EXTENSIONS]);
-export const MAX_READ_BYTES = 50 * 1024 * 1024;
+export const MAX_READ_BYTES = MAX_LOCAL_FILE_BYTES;
 export const OCR_TIMEOUT_MS = 120_000;
 export const MIN_TEXT_LAYER_CHARS = 50;
 
@@ -62,20 +61,33 @@ export function normalizeOcrResponse(payload) {
   return { text: '', pageCount: null };
 }
 
-export async function callDeepSeekOcr(filePath, cfg = {}, signal, opts = {}) {
+const OCR_EXTENSIONS = Object.freeze(['.pdf', ...IMAGE_EXTENSIONS]);
+
+/**
+ * 调 DeepSeek OCR。source 可以是本地路径，也可以是 readLocalFile 已读好的文件对象（复用同一份字节）。
+ * Key 只用 cfg.ocrApiKey（已按 OCR 地址的 origin 核对过）；没有时只有官方 api.deepseek.com 才用环境变量。
+ */
+export async function callDeepSeekOcr(source, cfg = {}, signal, opts = {}) {
   const { fetchImpl = globalThis.fetch, timeoutMs = OCR_TIMEOUT_MS } = opts;
   const { apiKey } = resolveOcrApiKey(cfg);
   if (!apiKey) {
     throw new ApiError(
-      '当前文件为扫描件或图片，需要调用 DeepSeek OCR 接口进行识别，但尚未配置 DeepSeek API Key。请在「设置 → 履约无忧配置」填写 DeepSeek OCR API Key，或调用 contract_config 工具配置 ocrApiKey（也可设置环境变量 DEEPSEEK_API_KEY）。',
+      '当前文件为扫描件或图片，需要调用 DeepSeek OCR 接口进行识别，但尚未配置 DeepSeek API Key。请在「设置 → 履约无忧配置」填写 DeepSeek OCR API Key（OCR 地址是官方 api.deepseek.com 时，也可以设置环境变量 DEEPSEEK_API_KEY）。',
       { code: 'OCR_KEY_MISSING' },
     );
   }
+  if (!isHeaderSafeSecret(apiKey)) {
+    throw new ApiError('DeepSeek OCR Key 含有空格或控制字符，请在「设置 → 履约无忧配置」重新填写。', { code: 'OCR_KEY_INVALID' });
+  }
 
   const ocrUrl = (cfg?.ocrApiUrl || DEFAULT_CONFIG.ocrApiUrl).trim();
-  const ext = extname(filePath).toLowerCase();
-  const bytes = await readFile(filePath);
-  const mime = mimeTypeForFile(filePath);
+  const file =
+    source && typeof source === 'object' && Buffer.isBuffer(source.bytes)
+      ? source
+      : await readLocalFile(source, { allowedExtensions: [...OCR_EXTENSIONS], maxBytes: MAX_READ_BYTES });
+  const ext = extname(file.fileName).toLowerCase();
+  const bytes = file.bytes;
+  const mime = mimeTypeForFile(file.fileName);
 
   const controller = new AbortController();
   let timedOut = false;
@@ -92,6 +104,7 @@ export async function callDeepSeekOcr(filePath, cfg = {}, signal, opts = {}) {
 
   try {
     let response;
+    // 不跟随重定向：Key 和文件只发给填写的 OCR 地址。
     if (/\/chat\/completions\/?$/iu.test(ocrUrl) && IMAGE_EXTENSIONS.has(ext)) {
       const dataUrl = `data:${mime};base64,${bytes.toString('base64')}`;
       response = await fetchImpl(ocrUrl, {
@@ -120,10 +133,11 @@ export async function callDeepSeekOcr(filePath, cfg = {}, signal, opts = {}) {
           ],
         }),
         signal: controller.signal,
+        redirect: 'error',
       });
     } else {
       const form = new FormData();
-      form.append('file', new Blob([bytes], { type: mime }), basename(filePath));
+      form.append('file', new Blob([bytes], { type: mime }), file.fileName);
       form.append('purpose', 'rich_layout_recognition');
       response = await fetchImpl(ocrUrl, {
         method: 'POST',
@@ -133,23 +147,24 @@ export async function callDeepSeekOcr(filePath, cfg = {}, signal, opts = {}) {
         },
         body: form,
         signal: controller.signal,
+        redirect: 'error',
       });
     }
 
     const contentType = response.headers.get('content-type') || '';
     const rawText = await response.text();
     if (!response.ok) {
-      let detail = '';
-      try {
-        const errJson = JSON.parse(rawText);
-        detail = errJson?.error?.message || errJson?.message || '';
-      } catch {
-        detail = rawText.slice(0, 200);
+      // 不回显 OCR 服务返回的正文。
+      if (response.status === 401 || response.status === 403) {
+        throw new ApiError(`DeepSeek OCR Key 无效或没有权限（HTTP ${response.status}），请在「设置 → 履约无忧配置」检查 OCR Key。`, {
+          status: response.status,
+          code: 'OCR_UNAUTHORIZED',
+        });
       }
-      throw new ApiError(
-        `DeepSeek OCR 接口调用失败（HTTP ${response.status}）${detail ? `：${detail}` : ''}`,
-        { status: response.status, code: 'OCR_FAILED' },
-      );
+      throw new ApiError(`DeepSeek OCR 接口调用失败（HTTP ${response.status}），请稍后重试。`, {
+        status: response.status,
+        code: 'OCR_FAILED',
+      });
     }
 
     let parsed;
@@ -177,7 +192,8 @@ export async function callDeepSeekOcr(filePath, cfg = {}, signal, opts = {}) {
     if (signal?.aborted) {
       throw new ApiError('文档识别已取消。', { code: 'CANCELLED' });
     }
-    throw new ApiError(`DeepSeek OCR 请求异常：${error?.message || '网络错误'}`, { code: 'OCR_ERROR' });
+    // 底层异常（可能带出请求头里的 Key）不回显。
+    throw new ApiError('DeepSeek OCR 请求失败（或 OCR 地址返回了重定向），请检查网络和 OCR 地址。', { code: 'OCR_ERROR' });
   } finally {
     clearTimeout(timer);
     if (signal) signal.removeEventListener('abort', onAbort);
@@ -198,30 +214,19 @@ export async function readDocument(filePath, cfg = {}, opts = {}) {
   }
   if (!SUPPORTED_EXTENSIONS.has(ext)) {
     throw new ApiError(
-      `暂不支持该文件格式（${ext || '无扩展名'}）。支持格式：.pdf、.jpg、.jpeg、.png、.webp、.txt、.md。`,
+      `暂不支持该文件格式（${ext || '无扩展名'}）。支持格式：.pdf、.jpg、.jpeg、.png、.txt、.md。`,
       { code: 'UNSUPPORTED_FORMAT' },
     );
   }
-
-  let info;
-  try {
-    info = await stat(cleanPath);
-  } catch {
-    throw new ApiError(`本地文件不存在或无法访问：${cleanPath}`, { code: 'FILE_NOT_FOUND' });
-  }
-  if (!info.isFile()) {
-    throw new ApiError(`路径不是普通文件：${cleanPath}`, { code: 'INVALID_FILE' });
-  }
-  if (info.size > MAX_READ_BYTES) {
-    throw new ApiError('文件大小超过 50MB 上限，无法读取。', { code: 'TOO_LARGE' });
-  }
+  // 普通文件、不超过 20MB；只读一次，之后抽字和 OCR 都用这一份字节。
+  const file = await readLocalFile(cleanPath, { allowedExtensions: [...SUPPORTED_EXTENSIONS], maxBytes: MAX_READ_BYTES });
 
   const fileName = basename(cleanPath);
   const apiClient = opts.apiClient || defaultApiClient;
   const signal = opts.signal;
 
   if (PLAIN_TEXT_EXTENSIONS.has(ext)) {
-    const text = await readFile(cleanPath, 'utf8');
+    const text = file.bytes.toString('utf8');
     return {
       filePath: cleanPath,
       fileName,
@@ -236,7 +241,7 @@ export async function readDocument(filePath, cfg = {}, opts = {}) {
   }
 
   if (ext === '.pdf') {
-    const extracted = await apiClient.extractPdfText(cfg, cleanPath, {
+    const extracted = await apiClient.extractPdfText(cfg, file, {
       signal,
       ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
     });
@@ -258,7 +263,7 @@ export async function readDocument(filePath, cfg = {}, opts = {}) {
       };
     }
 
-    const ocr = await callDeepSeekOcr(cleanPath, cfg, signal, opts);
+    const ocr = await callDeepSeekOcr(file, cfg, signal, opts);
     return {
       filePath: cleanPath,
       fileName: extracted?.fileName || fileName,
@@ -272,8 +277,8 @@ export async function readDocument(filePath, cfg = {}, opts = {}) {
     };
   }
 
-  // Image files (.jpg, .jpeg, .png, .webp)
-  const ocr = await callDeepSeekOcr(cleanPath, cfg, signal, opts);
+  // 图片（.jpg、.jpeg、.png）
+  const ocr = await callDeepSeekOcr(file, cfg, signal, opts);
   return {
     filePath: cleanPath,
     fileName,

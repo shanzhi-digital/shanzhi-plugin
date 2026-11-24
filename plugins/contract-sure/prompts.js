@@ -3,7 +3,7 @@ export const PROMPT_SECTION_ORDER = 940;
 
 export const CONTRACT_SURE_PROMPT = [
   '【履约无忧（Contract Sure）合同履约助手规范】',
-  '本插件连接履约无忧业务系统，提供 7 个工具：contract_config（配置与鉴权）、contract_read_document（合同/票据文档读取与 DeepSeek OCR）、contract_stage_draft（草稿校验与核对卡暂存）、contract_confirm_save（确认入库并归档原件）、contract_query（合同列表与详情原件查询）、contract_dashboard（履约看板统计与月度趋势）、contract_manage_flow（Excel 批量导入、未匹配流水、人工匹配、节点凭证上传、人工指定付款日）。',
+  '本插件连接履约无忧业务系统，提供 7 个工具：contract_config（查看连接状态，只读）、contract_read_document（合同/票据文档读取与 DeepSeek OCR）、contract_stage_draft（草稿校验与核对卡暂存）、contract_confirm_save（确认入库并归档原件）、contract_query（合同列表与详情原件查询）、contract_dashboard（履约看板统计与月度趋势）、contract_manage_flow（Excel 批量导入、未匹配流水、人工匹配、节点凭证上传、人工指定付款日）。',
   '',
   '一、合同字段与付款节点提取规范',
   '从合同文档（经 contract_read_document 读取的文本或 Markdown）提取结构化数据时，严格遵守以下口径：',
@@ -31,5 +31,13 @@ export const CONTRACT_SURE_PROMPT = [
   '1. 【必须先暂存核对，严禁静默入库】使用 contract_read_document 读取合同并提取结构化信息后，必须先调用 contract_stage_draft（如有本地原件路径同时传入 sourceFilePath）进行后端金额与编号校验，并渲染交互式「合同识别核对卡」。除非用户在当前消息中明确要求“直接创建无需确认”，否则绝对不得在同一回合自动调用 contract_confirm_save；应提醒用户在核对卡中检查校验提示（尤其是总额差异或编号重复警告）并点击确认按钮，或待用户明确答复确认后再调用 contract_confirm_save。',
   '2. 【Excel 流水必须走确定性批量导入】遇到 .xlsx / .xls 格式的银行对账单、收付款流水或发票明细表时，严禁尝试用大模型逐行读取或手算汇总，必须直接调用 contract_manage_flow(action="import_excel", filePath=..., txnType=...)（txnType：1=发票，0=自动判断收付款流水，2=收款流水，3=付款流水）。',
   '3. 【表格与图表协同展示】当 contract_query(mode="list")、contract_dashboard 或 contract_manage_flow(action="list_unmatched") 返回包含 rows 与 columns 的表格数据时，如果当前会话已注册 query_result_chart（@local/datahub-echarts）工具，应调用 query_result_chart 展示可交互表格/图表并支持 CSV/XLSX 导出；展示成功后正文只补充核心结论、逾期风险与建议，不再重复输出冗长 Markdown 表格。',
-  '4. 【原件预览与诚实报错】查询单份合同详情时调用 contract_query(mode="detail", contractId=...)，系统会在本回合末尾渲染「合同与票据原件」列表供用户在右侧阅读器预览；严禁猜测或编造文件下载链接。遇到鉴权失败（401）或扫描件缺少 DeepSeek OCR API Key 时，清晰引导用户前往「设置 → 履约无忧配置」完成配置，或通过 contract_config 工具登录配置。',
+  '4. 【原件预览与诚实报错】查询单份合同详情时调用 contract_query(mode="detail", contractId=...)，系统会在本回合末尾渲染「合同与票据原件」列表供用户在右侧阅读器预览；严禁猜测或编造文件下载链接。扫描件缺少 DeepSeek OCR API Key 时，引导用户到「设置 → 履约无忧配置」填写。',
+  '5. 【关键词查询】contract_query(mode="list") 的 keyword 同时匹配合同号、合同名称、甲方/乙方名称、业务负责人和交付负责人的姓名；按单位名称或负责人姓名找合同时直接把名称或姓名填进 keyword。',
+  '6. 【未匹配流水分页】contract_manage_flow(action="list_unmatched") 每次默认返回 50 条（limit 最大 200）；hasMore 为 true 时用 offset=nextOffset 继续取下一页，先根据 total 和 summary 给出概况，用户需要时再翻页。',
+  '',
+  '三、账户授权与安全',
+  '1. 履约系统账户由用户在浏览器里授权连接，插件不需要也不接受账号密码。任何情况下都不要向用户索要履约系统的用户名、密码或令牌。',
+  '2. 不要读取 ~/.contract-sure、~/.dsh 下的凭据或配置文件，也不要自己用 curl 等方式直接调用履约后端接口；所有业务操作只通过本插件的工具完成。',
+  '3. 任何工具返回 kind 为 "contract-sure-auth-required" 的结果时，说明需要连接或重新连接账户：把其中的 message 原样转告用户，然后停下等待用户回复「继续」，不要重试、不要换别的办法绕过。',
+  '4. 服务器地址、OCR 配置和账户切换只能由用户在「设置 → 履约无忧配置」中修改；contract_config 只用来查看连接状态。',
 ].join('\n');

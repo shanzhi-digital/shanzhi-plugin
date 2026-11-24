@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { loadConfig, saveConfig, maskConfig, registerSettingsSync } from './config-store.js';
-import { ApiError, defaultApiClient } from './api-client.js';
+import { extname } from 'node:path';
+import { ApiError, UPLOAD_EXTENSIONS, defaultApiClient, safeErrorMessage } from './api-client.js';
 import { readDocument } from './doc-reader.js';
+import { createAccountManager } from './accounts.js';
+import { toToolOutput } from './tool-output.js';
 import { PROMPT_SECTION_NAME, PROMPT_SECTION_ORDER, CONTRACT_SURE_PROMPT } from './prompts.js';
 import {
   DRAFT_RECORD_TYPE,
@@ -48,6 +50,9 @@ export const inject = ['tools'];
 
 const MAX_STAGED_DRAFTS = 200;
 const MAX_READ_TEXT_CHARS = 120_000;
+const UNMATCHED_DEFAULT_LIMIT = 50;
+const UNMATCHED_MAX_LIMIT = 200;
+export const ACCOUNT_SWITCHED_MESSAGE = '账户已切换，请重新核对';
 
 const CONTRACT_TYPE_LABELS = Object.freeze({
   1: '销售合同',
@@ -83,6 +88,11 @@ const MATCH_STATUS_LABELS = Object.freeze({
 });
 
 const textRender = (_args, value) => [{ type: 'text', text: JSON.stringify(value) }];
+
+function clampInteger(value, min, max, fallback) {
+  if (!Number.isInteger(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
 
 function toFiniteNumber(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -273,9 +283,24 @@ export function setupContractSure(ctx, deps = {}) {
   const configPath = deps.configPath;
   const fetchImpl = deps.fetchImpl;
   const callOpts = (signal) => ({ signal, ...(fetchImpl ? { fetchImpl } : {}) });
-  const getCfg = () => loadConfig({ ctx, configPath });
   const stagedDrafts = new Map();
   const disposers = [];
+  const accounts = createAccountManager(ctx, {
+    configPath,
+    apiClient,
+    fetchImpl,
+    now: deps.now,
+    hostname: deps.hostname,
+    schedule: deps.schedule,
+    cancelSchedule: deps.cancelSchedule,
+  });
+  disposers.push(() => accounts.dispose());
+
+  // 需要后端的操作：没有账户或令牌失效时返回约定 C 的授权提示，而不是抛错。
+  const viaBackend = async (fn) => {
+    const result = await accounts.withBackend(fn);
+    return result.ok ? result.value : result.authRequired;
+  };
 
   function storeDraft(entry) {
     if (stagedDrafts.size >= MAX_STAGED_DRAFTS) {
@@ -285,12 +310,22 @@ export function setupContractSure(ctx, deps = {}) {
     stagedDrafts.set(entry.draftId, entry);
   }
 
-  async function confirmContractDraft({ draftId, draft, sourceFilePath, sessionId, callId, signal }) {
+  async function confirmContractDraft({ draftId, draft, sourceFilePath, sessionId, callId, signal, cfg, backend }) {
     const staged = draftId ? stagedDrafts.get(draftId) : null;
     if (draftId && !staged && !draft) {
       throw new ApiError(`未找到暂存草稿（${draftId}），请重新调用 contract_stage_draft 生成核对草稿。`, {
         code: 'DRAFT_NOT_FOUND',
       });
+    }
+    // 草稿属于暂存它的会话。
+    if (staged && staged.sessionId && sessionId && staged.sessionId !== sessionId) {
+      throw new ApiError(`未找到暂存草稿（${draftId}），请重新调用 contract_stage_draft 生成核对草稿。`, {
+        code: 'DRAFT_NOT_FOUND',
+      });
+    }
+    // 草稿是用哪个服务器、哪个账户校验的，就只能用它入库：切换了账户或服务器就要重新核对，也不沿用旧原件。
+    if (staged && (staged.serverUrl !== cfg.serverUrl || staged.accountId !== cfg.accountId)) {
+      throw new ApiError(ACCOUNT_SWITCHED_MESSAGE, { code: 'ACCOUNT_SWITCHED' });
     }
     if (staged?.status === 'confirmed') {
       return {
@@ -321,7 +356,6 @@ export function setupContractSure(ctx, deps = {}) {
       });
     }
 
-    const cfg = getCfg();
     const createdId = await apiClient.createContract(cfg, finalDraft, callOpts(signal));
     const contractId = typeof createdId === 'object' && createdId !== null ? createdId.id ?? createdId.contractId : createdId;
 
@@ -337,7 +371,13 @@ export function setupContractSure(ctx, deps = {}) {
         const uploaded = await apiClient.uploadContractFile(cfg, contractId, finalSourcePath, 1, callOpts(signal));
         uploadedDoc = uploaded ? formatDocumentSummary(uploaded) : { fileName: finalSourcePath, docType: 1 };
       } catch (error) {
-        uploadWarning = `合同已成功创建（ID: #${contractId}），但自动归档原件失败：${error.message}`;
+        if (error instanceof ApiError && error.code === 'UNAUTHORIZED') {
+          // 合同已经建好：不要让用户重做创建，只提示重新授权后补传原件。
+          await backend?.reportUnauthorized();
+          uploadWarning = `合同已成功创建（ID: #${contractId}），但履约系统账户的授权已失效，原件没有归档：请重新授权后补传。`;
+        } else {
+          uploadWarning = `合同已成功创建（ID: #${contractId}），但自动归档原件失败：${safeErrorMessage(error)}`;
+        }
       }
     }
 
@@ -378,10 +418,7 @@ export function setupContractSure(ctx, deps = {}) {
     };
   }
 
-  // 1. Settings synchronization
-  disposers.push(registerSettingsSync(ctx, { configPath }));
-
-  // 2. System prompt registration
+  // 1. System prompt registration
   const registerPrompt = (sp) => {
     if (!sp?.section) return;
     try {
@@ -391,8 +428,8 @@ export function setupContractSure(ctx, deps = {}) {
         text: CONTRACT_SURE_PROMPT,
       });
       if (typeof dispose === 'function') disposers.push(dispose);
-    } catch (error) {
-      ctx.logger?.warn?.(`@local/contract-sure: systemPrompt registration failed: ${error.message}`);
+    } catch {
+      ctx.logger?.warn?.('@local/contract-sure: systemPrompt registration failed.');
     }
   };
   const immediateSp = getHostService(ctx, 'systemPrompt');
@@ -402,108 +439,50 @@ export function setupContractSure(ctx, deps = {}) {
     ctx.inject(['systemPrompt'], (c) => registerPrompt(getHostService(c, 'systemPrompt')));
   }
 
-  // 3. Register 7 host tools
+  // 2. Register 7 host tools
   const tools = getHostService(ctx, 'tools');
+  // 所有工具的返回值都先整理成宿主接受的无损 JSON。
+  const registerTool = (def) =>
+    tools.register({
+      ...def,
+      async execute(args, exec) {
+        return toToolOutput(await def.execute(args ?? {}, exec ?? {}));
+      },
+    });
 
   // Tool 1: contract_config
-  tools.register({
+  registerTool({
     name: 'contract_config',
     description:
-      '查看、修改或测试履约无忧后端与 DeepSeek OCR 配置，支持通过用户名密码一键换取 90 天长期插件访问令牌（CLI 与桌面端均可用）。',
+      '查看履约无忧的连接状态：服务器地址、是否已连接、当前账户的姓名和用户名、已连接的账户数。只读，不能修改任何配置；连接、切换或断开账户以及修改服务器地址、OCR 配置，都请用户在「设置 → 履约无忧配置」中操作。',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        action: {
-          type: 'string',
-          enum: ['get', 'set', 'test', 'login'],
-          description: '操作类型：get 查看当前脱敏配置，set 更新配置，test 测试后端连通性，login 用账号密码换取长期令牌并保存。',
-        },
-        serverUrl: { type: 'string', description: '后端 API 基础地址，例如 http://localhost:8081/api/v1' },
-        apiToken: { type: 'string', description: '履约无忧长期访问令牌（Bearer Token）' },
-        ocrApiUrl: { type: 'string', description: 'DeepSeek OCR 接口地址，默认 https://api.deepseek.com/v1/tools/ocr' },
-        ocrApiKey: { type: 'string', description: 'DeepSeek API Key（用于扫描件/图片 OCR 识别）' },
-        username: { type: 'string', description: 'login 模式必填：履约无忧登录用户名' },
-        password: { type: 'string', description: 'login 模式必填：履约无忧登录密码' },
-        ttlDays: { type: 'integer', minimum: 1, maximum: 365, description: 'login 模式可选：长期令牌有效期天数，默认 90' },
+        action: { type: 'string', enum: ['get'], description: '固定为 get：查看连接状态。' },
       },
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: textRender },
-    async execute(args = {}, exec = {}) {
-      const action = args.action || 'get';
-      if (action === 'get') {
-        return { action: 'get', config: maskConfig(getCfg(), { configPath }) };
+    async execute(args) {
+      if (args.action !== undefined && args.action !== 'get') {
+        throw new ApiError('contract_config 只支持查看连接状态（action="get"），配置请在「设置 → 履约无忧配置」中修改。', {
+          code: 'INVALID_ARGUMENT',
+        });
       }
-      if (action === 'set') {
-        const patch = {};
-        for (const key of ['serverUrl', 'apiToken', 'ocrApiUrl', 'ocrApiKey']) {
-          if (args[key] !== undefined) patch[key] = args[key];
-        }
-        const saved = saveConfig(patch, { ctx, configPath });
-        return {
-          action: 'set',
-          ok: true,
-          message: '履约无忧配置已保存并同步。',
-          config: maskConfig(saved, { configPath }),
-        };
+      const info = await accounts.describeConnection();
+      const name = info.account ? info.account.realName || info.account.username : '';
+      let message = '尚未连接履约系统账户，请在「设置 → 履约无忧配置」点「连接账户」完成浏览器授权。';
+      if (info.connected) {
+        message = `已连接履约系统账户：${name}（${info.account.username}）。`;
+      } else if (info.account) {
+        message = `当前账户「${name}」的授权已${info.account.status === 'expired' ? '过期' : '失效'}，请在「设置 → 履约无忧配置」重新连接账户。`;
       }
-      if (action === 'login') {
-        if (!args.username || !args.password) {
-          throw new ApiError('登录换取令牌需要提供 username 和 password。', { code: 'INVALID_ARGUMENT' });
-        }
-        const current = getCfg();
-        const targetUrl = args.serverUrl?.trim() || current.serverUrl;
-        const ttlDays = args.ttlDays ?? 90;
-        const res = await apiClient.exchangePluginToken(
-          { serverUrl: targetUrl, username: args.username, password: args.password, ttlDays },
-          callOpts(exec.signal),
-        );
-        if (!res?.token) {
-          throw new ApiError('后端未返回有效的插件令牌。', { code: 'AUTH_FAILED' });
-        }
-        const saved = saveConfig({ serverUrl: targetUrl, apiToken: res.token }, { ctx, configPath });
-        return {
-          action: 'login',
-          ok: true,
-          userId: res.userId ?? null,
-          username: res.username ?? args.username,
-          realName: res.realName ?? '',
-          expiresInDays: res.expiresInDays ?? ttlDays,
-          message: `已成功换取 ${res.expiresInDays ?? ttlDays} 天长期令牌并保存到本地配置。`,
-          config: maskConfig(saved, { configPath }),
-        };
-      }
-      if (action === 'test') {
-        const current = getCfg();
-        const testCfg = {
-          ...current,
-          ...(args.serverUrl ? { serverUrl: args.serverUrl } : {}),
-          ...(args.apiToken ? { apiToken: args.apiToken } : {}),
-        };
-        try {
-          const user = await apiClient.getMe(testCfg, callOpts(exec.signal));
-          return {
-            action: 'test',
-            connected: true,
-            serverUrl: testCfg.serverUrl,
-            user,
-            message: `连接成功，当前登录用户：${user?.realName || user?.username || '未知'}`,
-          };
-        } catch (error) {
-          return {
-            action: 'test',
-            connected: false,
-            serverUrl: testCfg.serverUrl,
-            error: error.message,
-          };
-        }
-      }
-      throw new ApiError(`不支持的 action：${action}`, { code: 'INVALID_ARGUMENT' });
+      return { action: 'get', ...info, message };
     },
   });
 
   // Tool 2: contract_read_document
-  tools.register({
+  registerTool({
     name: 'contract_read_document',
     description:
       '读取本地合同 PDF、发票/收款单/验收单图片或文本文件为纯文本/Markdown。电子 PDF 优先调用后端零成本提取文本层，扫描件与图片自动回退 DeepSeek OCR 识别。',
@@ -513,30 +492,34 @@ export function setupContractSure(ctx, deps = {}) {
       properties: {
         filePath: {
           type: 'string',
-          description: '本地文件路径，支持 .pdf、.jpg、.jpeg、.png、.webp、.txt、.md',
+          description: '本地文件路径，支持 .pdf、.jpg、.jpeg、.png、.txt、.md，不超过 20MB',
         },
       },
       required: ['filePath'],
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: textRender },
-    async execute(args, exec = {}) {
-      const cfg = getCfg();
-      const res = await readDocument(args.filePath, cfg, {
-        apiClient,
-        signal: exec.signal,
-        ...(fetchImpl ? { fetchImpl } : {}),
-      });
-      const truncated = res.text.length > MAX_READ_TEXT_CHARS;
-      return {
-        ...res,
-        truncated,
-        text: truncated ? `${res.text.slice(0, MAX_READ_TEXT_CHARS)}\n\n[文本已截断，原文共 ${res.text.length} 字]` : res.text,
+    async execute(args, exec) {
+      const read = async (cfg) => {
+        const res = await readDocument(args.filePath, cfg, {
+          apiClient,
+          signal: exec.signal,
+          ...(fetchImpl ? { fetchImpl } : {}),
+        });
+        const truncated = res.text.length > MAX_READ_TEXT_CHARS;
+        return {
+          ...res,
+          truncated,
+          text: truncated ? `${res.text.slice(0, MAX_READ_TEXT_CHARS)}\n\n[文本已截断，原文共 ${res.text.length} 字]` : res.text,
+        };
       };
+      // 只有 PDF 要走后端抽取文本层；图片和文本文件不需要履约系统账户。
+      const isPdf = typeof args.filePath === 'string' && extname(args.filePath.trim()).toLowerCase() === '.pdf';
+      return isPdf ? viaBackend(read) : read(await accounts.localConfig());
     },
   });
 
   // Tool 3: contract_stage_draft
-  tools.register({
+  registerTool({
     name: 'contract_stage_draft',
     description:
       '校验提取的合同草稿并生成交互式「合同识别核对卡」。调用后端 POST /contracts/validate 核对编号重复与节点总额一致性，暂存草稿供用户确认。',
@@ -577,14 +560,18 @@ export function setupContractSure(ctx, deps = {}) {
       required: ['contractNo', 'contractName', 'contractType', 'totalAmount'],
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: textRender },
-    async execute(args, exec = {}) {
-      const cfg = getCfg();
+    async execute(args, exec) {
       const draft = normalizeContractDraft(args);
       const sourceFilePath = typeof args.sourceFilePath === 'string' && args.sourceFilePath.trim()
         ? args.sourceFilePath.trim()
         : null;
 
-      const validation = await apiClient.validateContractDraft(cfg, draft, callOpts(exec.signal));
+      const resolved = await accounts.resolveBackend();
+      if (!resolved.ok) return resolved.authRequired;
+      const { cfg } = resolved;
+      const checked = await accounts.runBackend(cfg, () => apiClient.validateContractDraft(cfg, draft, callOpts(exec.signal)));
+      if (!checked.ok) return checked.authRequired;
+      const validation = checked.value;
       const draftId = `draft_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
       const sessionId = exec.agent?.id || null;
       const { session, turn, callSeq } = resolveSessionContext(ctx, sessionId, exec.callId);
@@ -592,6 +579,9 @@ export function setupContractSure(ctx, deps = {}) {
       storeDraft({
         draftId,
         sessionId,
+        // 草稿绑定校验它的服务器和账户。
+        serverUrl: cfg.serverUrl,
+        accountId: cfg.accountId,
         turn,
         draft,
         sourceFilePath,
@@ -612,6 +602,11 @@ export function setupContractSure(ctx, deps = {}) {
         status: 'staged',
       });
 
+      let hint = '合同草稿已校验并生成核对卡，请提示用户在核对卡中确认信息后点击「确认创建并归档原件」，或在用户明确确认后调用 contract_confirm_save。';
+      const sourceExt = sourceFilePath ? extname(sourceFilePath).toLowerCase() : '';
+      if (sourceFilePath && !UPLOAD_EXTENSIONS.includes(sourceExt)) {
+        hint += `注意：原件是 ${sourceExt || '无扩展名'} 格式，履约系统只能归档 PDF、Word、Excel 和图片原件；确认后合同会创建，但这份原件不会归档。`;
+      }
       return {
         kind: 'contract-sure-draft',
         draftId,
@@ -619,13 +614,13 @@ export function setupContractSure(ctx, deps = {}) {
         draft,
         sourceFilePath,
         validation,
-        hint: '合同草稿已校验并生成核对卡，请提示用户在核对卡中确认信息后点击「确认创建并归档原件」，或在用户明确确认后调用 contract_confirm_save。',
+        hint,
       };
     },
   });
 
   // Tool 4: contract_confirm_save
-  tools.register({
+  registerTool({
     name: 'contract_confirm_save',
     description:
       '确认并保存已暂存的合同草稿（或直接保存已校验草稿）到履约无忧系统，若附带 sourceFilePath 则自动归档上传合同原件。',
@@ -639,20 +634,24 @@ export function setupContractSure(ctx, deps = {}) {
       },
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: textRender },
-    async execute(args = {}, exec = {}) {
-      return confirmContractDraft({
-        draftId: args.draftId,
-        draft: args.draft,
-        sourceFilePath: args.sourceFilePath,
-        sessionId: exec.agent?.id || null,
-        callId: exec.callId || null,
-        signal: exec.signal,
-      });
+    async execute(args, exec) {
+      return viaBackend((cfg, backend) =>
+        confirmContractDraft({
+          draftId: args.draftId,
+          draft: args.draft,
+          sourceFilePath: args.sourceFilePath,
+          sessionId: exec.agent?.id || null,
+          callId: exec.callId || null,
+          signal: exec.signal,
+          cfg,
+          backend,
+        }),
+      );
     },
   });
 
   // Tool 5: contract_query
-  tools.register({
+  registerTool({
     name: 'contract_query',
     description:
       '查询履约无忧合同列表（mode="list"，返回适配 query_result_chart 的中文行列数据）或单份合同详情及关联文档原件（mode="detail"，自动呈现原件预览列表）。',
@@ -662,7 +661,7 @@ export function setupContractSure(ctx, deps = {}) {
       properties: {
         mode: { type: 'string', enum: ['list', 'detail'], description: 'list 查询分页合同列表；detail 查询单份合同详情与附件原件' },
         contractId: { type: 'integer', description: 'mode="detail" 必填：合同 ID' },
-        keyword: { type: 'string', description: 'mode="list" 可选：关键词（合同编号、名称或负责人）' },
+        keyword: { type: 'string', description: 'mode="list" 可选：关键词，同时匹配合同号、合同名称、甲方/乙方名称、业务负责人和交付负责人的姓名' },
         contractType: { type: 'integer', enum: [1, 2], description: 'mode="list" 可选：1=销售合同，2=采购合同' },
         status: { type: 'integer', enum: [0, 1, 2, 3], description: 'mode="list" 可选：0=草稿，1=履约中，2=已完成，3=已终止' },
         startDate: { type: 'string', description: 'mode="list" 可选：起始签订日期 YYYY-MM-DD' },
@@ -673,71 +672,75 @@ export function setupContractSure(ctx, deps = {}) {
       required: ['mode'],
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: textRender },
-    async execute(args, exec = {}) {
-      const cfg = getCfg();
+    async execute(args, exec) {
       if (args.mode === 'list') {
-        const page = await apiClient.listContracts(
-          cfg,
-          {
-            keyword: args.keyword,
-            contractType: args.contractType,
-            status: args.status,
-            startDate: args.startDate,
-            endDate: args.endDate,
-            pageNum: args.pageNum ?? 1,
-            pageSize: args.pageSize ?? 20,
-          },
-          callOpts(exec.signal),
-        );
-        const records = Array.isArray(page?.records) ? page.records : Array.isArray(page) ? page : [];
-        const total = Number.isFinite(page?.total) ? page.total : records.length;
-        const { columns, rows } = formatContractListRows(records);
-        return {
-          mode: 'list',
-          total,
-          rowCount: total,
-          pageNum: page?.current ?? args.pageNum ?? 1,
-          pageSize: page?.size ?? args.pageSize ?? 20,
-          truncated: total > rows.length,
-          columns,
-          rows,
-        };
+        return viaBackend(async (cfg) => {
+          const page = await apiClient.listContracts(
+            cfg,
+            {
+              keyword: args.keyword,
+              contractType: args.contractType,
+              status: args.status,
+              startDate: args.startDate,
+              endDate: args.endDate,
+              pageNum: args.pageNum ?? 1,
+              pageSize: args.pageSize ?? 20,
+            },
+            callOpts(exec.signal),
+          );
+          const records = Array.isArray(page?.records) ? page.records : Array.isArray(page) ? page : [];
+          const total = Number.isFinite(page?.total) ? page.total : records.length;
+          const { columns, rows } = formatContractListRows(records);
+          return {
+            mode: 'list',
+            total,
+            rowCount: total,
+            pageNum: page?.current ?? args.pageNum ?? 1,
+            pageSize: page?.size ?? args.pageSize ?? 20,
+            truncated: total > rows.length,
+            columns,
+            rows,
+          };
+        });
       }
 
       if (args.mode === 'detail') {
         if (!Number.isInteger(args.contractId) || args.contractId <= 0) {
           throw new ApiError('mode="detail" 必须提供有效的正整数 contractId。', { code: 'INVALID_ARGUMENT' });
         }
-        const detail = await apiClient.getContractDetail(cfg, args.contractId, callOpts(exec.signal));
-        const documents = Array.isArray(detail?.documents) ? detail.documents.map(formatDocumentSummary) : [];
-        const nodes = Array.isArray(detail?.nodes) ? detail.nodes : [];
-        const sessionId = exec.agent?.id || null;
-        const { session, turn, callSeq } = resolveSessionContext(ctx, sessionId, exec.callId);
+        return viaBackend(async (cfg) => {
+          const detail = await apiClient.getContractDetail(cfg, args.contractId, callOpts(exec.signal));
+          const source = detail && typeof detail === 'object' ? detail : {};
+          // nodes / documents 单独返回，合同对象里不再带这两个键（以前写成 undefined 会被宿主判为非无损 JSON）。
+          const { nodes: rawNodes, documents: rawDocuments, ...contractFields } = source;
+          const documents = Array.isArray(rawDocuments) ? rawDocuments.map(formatDocumentSummary) : [];
+          const nodes = Array.isArray(rawNodes) ? rawNodes : [];
+          const sessionId = exec.agent?.id || null;
+          const { session, turn, callSeq } = resolveSessionContext(ctx, sessionId, exec.callId);
 
-        emitPluginRecord(appendPluginRecord, session, DETAIL_RECORD_TYPE, {
-          version: 1,
-          turn,
-          callId: exec.callId || null,
-          callSeq,
-          contractId: detail?.id ?? args.contractId,
-          contractNo: detail?.contractNo || '',
-          contractName: detail?.contractName || '',
-          documents,
+          emitPluginRecord(appendPluginRecord, session, DETAIL_RECORD_TYPE, {
+            version: 1,
+            turn,
+            callId: exec.callId || null,
+            callSeq,
+            contractId: source.id ?? args.contractId,
+            contractNo: source.contractNo || '',
+            contractName: source.contractName || '',
+            documents,
+          });
+
+          return {
+            kind: 'contract-sure-detail',
+            mode: 'detail',
+            contract: {
+              ...contractFields,
+              contractTypeLabel: CONTRACT_TYPE_LABELS[source.contractType] || '',
+              statusLabel: CONTRACT_STATUS_LABELS[source.status] || '',
+            },
+            nodes,
+            documents,
+          };
         });
-
-        return {
-          kind: 'contract-sure-detail',
-          mode: 'detail',
-          contract: {
-            ...detail,
-            contractTypeLabel: CONTRACT_TYPE_LABELS[detail?.contractType] || '',
-            statusLabel: CONTRACT_STATUS_LABELS[detail?.status] || '',
-            nodes: undefined,
-            documents: undefined,
-          },
-          nodes,
-          documents,
-        };
       }
 
       throw new ApiError(`不支持的查询模式：${args.mode}`, { code: 'INVALID_ARGUMENT' });
@@ -745,7 +748,7 @@ export function setupContractSure(ctx, deps = {}) {
   });
 
   // Tool 6: contract_dashboard
-  tools.register({
+  registerTool({
     name: 'contract_dashboard',
     description:
       '查询履约看板核心汇总指标与 12 个月趋势数据，返回可直接交由 query_result_chart 展示的月度趋势表格行（columns + rows）。',
@@ -758,31 +761,32 @@ export function setupContractSure(ctx, deps = {}) {
       },
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: textRender },
-    async execute(args = {}, exec = {}) {
-      const cfg = getCfg();
+    async execute(args, exec) {
       const year = args.year ?? new Date().getFullYear();
-      const [stats, trends] = await Promise.all([
-        apiClient.getDashboardStats(cfg, args.contractType, callOpts(exec.signal)),
-        apiClient.getDashboardTrends(cfg, args.contractType, year, callOpts(exec.signal)),
-      ]);
-      const { columns, rows } = formatDashboardTrendRows(trends || {});
-      return {
-        contractType: args.contractType ?? null,
-        contractTypeLabel: args.contractType ? CONTRACT_TYPE_LABELS[args.contractType] : '全部合同',
-        year,
-        summary: stats || {},
-        columns,
-        rows,
-        rowCount: rows.length,
-      };
+      return viaBackend(async (cfg) => {
+        const [stats, trends] = await Promise.all([
+          apiClient.getDashboardStats(cfg, args.contractType, callOpts(exec.signal)),
+          apiClient.getDashboardTrends(cfg, args.contractType, year, callOpts(exec.signal)),
+        ]);
+        const { columns, rows } = formatDashboardTrendRows(trends || {});
+        return {
+          contractType: args.contractType ?? null,
+          contractTypeLabel: args.contractType ? CONTRACT_TYPE_LABELS[args.contractType] : '全部合同',
+          year,
+          summary: stats || {},
+          columns,
+          rows,
+          rowCount: rows.length,
+        };
+      });
     },
   });
 
   // Tool 7: contract_manage_flow
-  tools.register({
+  registerTool({
     name: 'contract_manage_flow',
     description:
-      '执行履约三流确定性业务操作：import_excel（导入发票/银行流水 Excel 并自动匹配）、list_unmatched（查询未匹配流水）、manual_match（人工关联流水到合同/节点）、upload_node_evidence（上传节点发票/收付款单/验收材料）、set_node_manual_date（人工指定节点应付款日期）。',
+      '执行履约三流确定性业务操作：import_excel（导入发票/银行流水 Excel 并自动匹配）、list_unmatched（分页查询未匹配流水）、manual_match（人工关联流水到合同/节点）、upload_node_evidence（上传节点发票/收付款单/验收材料）、set_node_manual_date（人工指定节点应付款日期）。list_unmatched 每次最多返回 limit 条（默认 50，最大 200）：结果里 total 是总条数，hasMore 为 true 时用 offset=nextOffset 再调用一次取下一页；需要全部明细时逐页翻，不要一次要太多。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -792,7 +796,10 @@ export function setupContractSure(ctx, deps = {}) {
           enum: ['import_excel', 'list_unmatched', 'manual_match', 'upload_node_evidence', 'set_node_manual_date'],
           description: '业务动作类型',
         },
-        filePath: { type: 'string', description: 'import_excel / upload_node_evidence 必填：本地文件路径' },
+        filePath: {
+          type: 'string',
+          description: 'import_excel / upload_node_evidence 必填：本地文件路径（import_excel 只收 .xlsx/.xls；upload_node_evidence 收 .pdf/.docx/.xlsx/.xls/.png/.jpg/.jpeg；不超过 20MB）',
+        },
         txnType: {
           type: 'integer',
           enum: [0, 1, 2, 3],
@@ -806,12 +813,18 @@ export function setupContractSure(ctx, deps = {}) {
         eventDate: { type: 'string', description: 'upload_node_evidence 可选：事件日期 YYYY-MM-DD（开票日/收付款日/验收日）' },
         date: { type: 'string', description: 'set_node_manual_date 必填：人工指定的应付款日期 YYYY-MM-DD' },
         remark: { type: 'string', description: 'set_node_manual_date 可选：调整备注说明' },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: UNMATCHED_MAX_LIMIT,
+          description: `list_unmatched 可选：本页条数，默认 ${UNMATCHED_DEFAULT_LIMIT}，最大 ${UNMATCHED_MAX_LIMIT}`,
+        },
+        offset: { type: 'integer', minimum: 0, description: 'list_unmatched 可选：从第几条开始（从 0 起），翻页时填上一页返回的 nextOffset' },
       },
       required: ['action'],
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: textRender },
-    async execute(args, exec = {}) {
-      const cfg = getCfg();
+    async execute(args, exec) {
       const opts = callOpts(exec.signal);
 
       if (args.action === 'import_excel') {
@@ -819,51 +832,72 @@ export function setupContractSure(ctx, deps = {}) {
           throw new ApiError('import_excel 必须提供本地 Excel 文件路径（filePath）。', { code: 'INVALID_ARGUMENT' });
         }
         const txnType = args.txnType ?? 0;
-        const result = await apiClient.uploadTransactionExcel(cfg, args.filePath, txnType, opts);
-        return {
-          action: 'import_excel',
-          txnType,
-          txnTypeLabel: TXN_TYPE_LABELS[txnType] ?? String(txnType),
-          batchId: result?.batchId ?? null,
-          parsedCount: result?.parsedCount ?? 0,
-          matchedCount: Array.isArray(result?.matchResults) ? result.matchResults.length : 0,
-          matchResults: result?.matchResults ?? [],
-          status: result?.status ?? 'success',
-        };
+        return viaBackend(async (cfg) => {
+          const result = await apiClient.uploadTransactionExcel(cfg, args.filePath, txnType, opts);
+          return {
+            action: 'import_excel',
+            txnType,
+            txnTypeLabel: TXN_TYPE_LABELS[txnType] ?? String(txnType),
+            batchId: result?.batchId ?? null,
+            parsedCount: result?.parsedCount ?? 0,
+            matchedCount: Array.isArray(result?.matchResults) ? result.matchResults.length : 0,
+            matchResults: result?.matchResults ?? [],
+            status: result?.status ?? 'success',
+          };
+        });
       }
 
       if (args.action === 'list_unmatched') {
-        const [txns, summary] = await Promise.all([
-          args.txnType != null
-            ? apiClient.getTransactionPool(cfg, { matchStatus: 0, txnType: args.txnType }, opts)
-            : apiClient.getUnmatchedTransactions(cfg, opts),
-          apiClient.getTransactionSummary(cfg, opts).catch(() => null),
-        ]);
-        const list = Array.isArray(txns) ? txns : [];
-        const { columns, rows } = formatUnmatchedRows(list);
-        return {
-          action: 'list_unmatched',
-          count: list.length,
-          rowCount: list.length,
-          summary,
-          columns,
-          rows,
-        };
+        const limit = clampInteger(args.limit, 1, UNMATCHED_MAX_LIMIT, UNMATCHED_DEFAULT_LIMIT);
+        const offset = clampInteger(args.offset, 0, Number.MAX_SAFE_INTEGER, 0);
+        return viaBackend(async (cfg) => {
+          const [txns, summary] = await Promise.all([
+            args.txnType != null
+              ? apiClient.getTransactionPool(cfg, { matchStatus: 0, txnType: args.txnType }, opts)
+              : apiClient.getUnmatchedTransactions(cfg, opts),
+            // 汇总只是附带信息，失败时给 null；但 401 说明授权已失效，要让整个调用返回授权提示。
+            apiClient.getTransactionSummary(cfg, opts).catch((error) => {
+              if (error instanceof ApiError && error.code === 'UNAUTHORIZED') throw error;
+              return null;
+            }),
+          ]);
+          const list = Array.isArray(txns) ? txns : [];
+          const total = list.length;
+          const { columns, rows } = formatUnmatchedRows(list.slice(offset, offset + limit));
+          const nextOffset = offset + rows.length;
+          const hasMore = nextOffset < total;
+          return {
+            action: 'list_unmatched',
+            total,
+            count: total,
+            rowCount: total,
+            offset,
+            limit,
+            hasMore,
+            nextOffset: hasMore ? nextOffset : null,
+            truncated: rows.length < total,
+            summary,
+            columns,
+            rows,
+          };
+        });
       }
 
       if (args.action === 'manual_match') {
         if (!Number.isInteger(args.transactionId) || !Number.isInteger(args.contractId)) {
           throw new ApiError('manual_match 必须提供 transactionId 和 contractId。', { code: 'INVALID_ARGUMENT' });
         }
-        await apiClient.manualMatchTransaction(cfg, args.transactionId, args.contractId, args.nodeId, opts);
-        return {
-          action: 'manual_match',
-          ok: true,
-          transactionId: args.transactionId,
-          contractId: args.contractId,
-          nodeId: args.nodeId ?? null,
-          message: `已将流水 #${args.transactionId} 关联至合同 #${args.contractId}${args.nodeId ? `（节点 #${args.nodeId}）` : ''}并重算节点状态。`,
-        };
+        return viaBackend(async (cfg) => {
+          await apiClient.manualMatchTransaction(cfg, args.transactionId, args.contractId, args.nodeId, opts);
+          return {
+            action: 'manual_match',
+            ok: true,
+            transactionId: args.transactionId,
+            contractId: args.contractId,
+            nodeId: args.nodeId ?? null,
+            message: `已将流水 #${args.transactionId} 关联至合同 #${args.contractId}${args.nodeId ? `（节点 #${args.nodeId}）` : ''}并重算节点状态。`,
+          };
+        });
       }
 
       if (args.action === 'upload_node_evidence') {
@@ -872,20 +906,22 @@ export function setupContractSure(ctx, deps = {}) {
             code: 'INVALID_ARGUMENT',
           });
         }
-        const doc = await apiClient.uploadNodeDocument(
-          cfg,
-          args.contractId,
-          args.nodeId,
-          args.filePath,
-          { docType: args.docType, amount: args.amount, eventDate: args.eventDate },
-          opts,
-        );
-        return {
-          action: 'upload_node_evidence',
-          ok: true,
-          document: doc ? formatDocumentSummary(doc) : null,
-          message: `已上传节点 #${args.nodeId} 的${DOC_TYPE_LABELS[args.docType] || '证明材料'}并触发履约日期重算。`,
-        };
+        return viaBackend(async (cfg) => {
+          const doc = await apiClient.uploadNodeDocument(
+            cfg,
+            args.contractId,
+            args.nodeId,
+            args.filePath,
+            { docType: args.docType, amount: args.amount, eventDate: args.eventDate },
+            opts,
+          );
+          return {
+            action: 'upload_node_evidence',
+            ok: true,
+            document: doc ? formatDocumentSummary(doc) : null,
+            message: `已上传节点 #${args.nodeId} 的${DOC_TYPE_LABELS[args.docType] || '证明材料'}并触发履约日期重算。`,
+          };
+        });
       }
 
       if (args.action === 'set_node_manual_date') {
@@ -894,34 +930,36 @@ export function setupContractSure(ctx, deps = {}) {
             code: 'INVALID_ARGUMENT',
           });
         }
-        await apiClient.manualSetNodeDate(
-          cfg,
-          args.nodeId,
-          { contractId: args.contractId, date: args.date, remark: args.remark },
-          opts,
-        );
-        return {
-          action: 'set_node_manual_date',
-          ok: true,
-          contractId: args.contractId,
-          nodeId: args.nodeId,
-          date: args.date,
-          remark: args.remark ?? '',
-          message: `已将节点 #${args.nodeId} 的应付款日期人工调整为 ${args.date}。`,
-        };
+        return viaBackend(async (cfg) => {
+          await apiClient.manualSetNodeDate(
+            cfg,
+            args.nodeId,
+            { contractId: args.contractId, date: args.date, remark: args.remark },
+            opts,
+          );
+          return {
+            action: 'set_node_manual_date',
+            ok: true,
+            contractId: args.contractId,
+            nodeId: args.nodeId,
+            date: args.date,
+            remark: args.remark ?? '',
+            message: `已将节点 #${args.nodeId} 的应付款日期人工调整为 ${args.date}。`,
+          };
+        });
       }
 
       throw new ApiError(`不支持的业务动作：${args.action}`, { code: 'INVALID_ARGUMENT' });
     },
   });
 
-  // 4. Register TypertRemoteService ("contractSure") when host protocol is available
+  // 3. Register TypertRemoteService ("contractSure") when host protocol is available
   const remote = registerContractSureRemote(ctx, {
     ...(hostTypert || {}),
     ...(deps.typert || {}),
     dshCachePath: deps.cachePath || hostDshCachePath,
     apiClient,
-    configPath,
+    accounts,
     fetchImpl,
     confirmDraft: confirmContractDraft,
   });
@@ -942,6 +980,7 @@ export function setupContractSure(ctx, deps = {}) {
 
   return {
     stagedDrafts,
+    accounts,
     remoteHandlers: remote.handlers,
     confirmContractDraft,
     dispose() {

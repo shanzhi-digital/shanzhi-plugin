@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync, truncateSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setupContractSure } from './index.js';
+import { createContractSureRemoteHandlers } from './preview-service.js';
+import { ApiError } from './api-client.js';
 import { projectEvents, DRAFT_RECORD_TYPE, DRAFT_CONFIRMED_RECORD_TYPE, DETAIL_RECORD_TYPE } from './event-projection.js';
 import { normalizeTable } from '../datahub-echarts/results.js';
+import { assertLossless, isLosslessJson } from './assert-lossless.js';
 
 const workDir = mkdtempSync(join(tmpdir(), 'contract-sure-tools-'));
 const configPath = join(workDir, 'dsh-config.json');
@@ -22,7 +25,28 @@ writeFileSync(sampleInvoicePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a
 
 const requests = [];
 let nextContractId = 101;
-const VALID_TOKEN = 'plugin-jwt-token-90d';
+// 后端签发过、尚未吊销的插件令牌。
+const validTokens = new Set();
+let issuedTokenCount = 0;
+let pollResponses = [];
+const DEFAULT_UNMATCHED_ROWS = [
+  {
+    id: 902,
+    txnType: 3,
+    txnDate: '2026-04-12',
+    amount: 45000,
+    counterparty: '浙江云算供应商',
+    contractNo: null,
+    description: '服务器采购尾款',
+    matchStatus: 0,
+  },
+];
+let unmatchedRows = DEFAULT_UNMATCHED_ROWS;
+// 只让某个子请求返回 401（主请求照常成功），用来测试子请求的授权失效。
+let failSummaryWith401 = false;
+let failUploadWith401 = false;
+// 数据库故障时 L1 对插件令牌返回 HTTP 503。
+let serviceUnavailable = false;
 
 async function readRequestBody(req) {
   const chunks = [];
@@ -48,34 +72,47 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify(payload));
   };
 
-  if (req.method === 'POST' && url.pathname === '/api/v1/auth/plugin-token') {
-    const body = JSON.parse(rawBody.toString('utf8'));
-    if (body.username === 'admin' && body.password === 'secret123') {
-      return sendJson(200, {
-        code: 200,
-        message: 'success',
-        data: {
-          token: VALID_TOKEN,
-          userId: 7,
-          username: 'admin',
-          realName: '张主管',
-          expiresInDays: body.ttlDays || 90,
-        },
-      });
-    }
-    return sendJson(200, { code: 401, message: '用户名或密码错误', data: null });
+  // 约定 A：A1 发起授权、A5 轮询、A8 吊销。
+  if (req.method === 'POST' && url.pathname === '/api/v1/auth/plugin-authorize/start') {
+    const requestId = `req-${requests.length}-abcdefghijklmnopqrstuvwx`;
+    return sendJson(200, {
+      code: 200,
+      message: 'success',
+      data: {
+        requestId,
+        userCode: 'ABCD-2345',
+        pollSecret: `poll-${requestId}-0123456789abcdefghijklmnopqrstuvwxyz`,
+        verifyPath: `/plugin-authorize?req=${requestId}`,
+        verifyUrl: null,
+        interval: 2,
+        expiresIn: 600,
+      },
+    });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/v1/auth/plugin-authorize/poll') {
+    const next = pollResponses.shift() || { status: 'PENDING' };
+    if (next.status !== 'APPROVED') return sendJson(200, { code: 200, message: 'success', data: next });
+    const token = `plugin-jwt-${++issuedTokenCount}`;
+    validTokens.add(token);
+    return sendJson(200, { code: 200, message: 'success', data: { ...next, token } });
   }
 
-  // All other endpoints require valid Bearer token
-  if (auth !== `Bearer ${VALID_TOKEN}`) {
-    return sendJson(401, { code: 401, message: '未登录或令牌已过期', data: null });
+  const bearer = auth.replace(/^Bearer /u, '');
+  if (serviceUnavailable) return sendJson(503, { code: 503, message: '服务暂时不可用', data: null });
+  if (!validTokens.has(bearer)) {
+    return sendJson(401, { code: 401, message: '登录已过期，请重新登录', data: null });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/v1/auth/plugin-token/revoke') {
+    validTokens.delete(bearer);
+    return sendJson(200, { code: 200, message: 'success', data: null });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/v1/auth/me') {
     return sendJson(200, {
       code: 200,
       message: 'success',
-      data: { id: 7, username: 'admin', realName: '张主管', deptId: 1, postType: 1, roleKeys: ['ROLE_ADMIN'] },
+      data: { id: 7, username: 'admin', realName: '张主管', deptName: '综合管理部', deptId: 1, postType: 1, roleKeys: ['ROLE_ADMIN'] },
     });
   }
 
@@ -123,6 +160,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && /^\/api\/v1\/contracts\/\d+\/upload$/.test(url.pathname)) {
+    if (failUploadWith401) return sendJson(401, { code: 401, message: '登录已过期，请重新登录', data: null });
     return sendJson(200, {
       code: 200,
       message: 'success',
@@ -191,6 +229,29 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  // 详情字段大量为 null、没有 nodes/documents 的合同。
+  if (req.method === 'GET' && url.pathname === '/api/v1/contracts/78') {
+    return sendJson(200, {
+      code: 200,
+      message: 'success',
+      data: {
+        id: 78,
+        contractNo: 'HT-2025-078',
+        contractName: '历史合同（字段不全）',
+        contractType: null,
+        partyAName: null,
+        partyBName: null,
+        totalAmount: null,
+        taxRate: null,
+        signDate: null,
+        status: null,
+        businessOwnerName: null,
+        nodes: null,
+        documents: null,
+      },
+    });
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/v1/contracts/dashboard/stats') {
     return sendJson(200, {
       code: 200,
@@ -237,25 +298,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/v1/transactions/unmatched') {
-    return sendJson(200, {
-      code: 200,
-      message: 'success',
-      data: [
-        {
-          id: 902,
-          txnType: 3,
-          txnDate: '2026-04-12',
-          amount: 45000,
-          counterparty: '浙江云算供应商',
-          contractNo: null,
-          description: '服务器采购尾款',
-          matchStatus: 0,
-        },
-      ],
-    });
+    return sendJson(200, { code: 200, message: 'success', data: unmatchedRows });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/v1/transactions/summary') {
+    if (failSummaryWith401) return sendJson(401, { code: 401, message: '登录已过期，请重新登录', data: null });
     return sendJson(200, { code: 200, message: 'success', data: { totalCount: 12, unmatchedCount: 1 } });
   }
 
@@ -286,9 +333,56 @@ let baseUrl;
 let registeredTools;
 let promptSections;
 let appendedRecords;
-let hostSettingsData;
+let settingsTouched = false;
+let hostCredentials;
 let pluginInstance;
 let remoteAccessAllowed = true;
+let clockOffsetMs = 0;
+const toolsWithLosslessOutput = new Set();
+
+// 宿主 ctx.credentials 的内存替身（readRecord / modifyRecord / deleteRecord）。
+function memoryCredentials() {
+  const records = new Map();
+  return {
+    records,
+    async readRecord(key) {
+      return records.has(key) ? structuredClone(records.get(key)) : undefined;
+    },
+    async modifyRecord(key, mutate) {
+      const next = await mutate(records.get(key));
+      if (next === undefined) return records.get(key);
+      records.set(key, structuredClone(next));
+      return next;
+    },
+    async deleteRecord(key) {
+      records.delete(key);
+    },
+  };
+}
+
+// 调用工具，并断言输出能通过宿主的无损 JSON 校验。
+async function runTool(name, args = {}, exec = {}) {
+  const output = await registeredTools.get(name).execute(args, exec);
+  assertLossless(output, `${name} 的输出`);
+  toolsWithLosslessOutput.add(name);
+  return output;
+}
+
+async function waitForAuthorization(remote, requestId) {
+  for (let i = 0; i < 500; i++) {
+    const result = await remote.pollAuthorization(requestId);
+    if (result.status !== 'pending') return result;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error('授权结果一直是 pending');
+}
+
+const ADMIN_APPROVAL = {
+  status: 'APPROVED',
+  grantId: 501,
+  expiresAt: '2099-02-22T10:00:00+08:00',
+  user: { userId: 7, username: 'admin', realName: '张主管', deptName: '综合管理部' },
+};
 
 test.before(async () => {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -298,7 +392,7 @@ test.before(async () => {
   registeredTools = new Map();
   promptSections = [];
   appendedRecords = [];
-  hostSettingsData = {};
+  hostCredentials = memoryCredentials();
 
   const sessionEvents = [
     { type: 'turn/start', seq: 1, data: { turn: 1 } },
@@ -308,15 +402,23 @@ test.before(async () => {
   ];
   const mockSession = { snapshotEvents: () => [...sessionEvents, ...appendedRecords] };
 
+  // 旧版本的明文配置：插件启动时应丢弃 apiToken、迁走 ocrApiKey。
+  writeFileSync(
+    configPath,
+    JSON.stringify({ serverUrl: baseUrl, apiToken: 'legacy-token-without-jti', ocrApiKey: 'sk-legacy-ocr-0000' }),
+    { mode: 0o600 },
+  );
+
   const ctx = {
     tools: { register(def) { registeredTools.set(def.name, def); } },
     systemPrompt: { section(sec) { promptSections.push(sec); return () => {}; } },
     sessions: { get: (id) => (id === 'sess-1' ? mockSession : undefined) },
     remoteAccess: { allows: async () => remoteAccessAllowed },
-    settings: {
-      register(def) { hostSettingsData[def.namespace] = { ...def.defaults }; return () => {}; },
-      set(ns, val) { hostSettingsData[ns] = { ...val }; },
-      get(ns) { return hostSettingsData[ns]; },
+    credentials: hostCredentials,
+    // 插件不再读写宿主 settings：碰到就记下来，测试里断言没有碰过。
+    get settings() {
+      settingsTouched = true;
+      return undefined;
     },
     get(svc) { return this[svc]; },
     effect() {},
@@ -328,6 +430,10 @@ test.before(async () => {
     appendPluginRecord: (_session, type, data) => {
       appendedRecords.push({ type, seq: 10 + appendedRecords.length, data });
     },
+    hostname: () => 'test-host',
+    now: () => Date.now() + clockOffsetMs,
+    schedule: (fn) => setTimeout(fn, 2),
+    cancelSchedule: (handle) => clearTimeout(handle),
   });
 });
 
@@ -353,54 +459,121 @@ test('registers all 7 tools and systemPrompt section plugin:contract-sure (order
   assert.equal(promptSections.length, 1);
   assert.equal(promptSections[0].name, 'plugin:contract-sure');
   assert.equal(promptSections[0].order, 940);
-  assert.match(promptSections[0].text, /contract_stage_draft/);
-  assert.match(promptSections[0].text, /import_excel/);
-  assert.match(promptSections[0].text, /query_result_chart/);
+  const prompt = promptSections[0].text;
+  assert.match(prompt, /contract_stage_draft/);
+  assert.match(prompt, /import_excel/);
+  assert.match(prompt, /query_result_chart/);
+  assert.match(prompt, /contract-sure-auth-required/);
+  assert.match(prompt, /甲方\/乙方名称/);
+  assert.match(prompt, /不要自己用 curl/);
+  // 不再有任何引导用户提供账号密码或用工具登录的说法。
+  assert.doesNotMatch(prompt, /登录配置|提供.{0,6}密码|password/u);
+
+  // contract_config 不再接受密码、令牌或任何修改配置的参数。
+  const configTool = registeredTools.get('contract_config');
+  assert.deepEqual(Object.keys(configTool.parameters.properties), ['action']);
+  assert.deepEqual(configTool.parameters.properties.action.enum, ['get']);
+  for (const def of registeredTools.values()) {
+    assert.doesNotMatch(JSON.stringify(def.parameters), /password|apiToken|ocrApiKey/u);
+  }
 });
 
-test('contract_config supports login, get (masked), set, test, and syncs local file + host settings', async () => {
-  const tool = registeredTools.get('contract_config');
-
-  const loginRes = await tool.execute({
-    action: 'login',
-    serverUrl: baseUrl,
-    username: 'admin',
-    password: 'secret123',
-    ttlDays: 90,
+test('legacy plaintext secrets are scrubbed from the config file on startup; host settings are never touched', async () => {
+  const state = await pluginInstance.remoteHandlers.getState();
+  assert.equal(state.serverUrl, baseUrl);
+  assert.equal(state.credentialStore, 'dsh-credentials');
+  assert.equal(state.ocr.keyConfigured, true);
+  assert.equal(state.ocr.keySource, 'credentials');
+  assert.deepEqual(hostCredentials.records.get('contract-sure/ocr-api-key'), {
+    kind: 'grant',
+    payload: { version: 1, type: 'ocr-api-key', key: 'sk-legacy-ocr-0000', origin: 'https://api.deepseek.com' },
   });
-  assert.equal(loginRes.ok, true);
-  assert.equal(loginRes.realName, '张主管');
-  assert.equal(loginRes.expiresInDays, 90);
-  assert.equal(loginRes.config.apiTokenConfigured, true);
-  assert.ok(!JSON.stringify(loginRes).includes(VALID_TOKEN));
+  const fileText = readFileSync(configPath, 'utf8');
+  assert.doesNotMatch(fileText, /apiToken|ocrApiKey|legacy-token|sk-legacy/u);
+  // 第 1 条：宿主 settings 同步已删除。
+  assert.equal(settingsTouched, false);
+});
 
-  // Verify persisted locally & synced to host settings
-  const persisted = JSON.parse(readFileSync(configPath, 'utf8'));
-  assert.equal(persisted.apiToken, VALID_TOKEN);
-  assert.equal(hostSettingsData['contract-sure'].apiToken, VALID_TOKEN);
+test('without an account every backend tool returns contract C instead of failing', async () => {
+  const expected = {
+    kind: 'contract-sure-auth-required',
+    reason: 'no-account',
+    serverUrl: baseUrl,
+    message: '需要先连接履约系统账户：请点下方卡片的「连接账户」，在浏览器里完成授权后，回复「继续」。',
+  };
+  const before = requests.length;
+  assert.deepEqual(await runTool('contract_query', { mode: 'list' }), expected);
+  assert.deepEqual(await runTool('contract_query', { mode: 'detail', contractId: 78 }), expected);
+  assert.deepEqual(await runTool('contract_dashboard', { year: 2026 }), expected);
+  assert.deepEqual(await runTool('contract_manage_flow', { action: 'list_unmatched' }), expected);
+  assert.deepEqual(await runTool('contract_read_document', { filePath: samplePdfPath }), expected);
+  assert.deepEqual(
+    await runTool('contract_stage_draft', { contractNo: 'X-1', contractName: '测试', contractType: 1, totalAmount: 1 }),
+    expected,
+  );
+  assert.deepEqual(await runTool('contract_confirm_save', { draft: { contractNo: 'X-1', contractName: '测试' } }), expected);
+  // 一个请求都没有发到后端。
+  assert.equal(requests.length, before);
 
-  const testRes = await tool.execute({ action: 'test' });
-  assert.equal(testRes.connected, true);
-  assert.equal(testRes.user.username, 'admin');
+  const config = await runTool('contract_config', { action: 'get' });
+  assert.deepEqual(config, {
+    action: 'get',
+    serverUrl: baseUrl,
+    connected: false,
+    account: null,
+    accountCount: 0,
+    message: '尚未连接履约系统账户，请在「设置 → 履约无忧配置」点「连接账户」完成浏览器授权。',
+  });
+  await assert.rejects(() => registeredTools.get('contract_config').execute({ action: 'set' }), /只支持查看连接状态/u);
+});
 
-  const getRes = await tool.execute({ action: 'get' });
-  assert.equal(getRes.config.serverUrl, baseUrl);
-  assert.equal(getRes.config.apiTokenConfigured, true);
+test('browser authorization through the contractSure RPC handlers connects the account', async () => {
+  const remote = pluginInstance.remoteHandlers;
+  pollResponses = [{ status: 'PENDING' }, ADMIN_APPROVAL];
+  const started = await remote.startAuthorization();
+  assert.equal(started.userCode, 'ABCD-2345');
+  assert.equal(started.verifyUrl, `${new URL(baseUrl).origin}/plugin-authorize?req=${started.requestId}`);
+  const startReq = requests.findLast((r) => r.pathname === '/api/v1/auth/plugin-authorize/start');
+  assert.deepEqual(JSON.parse(startReq.bodyText), { clientName: 'DeepSeek Harness · 履约无忧', deviceName: 'test-host' });
+  assert.equal(startReq.auth, '');
+
+  const result = await waitForAuthorization(remote, started.requestId);
+  assert.equal(result.status, 'approved');
+  assert.equal(result.account.id, 'u7');
+  assert.equal(result.state.activeAccountId, 'u7');
+  assert.equal(result.state.accounts.length, 1);
+  assert.equal(hostCredentials.records.get('contract-sure/account-7').payload.token, 'plugin-jwt-1');
+
+  const state = await remote.getState();
+  const serialized = JSON.stringify(state);
+  assert.ok(!serialized.includes('plugin-jwt-1'));
+  assert.ok(!serialized.includes('poll-'));
+  assert.ok(!serialized.includes('sk-legacy-ocr-0000'));
+  assert.ok(!readFileSync(configPath, 'utf8').includes('plugin-jwt-1'));
+
+  const tested = await remote.testConnection();
+  assert.equal(tested.ok, true);
+  assert.deepEqual(tested.account, { userId: 7, username: 'admin', realName: '张主管', deptName: '综合管理部' });
+
+  const config = await runTool('contract_config', {});
+  assert.equal(config.connected, true);
+  assert.deepEqual(config.account, { realName: '张主管', username: 'admin', status: 'ok' });
+  assert.equal(config.accountCount, 1);
+  assert.ok(!JSON.stringify(config).includes('plugin-jwt-1'));
 });
 
 test('contract_read_document extracts electronic PDF via backend text-layer endpoint', async () => {
-  const tool = registeredTools.get('contract_read_document');
-  const res = await tool.execute({ filePath: samplePdfPath });
+  const res = await runTool('contract_read_document', { filePath: samplePdfPath });
   assert.equal(res.source, 'pdf-text-layer');
   assert.equal(res.isScanned, false);
   assert.match(res.text, /HT-2026-008/);
+  const extractReq = requests.findLast((r) => r.pathname === '/api/v1/contracts/documents/extract-text');
+  assert.equal(extractReq.auth, 'Bearer plugin-jwt-1');
 });
 
 test('contract_stage_draft validates draft, emits plugin record, and contract_confirm_save creates + archives original', async () => {
-  const stageTool = registeredTools.get('contract_stage_draft');
-  const confirmTool = registeredTools.get('contract_confirm_save');
-
-  const staged = await stageTool.execute(
+  const staged = await runTool(
+    'contract_stage_draft',
     {
       contractNo: 'HT-2026-008',
       contractName: '智慧政务履约平台建设合同',
@@ -449,7 +622,8 @@ test('contract_stage_draft validates draft, emits plugin record, and contract_co
   assert.ok(appendedRecords.some((r) => r.type === DRAFT_RECORD_TYPE && r.data.draftId === staged.draftId));
 
   // Confirm save creates contract and uploads original PDF
-  const confirmed = await confirmTool.execute(
+  const confirmed = await runTool(
+    'contract_confirm_save',
     { draftId: staged.draftId },
     { agent: { id: 'sess-1' }, callId: 'call-confirm-1' },
   );
@@ -459,16 +633,13 @@ test('contract_stage_draft validates draft, emits plugin record, and contract_co
   assert.ok(appendedRecords.some((r) => r.type === DRAFT_CONFIRMED_RECORD_TYPE && r.data.contractId === 101));
 
   // Duplicate confirm is idempotent
-  const duplicate = await confirmTool.execute({ draftId: staged.draftId }, { agent: { id: 'sess-1' } });
+  const duplicate = await runTool('contract_confirm_save', { draftId: staged.draftId }, { agent: { id: 'sess-1' } });
   assert.equal(duplicate.alreadyConfirmed, true);
   assert.equal(duplicate.contractId, 101);
 });
 
 test('contract_query (list & detail) and contract_dashboard return echarts-compatible rows and emit detail docs', async () => {
-  const queryTool = registeredTools.get('contract_query');
-  const dashTool = registeredTools.get('contract_dashboard');
-
-  const listRes = await queryTool.execute({ mode: 'list', contractType: 1, pageNum: 1, pageSize: 20 });
+  const listRes = await runTool('contract_query', { mode: 'list', contractType: 1, pageNum: 1, pageSize: 20 });
   assert.equal(listRes.mode, 'list');
   assert.equal(listRes.rows.length, 1);
   assert.equal(listRes.rows[0]['合同编号'], 'HT-2026-008');
@@ -477,15 +648,21 @@ test('contract_query (list & detail) and contract_dashboard return echarts-compa
   assert.equal(listTable.data.length, 1);
   assert.ok(listTable.columns.some((c) => c.name === '合同总额（元）' && c.type === 'number'));
 
-  const detailRes = await queryTool.execute(
+  const detailRes = await runTool(
+    'contract_query',
     { mode: 'detail', contractId: 101 },
     { agent: { id: 'sess-1' }, callId: 'call-detail-1' },
   );
   assert.equal(detailRes.kind, 'contract-sure-detail');
   assert.equal(detailRes.documents.length, 2);
+  assert.equal(detailRes.nodes.length, 1);
+  // 合同对象里不再带 nodes / documents 键（图 1 的根因）。
+  assert.equal('nodes' in detailRes.contract, false);
+  assert.equal('documents' in detailRes.contract, false);
+  assert.equal(detailRes.contract.statusLabel, '履约中');
   assert.ok(appendedRecords.some((r) => r.type === DETAIL_RECORD_TYPE && r.data.contractId === 101));
 
-  const dashRes = await dashTool.execute({ contractType: 1, year: 2026 });
+  const dashRes = await runTool('contract_dashboard', { contractType: 1, year: 2026 });
   assert.equal(dashRes.summary.totalAmount, 1200000);
   assert.equal(dashRes.rows.length, 12);
   assert.deepEqual(dashRes.columns, ['月份', '签约金额（元）', '收入金额（元）', '支出金额（元）', '逾期应收应付（元）']);
@@ -501,25 +678,39 @@ test('contract_query (list & detail) and contract_dashboard return echarts-compa
   assert.equal(projected.details[0].documents.length, 2);
 });
 
-test('contract_manage_flow executes all 5 deterministic actions cleanly', async () => {
-  const flowTool = registeredTools.get('contract_manage_flow');
+test('contract_query detail with null fields (the 图1 case, contractId 78) is lossless', async () => {
+  const detail = await runTool('contract_query', { mode: 'detail', contractId: 78 });
+  assert.equal(detail.kind, 'contract-sure-detail');
+  assert.deepEqual(detail.nodes, []);
+  assert.deepEqual(detail.documents, []);
+  assert.equal(detail.contract.id, 78);
+  assert.equal(detail.contract.partyAName, null);
+  assert.equal(detail.contract.totalAmount, null);
+  assert.equal(detail.contract.contractTypeLabel, '');
+  assert.deepEqual(Object.keys(detail.contract).filter((k) => k === 'nodes' || k === 'documents'), []);
+});
 
-  const imp = await flowTool.execute({ action: 'import_excel', filePath: sampleExcelPath, txnType: 0 });
+test('contract_manage_flow executes all 5 deterministic actions cleanly', async () => {
+  const imp = await runTool('contract_manage_flow', { action: 'import_excel', filePath: sampleExcelPath, txnType: 0 });
   assert.equal(imp.batchId, 33);
   assert.equal(imp.parsedCount, 12);
   assert.equal(imp.matchedCount, 1);
 
-  const unmatched = await flowTool.execute({ action: 'list_unmatched' });
+  const unmatched = await runTool('contract_manage_flow', { action: 'list_unmatched' });
   assert.equal(unmatched.count, 1);
+  assert.equal(unmatched.total, 1);
+  assert.equal(unmatched.hasMore, false);
+  assert.equal(unmatched.nextOffset, null);
   assert.equal(unmatched.rows[0]['流水类型'], '付款流水');
+  assert.equal(unmatched.rows[0]['合同编号'], '');
   assert.equal(normalizeTable(unmatched).data.length, 1);
 
-  const match = await flowTool.execute({ action: 'manual_match', transactionId: 902, contractId: 101, nodeId: 11 });
+  const match = await runTool('contract_manage_flow', { action: 'manual_match', transactionId: 902, contractId: 101, nodeId: 11 });
   assert.equal(match.ok, true);
   const matchReq = requests.findLast((r) => r.pathname === '/api/v1/transactions/902/match');
   assert.equal(matchReq.search, '?contractId=101&nodeId=11');
 
-  const evidence = await flowTool.execute({
+  const evidence = await runTool('contract_manage_flow', {
     action: 'upload_node_evidence',
     contractId: 101,
     nodeId: 11,
@@ -534,7 +725,7 @@ test('contract_manage_flow executes all 5 deterministic actions cleanly', async 
   assert.match(uploadReq.bodyText, /200000/);
   assert.match(uploadReq.bodyText, /2026-04-01/);
 
-  const manualDate = await flowTool.execute({
+  const manualDate = await runTool('contract_manage_flow', {
     action: 'set_node_manual_date',
     contractId: 101,
     nodeId: 11,
@@ -544,6 +735,98 @@ test('contract_manage_flow executes all 5 deterministic actions cleanly', async 
   assert.equal(manualDate.ok, true);
   const dateReq = requests.findLast((r) => r.pathname === '/api/v1/contracts/nodes/11/manual-date');
   assert.deepEqual(JSON.parse(dateReq.bodyText), { contractId: 101, date: '2026-05-15', remark: '补充协议延期' });
+});
+
+test('list_unmatched pages with limit/offset and reports total, hasMore and nextOffset', async () => {
+  unmatchedRows = Array.from({ length: 120 }, (_, i) => ({
+    id: 1000 + i,
+    txnType: i % 2 ? 2 : 3,
+    txnDate: '2026-05-01',
+    amount: 100 + i,
+    counterparty: `对方单位${i}`,
+    contractNo: null,
+    description: `流水${i}`,
+    matchStatus: 0,
+  }));
+  try {
+    const first = await runTool('contract_manage_flow', { action: 'list_unmatched' });
+    assert.equal(first.total, 120);
+    assert.equal(first.rows.length, 50);
+    assert.equal(first.limit, 50);
+    assert.equal(first.offset, 0);
+    assert.equal(first.hasMore, true);
+    assert.equal(first.nextOffset, 50);
+    assert.equal(first.rows[0]['流水ID'], 1000);
+    assert.equal(normalizeTable(first).truncated, true);
+
+    const last = await runTool('contract_manage_flow', { action: 'list_unmatched', offset: 100, limit: 50 });
+    assert.equal(last.rows.length, 20);
+    assert.equal(last.rows[0]['流水ID'], 1100);
+    assert.equal(last.hasMore, false);
+    assert.equal(last.nextOffset, null);
+
+    const capped = await runTool('contract_manage_flow', { action: 'list_unmatched', limit: 500 });
+    assert.equal(capped.limit, 200);
+    assert.equal(capped.rows.length, 120);
+    assert.equal(capped.hasMore, false);
+
+    const beyond = await runTool('contract_manage_flow', { action: 'list_unmatched', offset: 500 });
+    assert.equal(beyond.rows.length, 0);
+    assert.equal(beyond.hasMore, false);
+  } finally {
+    unmatchedRows = DEFAULT_UNMATCHED_ROWS;
+  }
+});
+
+test('local files: only whitelisted regular files up to 20MB are uploaded or read', async () => {
+  const uploadPath = '/api/v1/contracts/101/nodes/11/upload';
+  const uploadsBefore = requests.filter((r) => r.pathname === uploadPath).length;
+  const evidence = (filePath) =>
+    registeredTools.get('contract_manage_flow').execute({
+      action: 'upload_node_evidence',
+      contractId: 101,
+      nodeId: 11,
+      filePath,
+      docType: 2,
+    });
+
+  const yamlPath = join(workDir, 'credentials.yaml');
+  writeFileSync(yamlPath, 'records:\n  token: secret\n');
+  await assert.rejects(() => evidence(yamlPath), (err) => err.code === 'UNSUPPORTED_FORMAT');
+
+  const txtPath = join(workDir, 'notes.txt');
+  writeFileSync(txtPath, 'hello');
+  await assert.rejects(() => evidence(txtPath), (err) => err.code === 'UNSUPPORTED_FORMAT');
+
+  // 伪装成 PDF 的符号链接，指向白名单外的文件。
+  const disguised = join(workDir, 'disguised.pdf');
+  symlinkSync(yamlPath, disguised);
+  await assert.rejects(() => evidence(disguised), (err) => err.code === 'UNSUPPORTED_FORMAT');
+
+  const bigPath = join(workDir, 'big.pdf');
+  writeFileSync(bigPath, '%PDF-1.4\n');
+  truncateSync(bigPath, 20 * 1024 * 1024 + 1);
+  await assert.rejects(() => evidence(bigPath), (err) => err.code === 'TOO_LARGE' && /20MB/u.test(err.message));
+
+  const dirPath = join(workDir, 'folder.pdf');
+  mkdirSync(dirPath);
+  await assert.rejects(() => evidence(dirPath), (err) => err.code === 'INVALID_FILE');
+
+  await assert.rejects(() => evidence(join(workDir, 'missing.pdf')), (err) => err.code === 'FILE_NOT_FOUND');
+
+  // import_excel 只收 Excel。
+  await assert.rejects(
+    () => registeredTools.get('contract_manage_flow').execute({ action: 'import_excel', filePath: samplePdfPath, txnType: 0 }),
+    (err) => err.code === 'UNSUPPORTED_FORMAT',
+  );
+
+  // 读取：目录、超限、白名单外都拒绝。
+  const read = (filePath) => registeredTools.get('contract_read_document').execute({ filePath });
+  await assert.rejects(() => read(dirPath), (err) => err.code === 'INVALID_FILE');
+  await assert.rejects(() => read(bigPath), (err) => err.code === 'TOO_LARGE');
+  await assert.rejects(() => read(yamlPath), (err) => err.code === 'UNSUPPORTED_FORMAT');
+
+  assert.equal(requests.filter((r) => r.pathname === uploadPath).length, uploadsBefore);
 });
 
 test('remote preview handlers cache valid PDF, reject spoofed HTML, and enforce remoteAccess', async () => {
@@ -575,9 +858,190 @@ test('remote preview handlers cache valid PDF, reject spoofed HTML, and enforce 
       () => remote.cacheOriginalDocument('sess-1', 501, 'HT-2026-008.pdf'),
       (err) => err.code === 'ACCESS_DENIED',
     );
+    await assert.rejects(
+      () => remote.confirmDraft('sess-1', 'draft_x', null),
+      (err) => err.code === 'ACCESS_DENIED',
+    );
   } finally {
     remoteAccessAllowed = true;
   }
+
+  // 拿不到 remoteAccess 服务时一律拒绝（不再放行）。
+  const noAccessCtx = { get: () => undefined };
+  await assert.rejects(
+    () => remote.cacheOriginalDocument('sess-1', 501, 'HT-2026-008.pdf', undefined, noAccessCtx),
+    (err) => err.code === 'ACCESS_DENIED',
+  );
+  await assert.rejects(
+    () => remote.confirmDraft('sess-1', 'draft_x', null, undefined, noAccessCtx),
+    (err) => err.code === 'ACCESS_DENIED',
+  );
+});
+
+async function reauthorizeAdmin(remote) {
+  pollResponses = [ADMIN_APPROVAL];
+  const started = await remote.startAuthorization();
+  const result = await waitForAuthorization(remote, started.requestId);
+  assert.equal(result.status, 'approved');
+  return result;
+}
+
+test('switching accounts isolates the preview cache and staged drafts', async () => {
+  const remote = pluginInstance.remoteHandlers;
+  const downloads = () => requests.filter((r) => r.pathname === '/api/v1/contracts/documents/501/download').length;
+  const underAdmin = await remote.cacheOriginalDocument('sess-1', 501, 'HT-2026-008.pdf');
+
+  // 用 u7 暂存一份草稿（原件是 .txt：顺带提示不能归档）。
+  const txtSource = join(workDir, 'contract-text-only.txt');
+  writeFileSync(txtSource, '合同编号：HT-2026-777');
+  const staged = await runTool(
+    'contract_stage_draft',
+    { contractNo: 'HT-2026-777', contractName: '切换账户测试合同', contractType: 1, totalAmount: 1000, sourceFilePath: txtSource },
+    { agent: { id: 'sess-1' }, callId: 'call-stage-switch' },
+  );
+  assert.match(staged.hint, /\.txt 格式.*不会归档/u);
+
+  // 连接第二个账户 u8，成为当前账户。
+  pollResponses = [{ ...ADMIN_APPROVAL, grantId: 502, user: { userId: 8, username: 'auditor', realName: '李审计', deptName: '审计部' } }];
+  const started = await remote.startAuthorization();
+  const connected = await waitForAuthorization(remote, started.requestId);
+  assert.equal(connected.state.activeAccountId, 'u8');
+
+  // 原件缓存按账户分开：u8 拿不到 u7 的缓存，要用自己的令牌重新下载。
+  const before = downloads();
+  const underAuditor = await remote.cacheOriginalDocument('sess-1', 501, 'HT-2026-008.pdf');
+  assert.notEqual(underAuditor.absolutePath, underAdmin.absolutePath);
+  assert.equal(downloads(), before + 1);
+  assert.equal(requests.findLast((r) => r.pathname === '/api/v1/contracts/documents/501/download').auth, `Bearer plugin-jwt-${issuedTokenCount}`);
+
+  // u7 暂存的草稿不能用 u8 入库，也不沿用旧原件。
+  const createsBefore = requests.filter((r) => r.method === 'POST' && r.pathname === '/api/v1/contracts').length;
+  await assert.rejects(
+    () => registeredTools.get('contract_confirm_save').execute({ draftId: staged.draftId }, { agent: { id: 'sess-1' } }),
+    (err) => err.code === 'ACCOUNT_SWITCHED' && /账户已切换，请重新核对/u.test(err.message),
+  );
+  await assert.rejects(
+    () => remote.confirmDraft('sess-1', staged.draftId, null),
+    (err) => err.code === 'ACCOUNT_SWITCHED' && /账户已切换，请重新核对/u.test(err.message),
+  );
+  // 草稿也只属于暂存它的会话。
+  await assert.rejects(
+    () => registeredTools.get('contract_confirm_save').execute({ draftId: staged.draftId }, { agent: { id: 'sess-2' } }),
+    (err) => err.code === 'DRAFT_NOT_FOUND',
+  );
+  assert.equal(requests.filter((r) => r.method === 'POST' && r.pathname === '/api/v1/contracts').length, createsBefore);
+
+  // 切回 u7、断开 u8，后面的用例照旧用 u7。
+  await remote.setActiveAccount('u7');
+  const disconnected = await remote.disconnectAccount('u8');
+  assert.equal(disconnected.revoked, true);
+  assert.deepEqual(disconnected.accounts.map((a) => a.id), ['u7']);
+  assert.equal((await remote.cacheOriginalDocument('sess-1', 501, 'HT-2026-008.pdf')).absolutePath, underAdmin.absolutePath);
+});
+
+test('a 401 from a sub-request marks the account: summary → contract C; original upload after creation → contract ID + re-authorize then upload', async () => {
+  const remote = pluginInstance.remoteHandlers;
+
+  // 汇总接口 401（流水列表本身成功）：整个调用返回授权提示，账户标成失效。
+  failSummaryWith401 = true;
+  try {
+    const listed = await runTool('contract_manage_flow', { action: 'list_unmatched' });
+    assert.equal(listed.kind, 'contract-sure-auth-required');
+    assert.equal(listed.reason, 'revoked');
+  } finally {
+    failSummaryWith401 = false;
+  }
+  assert.equal((await remote.getState()).accounts[0].status, 'revoked');
+  // 已失效：不再拿旧令牌请求后端。
+  const before = requests.length;
+  assert.equal((await runTool('contract_dashboard', { year: 2026 })).reason, 'revoked');
+  assert.equal(requests.length, before);
+  await reauthorizeAdmin(remote);
+
+  // 合同已创建、归档原件时 401：返回合同 ID，提示重新授权后补传，账户标成失效。
+  const staged = await runTool(
+    'contract_stage_draft',
+    { contractNo: 'HT-2026-401', contractName: '归档失败测试合同', contractType: 1, totalAmount: 1000, sourceFilePath: samplePdfPath },
+    { agent: { id: 'sess-1' }, callId: 'call-stage-401' },
+  );
+  failUploadWith401 = true;
+  let confirmed;
+  try {
+    confirmed = await runTool('contract_confirm_save', { draftId: staged.draftId }, { agent: { id: 'sess-1' } });
+  } finally {
+    failUploadWith401 = false;
+  }
+  assert.equal(confirmed.kind, 'contract-sure-confirmed');
+  assert.ok(Number.isInteger(confirmed.contractId));
+  assert.equal(confirmed.uploadedDoc, null);
+  assert.match(confirmed.uploadWarning, new RegExp(`#${confirmed.contractId}.*重新授权后补传`, 'u'));
+  assert.equal(confirmed.message, confirmed.uploadWarning);
+  assert.equal((await remote.getState()).accounts[0].status, 'revoked');
+  await reauthorizeAdmin(remote);
+});
+
+test('HTTP 503 from the backend is an ordinary tool error, not contract C, and the account stays connected', async () => {
+  serviceUnavailable = true;
+  try {
+    await assert.rejects(
+      () => registeredTools.get('contract_query').execute({ mode: 'list' }, {}),
+      (err) => err.code === 'SERVER_ERROR' && /暂时不可用（HTTP 503）/u.test(err.message),
+    );
+    await assert.rejects(
+      () => pluginInstance.remoteHandlers.cacheOriginalDocument('sess-1', 501, 'fresh-503.pdf'),
+      (err) => err.code === 'DOWNLOAD_FAILED',
+    );
+  } finally {
+    serviceUnavailable = false;
+  }
+  assert.equal((await pluginInstance.remoteHandlers.getState()).accounts[0].status, 'ok');
+  assert.equal((await runTool('contract_query', { mode: 'list' })).mode, 'list');
+});
+
+test('backend 401 returns contract C, marks the account revoked, and re-authorizing the same user recovers', async () => {
+  const remote = pluginInstance.remoteHandlers;
+  validTokens.clear(); // 后端吊销了令牌
+
+  const res = await runTool('contract_query', { mode: 'list' });
+  assert.equal(res.kind, 'contract-sure-auth-required');
+  assert.equal(res.reason, 'revoked');
+  assert.equal(res.serverUrl, baseUrl);
+  assert.match(res.message, /张主管/u);
+  assert.equal((await remote.getState()).accounts[0].status, 'revoked');
+  assert.equal((await runTool('contract_config', {})).connected, false);
+
+  // 预览走 RPC：账户已失效时返回 UNAUTHORIZED，即使这份原件之前已经缓存过，也不再直接给出缓存。
+  const downloadsBefore = requests.filter((r) => r.pathname === '/api/v1/contracts/documents/501/download').length;
+  await assert.rejects(
+    () => remote.cacheOriginalDocument('sess-1', 501, 'HT-2026-008.pdf'),
+    (err) => err.code === 'UNAUTHORIZED',
+  );
+  assert.equal(requests.filter((r) => r.pathname === '/api/v1/contracts/documents/501/download').length, downloadsBefore);
+
+  pollResponses = [ADMIN_APPROVAL];
+  const started = await remote.startAuthorization();
+  const result = await waitForAuthorization(remote, started.requestId);
+  assert.equal(result.status, 'approved');
+  assert.equal(result.state.accounts.length, 1);
+  assert.equal(result.state.accounts[0].status, 'ok');
+  assert.equal((await runTool('contract_query', { mode: 'list' })).mode, 'list');
+
+  // 令牌到期：不打后端，直接返回 expired。
+  clockOffsetMs = 200 * 365 * 24 * 3600 * 1000;
+  try {
+    const before = requests.length;
+    const expired = await runTool('contract_dashboard', { year: 2026 });
+    assert.equal(expired.kind, 'contract-sure-auth-required');
+    assert.equal(expired.reason, 'expired');
+    assert.equal(requests.length, before);
+  } finally {
+    clockOffsetMs = 0;
+  }
+});
+
+test('every one of the 7 tools produced lossless output', () => {
+  assert.deepEqual([...toolsWithLosslessOutput].sort(), [...registeredTools.keys()].sort());
+  assert.equal(isLosslessJson({ broken: undefined }), false);
 });
 
 test('event-projection handles surfaceOp replace invalidation and TypertRemoteService registration works with mock protocol', async () => {
@@ -628,7 +1092,7 @@ test('event-projection handles surfaceOp replace invalidation and TypertRemoteSe
     if (context === undefined) {
       throw new TypeError('typert-protocol: Remote decorator context is missing');
     }
-    decoratedMethods.push({ name: context.name, meta: null });
+    decoratedMethods.push({ name: context.name, meta: null, fn: methodExportOrOptions });
     context.addInitializer(() => {});
   };
   class MockRemoteError extends Error {
@@ -643,18 +1107,75 @@ test('event-projection handles surfaceOp replace invalidation and TypertRemoteSe
     get(k) { return this[k]; },
     effect() {},
   };
-  setupContractSure(mockCtx, {
+  const second = setupContractSure(mockCtx, {
     configPath,
     typert: { TypertRemoteService: MockTypertRemoteService, Remote: MockRemote, RemoteError: MockRemoteError },
   });
-  assert.equal(pluginsRegistered.length, 1);
-  assert.deepEqual(
-    decoratedMethods.map((m) => m.name).sort(),
-    ['cacheOriginalDocument', 'confirmDraft', 'getConfig', 'loginToken', 'saveConfig', 'testConnection'],
-  );
-  const instance = new pluginsRegistered[0](mockCtx);
-  assert.equal(instance.serviceName, 'contractSure');
-  const cfg = await instance.getConfig();
-  assert.equal(cfg.serverUrl, baseUrl);
+  try {
+    assert.equal(pluginsRegistered.length, 1);
+    assert.deepEqual(
+      decoratedMethods.map((m) => m.name).sort(),
+      [
+        'cacheOriginalDocument',
+        'cancelAuthorization',
+        'confirmDraft',
+        'disconnectAccount',
+        'getState',
+        'pollAuthorization',
+        'saveSettings',
+        'setActiveAccount',
+        'startAuthorization',
+        'testConnection',
+      ],
+    );
+    // 约定 B 的形参名就是 RPC args 的键名，最后一个形参叫 signal。
+    const params = (fn) => fn.toString().match(/^async\s+\w+\(([^)]*)\)/u)[1].split(',').map((p) => p.trim()).filter(Boolean);
+    const plain = Object.fromEntries(decoratedMethods.filter((m) => m.fn).map((m) => [m.name, params(m.fn)]));
+    assert.deepEqual(plain, {
+      getState: ['signal'],
+      saveSettings: ['patch', 'signal'],
+      testConnection: ['signal'],
+      startAuthorization: ['signal'],
+      pollAuthorization: ['requestId', 'signal'],
+      cancelAuthorization: ['requestId', 'signal'],
+      setActiveAccount: ['accountId', 'signal'],
+      disconnectAccount: ['accountId', 'signal'],
+    });
+    const instance = new pluginsRegistered[0](mockCtx);
+    assert.equal(instance.serviceName, 'contractSure');
+    const state = await instance.getState();
+    assert.equal(state.serverUrl, baseUrl);
+    // 这个 ctx 没有凭据服务：退回文件存储。
+    assert.equal(state.credentialStore, 'file');
+    assert.ok(!JSON.stringify(state).includes('plugin-jwt'));
+    await assert.rejects(
+      () => instance.saveSettings({ serverUrl: 'http://other.test/api/v1' }),
+      (err) => err.message === '更换服务器地址前需要先断开全部账户',
+    );
+  } finally {
+    second.dispose();
+  }
 });
 
+test('RPC errors carry a fixed code and a safe message, never the underlying exception text', async () => {
+  const failing = (error) => async () => {
+    throw error;
+  };
+  const handlers = createContractSureRemoteHandlers(
+    { get: () => undefined },
+    {
+      accounts: {
+        getState: failing(new Error('EACCES /Users/x/.dsh/.credentials.yaml token=plugin-jwt-secret')),
+        saveSettings: failing(new ApiError('服务器地址不能包含用户名或密码。', { code: 'INVALID_URL' })),
+        testConnection: failing(Object.assign(new ApiError('x', { code: 409 }), { message: '固定文案' })),
+      },
+    },
+  );
+  await assert.rejects(
+    () => handlers.getState(),
+    (err) => err.code === 'INTERNAL_ERROR' && err.message === '操作失败，请稍后重试' && !/EACCES|plugin-jwt/u.test(err.message),
+  );
+  await assert.rejects(() => handlers.saveSettings({}), (err) => err.code === 'INVALID_URL' && err.message === '服务器地址不能包含用户名或密码。');
+  // 非字符串错误码统一成 API_ERROR。
+  await assert.rejects(() => handlers.testConnection(), (err) => err.code === 'API_ERROR');
+});

@@ -2,6 +2,7 @@ export const KEY = 'contract-sure';
 export const DRAFT_RECORD_TYPE = 'plugin:contract-sure/draft';
 export const DRAFT_CONFIRMED_RECORD_TYPE = 'plugin:contract-sure/draft-confirmed';
 export const DETAIL_RECORD_TYPE = 'plugin:contract-sure/detail';
+export const AUTH_REQUIRED_KIND = 'contract-sure-auth-required';
 
 export const STAGE_DRAFT_TOOL = 'contract_stage_draft';
 export const CONFIRM_SAVE_TOOL = 'contract_confirm_save';
@@ -22,6 +23,9 @@ const failed = (value) =>
 
 function extractPayloadByKind(value, kinds) {
   if (typeof value === 'string') {
+    // Every tool result is checked for the auth-required kind, so skip parsing text that
+    // cannot carry one of this plugin's payloads.
+    if (!value.includes('contract-sure-')) return null;
     try {
       return extractPayloadByKind(JSON.parse(value), kinds);
     } catch {
@@ -53,6 +57,7 @@ function valueOf(state) {
     drafts: state.drafts,
     confirmedByDraftId: state.confirmedByDraftId,
     details: state.details,
+    authRequired: state.authRequired,
   };
 }
 
@@ -60,6 +65,7 @@ function refresh(state) {
   const draftMap = new Map();
   const confirmedByDraftId = {};
   const detailMap = new Map();
+  let authRequired = null;
 
   for (const record of state.pluginRecords) {
     if (record.type === DRAFT_RECORD_TYPE && record.data?.draftId) {
@@ -92,7 +98,19 @@ function refresh(state) {
     const result = state.results.get(callId);
     if (!result || result.failed || !result.payload) continue;
     const payload = result.payload;
-    if (call.name === STAGE_DRAFT_TOOL && payload.kind === 'contract-sure-draft' && payload.draftId) {
+    if (payload.kind === AUTH_REQUIRED_KIND) {
+      // Any of the plugin's tools can answer "connect an account first"; one card per turn, the latest.
+      if (!authRequired || (result.seq ?? 0) >= (authRequired.seq ?? 0)) {
+        authRequired = {
+          seq: result.seq,
+          callId,
+          toolName: call.name,
+          reason: typeof payload.reason === 'string' ? payload.reason : 'no-account',
+          message: typeof payload.message === 'string' ? payload.message : '',
+          serverUrl: typeof payload.serverUrl === 'string' ? payload.serverUrl : '',
+        };
+      }
+    } else if (call.name === STAGE_DRAFT_TOOL && payload.kind === 'contract-sure-draft' && payload.draftId) {
       if (!draftMap.has(payload.draftId)) {
         draftMap.set(payload.draftId, {
           seq: result.seq,
@@ -125,7 +143,7 @@ function refresh(state) {
 
   const drafts = [...draftMap.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
   const details = [...detailMap.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
-  const next = { ...state, drafts, confirmedByDraftId, details };
+  const next = { ...state, drafts, confirmedByDraftId, details, authRequired };
   return { ...next, value: valueOf(next) };
 }
 
@@ -140,6 +158,7 @@ function initial(turn) {
     drafts: [],
     confirmedByDraftId: {},
     details: [],
+    authRequired: null,
   };
   return { ...state, value: valueOf(state) };
 }
@@ -181,9 +200,11 @@ function updateState(state, event) {
   }
 
   if (event.type === 'tool/call') {
+    // Calls of every tool are tracked: any of them may return the auth-required kind.
     const { callId, name } = event.data || {};
     if (
-      ![STAGE_DRAFT_TOOL, CONFIRM_SAVE_TOOL, QUERY_TOOL].includes(name) ||
+      typeof name !== 'string' ||
+      !name ||
       typeof callId !== 'string' ||
       !callId ||
       state.calls.has(callId) ||
@@ -208,7 +229,7 @@ function updateState(state, event) {
   const isFailed = failed(event.data);
   const payload = isFailed
     ? null
-    : extractPayloadByKind(event.data, ['contract-sure-draft', 'contract-sure-confirmed', 'contract-sure-detail']);
+    : extractPayloadByKind(event.data, ['contract-sure-draft', 'contract-sure-confirmed', 'contract-sure-detail', AUTH_REQUIRED_KIND]);
 
   return refresh({
     ...state,
@@ -220,7 +241,7 @@ export const definition = {
   kind: KEY,
   match(event) {
     if (event.data?.turn == null) return null;
-    if (event.type === 'tool/call' && [STAGE_DRAFT_TOOL, CONFIRM_SAVE_TOOL, QUERY_TOOL].includes(event.data.name)) {
+    if (event.type === 'tool/call' && typeof event.data.name === 'string' && event.data.name) {
       return { id: String(event.data.turn), role: 'start' };
     }
     if (
@@ -253,5 +274,5 @@ export function projectEvents(events) {
     if (event.type === 'turn/start') state = initial(event.data?.turn);
     else if (state) state = updateState(state, event);
   }
-  return state?.value ?? { turn: null, drafts: [], confirmedByDraftId: {}, details: [] };
+  return state?.value ?? { turn: null, drafts: [], confirmedByDraftId: {}, details: [], authRequired: null };
 }
