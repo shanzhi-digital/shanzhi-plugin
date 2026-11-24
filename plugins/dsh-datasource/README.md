@@ -1,6 +1,6 @@
 # DSH 数据源接入
 
-本地定制版 `dsh-sql 0.9.0-local.12`，支持 MySQL、PostgreSQL、SQLite 的只读接入、原始目录管理、源表启停、问题及业务域辅助选表。通过 `datasourceCatalog` 宿主服务为独立的数据标注插件提供目录、标注存储和会话绑定；标注页面与 AI 标注由 `dsh-data-annotation` 提供。Cube.js 建模和查询接入留待后续，本版字段启停仅作为标注范围保存，不改变普通 SQL 查询权限。
+本地定制版 `dsh-sql 0.9.0-local.13`，支持 MySQL、PostgreSQL、SQLite 的只读接入、原始目录管理、源表启停、问题及业务域辅助选表。通过 `datasourceCatalog` 宿主服务为独立的数据标注插件提供目录、标注存储和会话绑定；标注页面与 AI 标注由 `dsh-data-annotation` 提供。Cube.js 建模和查询接入留待后续，本版字段启停仅作为标注范围保存，不改变普通 SQL 查询权限。
 
 ## 初始化独立管理库
 
@@ -92,7 +92,7 @@ Invoke-RestMethod "$base/api/datasources/ai-tasks?taskId=$($task.taskId)"
 
 推荐确认沿用 `flow-action` 的 `{id,action:'confirm-selection',revision,draftId,selectedTableIds}`；泛化候选确认使用 `{id,action:'confirm-question-draft',revision,draftId,candidates:[{id,text}]}`。取消候选/推荐草稿使用 `action:'cancel'` 并传 questionDraftId/draftId，区别于取消运行中的 AI 任务。
 
-local.11 起，三个 AI action 不再经 flow-action 执行，调用方与两个插件须成套更新。local.12 使用管理库 schema 7、共享服务 version 2，提供关系画布及全局保存存储。`readSavedResults(sourceId)` 在同一事务校验启用源、当前指纹和全局保存记录后取数；未保存或成果变动返回 409。后续建模必须使用此入口取数，长任务落库前再核对起始 fingerprint；本仓库本轮没有实现建模入口。标注接口及同端口使用见配套标注插件 README。
+local.11 起，三个 AI action 不再经 flow-action 执行，调用方与两个插件须成套更新。local.12 使用管理库 schema 7、共享服务 version 2，提供关系画布及全局保存存储。local.13 将共享服务升至 version 3，关系 AI 按业务主题批量原子保存多个草稿画布，允许跨画布复用表和关联，按主表与完整关联集合去重。主表保存在现有 content JSON 中，管理库仍为 schema 7；旧画布保留，未指定主表的旧内容保持兼容。`readSavedResults(sourceId)` 在同一事务校验启用源、当前指纹和全局保存记录后取数；未保存或成果变动返回 409。后续建模必须使用此入口取数，长任务落库前再核对起始 fingerprint；本仓库本轮没有实现建模入口。标注接口及同端口使用见配套标注插件 README。
 
 ## 时效检测
 

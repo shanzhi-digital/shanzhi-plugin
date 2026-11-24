@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeCanvas, inspectCanvas, relationKey, canvasSemantics, digest, tableCompletion, relationCompletion, resultsFingerprint } from '../relation-model.js';
+import { normalizeCanvas, inspectCanvas, relationKey, canvasSemantics, canvasThemeKey, digest, tableCompletion, relationCompletion, resultsFingerprint } from '../relation-model.js';
 
 const annotation = (text = '', status = 'missing') => ({ text, status });
 const tables = () => ['a', 'b', 'c'].map(id => ({ id, schema: 'data', name: id, tableKind: 'table', enabled: true, annotation: annotation(), fields: [
@@ -39,6 +39,39 @@ test('草稿可为空但确认拒绝空图及孤节点', () => {
   const value = canvas();
   value.content.nodes.push({ tableId: 'c', label: 'c' });
   assert.ok(inspectCanvas(value, tables()).validationErrors.some(value => value.includes('所有表节点')));
+});
+
+test('主表必须属于节点，确认时所有节点须无向可达，旧画布签名保持兼容', () => {
+  const legacy = canvas(), structure = tables();
+  const dependencies = legacy.content.nodes.map(node => {
+    const table = structure.find(table => table.id === node.tableId);
+    return [node.tableId, [table.schema, table.name, table.tableKind, table.enabled]];
+  });
+  for (const relation of legacy.content.edges) for (const pair of relation.pairs) for (const [tableId, fieldName] of [[relation.fromTableId, pair.fromField], [relation.toTableId, pair.toField]]) {
+    const field = structure.find(table => table.id === tableId).fields.find(field => field.name === fieldName);
+    dependencies.push([tableId, fieldName, [field.type, field.primaryKey ?? null, field.notNull ?? null, field.enabled]]);
+  }
+  dependencies.sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0);
+  const originalSemantics = { name: legacy.name, description: legacy.description, nodes: ['a', 'b'], edges: legacy.content.edges.map(relationKey).sort() };
+  assert.equal(inspectCanvas(legacy, structure).signature, digest([originalSemantics, dependencies]));
+  assert.equal(Object.hasOwn(normalizeCanvas(legacy).content, 'rootTableId'), false);
+  assert.equal(Object.hasOwn(normalizeCanvas({ ...legacy, content: { ...legacy.content, rootTableId: null } }).content, 'rootTableId'), false);
+  assert.throws(() => normalizeCanvas({ ...legacy, content: { ...legacy.content, rootTableId: 'missing' } }), /主表/);
+  const rooted = normalizeCanvas({ ...legacy, content: { ...legacy.content, rootTableId: 'b' } });
+  assert.equal(inspectCanvas(rooted, structure).valid, true, '反向基数也可从主表沿无向关系到达');
+  assert.notEqual(inspectCanvas(rooted, structure).signature, inspectCanvas(legacy, structure).signature);
+  const detached = { ...rooted, content: { ...rooted.content, nodes: [...rooted.content.nodes, { tableId: 'c', label: '' }, { tableId: 'd', label: '' }], edges: [...rooted.content.edges, { ...edge(), id: 'detached', fromTableId: 'c', toTableId: 'd' }] } };
+  assert.ok(inspectCanvas(detached, [...structure, { ...structure[0], id: 'd' }]).validationErrors.some(value => value.includes('主表沿关系到达')));
+  assert.equal(inspectCanvas({ ...detached, content: { nodes: detached.content.nodes, edges: detached.content.edges } }, [...structure, { ...structure[0], id: 'd' }]).valid, true, '历史无主表画布仍沿用既有确认规则');
+  assert.notEqual(resultsFingerprint({ id: 's', enabled: true }, structure, [rooted]), resultsFingerprint({ id: 's', enabled: true }, structure, [legacy]));
+});
+
+test('主题判重使用主表和完整规范化边集，忽略名称并允许部分重叠', () => {
+  const value = canvas(); value.content.rootTableId = 'a';
+  const reversed = { ...value, name: '新名称', content: { ...value.content, edges: [{ ...edge(), fromTableId: 'b', toTableId: 'a', cardinality: 'N:1', pairs: edge().pairs.toReversed().map(pair => ({ fromField: pair.toField, toField: pair.fromField })) }] } };
+  assert.equal(canvasThemeKey(value), canvasThemeKey(reversed));
+  assert.notEqual(canvasThemeKey(value), canvasThemeKey({ ...value, content: { ...value.content, rootTableId: 'b' } }));
+  assert.notEqual(canvasThemeKey(value), canvasThemeKey({ ...value, content: { ...value.content, edges: [...value.content.edges, { ...edge(), toTableId: 'c' }] } }));
 });
 
 test('表与关系完成度区分红黄绿，分子仅有效确认', () => {

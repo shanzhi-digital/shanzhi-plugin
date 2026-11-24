@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { digest, normalizeCanvas, normalizeEdge, relationKey, canvasSemantics, inspectCanvas, tableCompletion, relationCompletion, resultsFingerprint } from './relation-model.js';
+import { digest, normalizeCanvas, normalizeEdge, relationKey, canvasSemantics, canvasThemeKey, inspectCanvas, tableCompletion, relationCompletion, resultsFingerprint } from './relation-model.js';
 
 const json = value => typeof value === 'string' ? JSON.parse(value) : value;
 const iso = value => value == null ? null : new Date(Number(value)).toISOString();
@@ -246,29 +246,37 @@ export function createAnnotationStore({ db, store }) {
       const state = await load(connection, profileId, input?.sourceId);
       await assertSession(connection, input);
       assertRevision(state, input?.revision);
-      if (!Array.isArray(input.relations)) fail('AI 关系建议无效。');
-      if (state.result.tables.length < 2) fail('关系分析至少需要两张启用表。');
-      const seen = new Set(state.canvases.flatMap(canvas => canvas.content.edges.map(relationKey)));
-      const edges = [], descriptions = [], names = [];
-      for (const value of input.relations) {
-        const edge = normalizeEdge({ ...value, id: randomUUID() });
-        const nodes = [edge.fromTableId, edge.toTableId].map(tableId => ({ tableId, label: '' }));
-        const inspected = inspectCanvas({ name: '', description: '', content: { nodes, edges: [edge] } }, state.allTables);
-        if (!inspected.valid) fail('AI 关系引用了不存在或停用的表或字段。');
-        const key = relationKey(edge);
+      if (!Array.isArray(input.canvases)) fail('AI 关系画布建议无效。');
+      const seen = new Set(state.canvases.map(canvasThemeKey));
+      const pending = [];
+      for (const group of input.canvases) {
+        if (!group || typeof group !== 'object' || typeof group.rootTableId !== 'string' || !group.rootTableId
+          || !state.allTables.some(table => table.enabled && table.id === group.rootTableId)) fail('AI 关系画布主表不存在或未启用。');
+        if (!Array.isArray(group.relations) || !group.relations.length) fail('AI 关系画布至少需要一条关系。');
+        const edges = [], edgeKeys = new Set();
+        for (const value of group.relations) {
+          const edge = normalizeEdge({ ...value, id: randomUUID() }), key = relationKey(edge);
+          if (edgeKeys.has(key)) continue;
+          edgeKeys.add(key); edges.push(edge);
+        }
+        const ids = [...new Set(edges.flatMap(edge => [edge.fromTableId, edge.toTableId]))];
+        const nodes = ids.map(tableId => ({ tableId, label: state.allTables.find(table => table.id === tableId)?.name ?? '' }));
+        const canvas = normalizeCanvas({ name: group.name, description: group.description,
+          content: { rootTableId: group.rootTableId, nodes, edges },
+          layout: Object.fromEntries(ids.map((tableId, index) => [tableId, { x: 40 + index % 3 * 300, y: 40 + Math.floor(index / 3) * 280 }])) });
+        const inspected = inspectCanvas(canvas, state.allTables);
+        if (!inspected.valid) fail([...inspected.validationErrors, ...inspected.invalid.map(value => value.reason)].join(' '));
+        const key = canvasThemeKey(canvas);
         if (seen.has(key)) continue;
-        seen.add(key); edges.push(edge);
-        if (typeof value.name === 'string' && value.name.trim()) names.push(value.name.trim());
-        if (typeof value.description === 'string' && value.description.trim()) descriptions.push(value.description.trim());
+        seen.add(key); pending.push(canvas);
       }
-      if (!edges.length) return { revision: state.result.revision, canvas: null, count: 0 };
-      const ids = [...new Set(edges.flatMap(edge => [edge.fromTableId, edge.toTableId]))];
-      const nodes = ids.map(tableId => ({ tableId, label: state.allTables.find(table => table.id === tableId).name }));
-      const canvas = normalizeCanvas({ name: names[0] ?? `${state.result.source.name}表关系`, description: [...new Set(descriptions)].join('\n'), content: { nodes, edges },
-        layout: Object.fromEntries(ids.map((tableId, index) => [tableId, { x: 40 + index % 3 * 300, y: 40 + Math.floor(index / 3) * 280 }])) });
-      await writeCanvas(connection, input.sourceId, canvas, null, false, null, true);
-      const after = await load(connection, profileId, input.sourceId);
-      return { revision: after.result.revision, canvas: publicCanvas(after.canvases.find(value => value.id === canvas.id)), count: edges.length };
+      // Validate the entire batch before the first insertion, including groups that deduplicate.
+      for (const canvas of pending) await writeCanvas(connection, input.sourceId, canvas, null, false, null, true);
+      const after = pending.length ? await load(connection, profileId, input.sourceId) : state;
+      const canvasIds = pending.map(canvas => canvas.id);
+      return { revision: after.result.revision, count: pending.reduce((sum, canvas) => sum + canvas.content.edges.length, 0),
+        canvasCount: pending.length, canvasIds,
+        canvases: canvasIds.map(id => publicCanvas(after.canvases.find(canvas => canvas.id === id))) };
     });
   }
   return { list, catalog, action: input => apply(input), aiSave: input => apply({ ...input, operation: 'edit' }, true),

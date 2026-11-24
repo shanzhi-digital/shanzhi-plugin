@@ -66,13 +66,21 @@ export function normalizeCanvas(value) {
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) fail('节点位置无效。');
     Object.defineProperty(layout, tableId, { value: { x: point.x, y: point.y }, enumerable: true, writable: true, configurable: true });
   }
-  return { id: value.id === undefined ? randomUUID() : id(value.id, '画布 ID'), name, description, content: { nodes, edges: relations }, layout };
+  const root = value.content.rootTableId == null ? {} : { rootTableId: id(value.content.rootTableId, '主表 ID') };
+  if (root.rootTableId !== undefined && !tables.has(root.rootTableId)) fail('主表必须属于画布节点。');
+  return { id: value.id === undefined ? randomUUID() : id(value.id, '画布 ID'), name, description, content: { ...root, nodes, edges: relations }, layout };
 }
 
 export function canvasSemantics(canvas) {
   return { name: canvas.name, description: canvas.description,
+    ...(canvas.content.rootTableId === undefined ? {} : { rootTableId: canvas.content.rootTableId }),
     nodes: canvas.content.nodes.map(node => node.tableId).sort(),
     edges: canvas.content.edges.map(relationKey).sort() };
+}
+
+/** Theme identity ignores naming, node positions and edge direction/order. */
+export function canvasThemeKey(canvas) {
+  return JSON.stringify([canvas.content.rootTableId ?? null, [...new Set(canvas.content.edges.map(relationKey))].sort()]);
 }
 
 /** Catalog tables include disabled rows so retained invalid references stay visible. */
@@ -96,6 +104,22 @@ export function inspectCanvas(canvas, tables) {
   if (canvas.content.nodes.length < 2) validationErrors.push('确认至少需要两个有效表节点。');
   if (!canvas.content.edges.length) validationErrors.push('确认至少需要一条关系。');
   if (canvas.content.nodes.some(node => !participating.has(node.tableId))) validationErrors.push('所有表节点都必须参与关系。');
+  if (canvas.content.rootTableId !== undefined) {
+    const root = canvas.content.rootTableId, nodes = new Set(canvas.content.nodes.map(node => node.tableId));
+    if (!nodes.has(root)) validationErrors.push('主表必须属于画布节点。');
+    else {
+      const adjacency = new Map([...nodes].map(tableId => [tableId, []]));
+      for (const edge of canvas.content.edges) {
+        adjacency.get(edge.fromTableId)?.push(edge.toTableId);
+        adjacency.get(edge.toTableId)?.push(edge.fromTableId);
+      }
+      const visited = new Set([root]), queue = [root];
+      for (let index = 0; index < queue.length; index++) for (const neighbor of adjacency.get(queue[index]) ?? []) {
+        if (!visited.has(neighbor)) { visited.add(neighbor); queue.push(neighbor); }
+      }
+      if ([...nodes].some(tableId => !visited.has(tableId))) validationErrors.push('所有表节点都必须能从主表沿关系到达。');
+    }
+  }
   const unique = [...new Map(invalid.map(item => [JSON.stringify(item), item])).values()];
   return { invalid: unique, validationErrors, valid: !unique.length && !validationErrors.length,
     signature: digest([canvasSemantics(canvas), dependencies.sort(compare)]) };

@@ -25,6 +25,9 @@ test('canvas point connection, compound pairs, cardinality and node removal use 
   let tree = harness.render('RelationCanvas', props);
   button(tree, '+ table_a · 中文名').props.onClick(); tree = harness.render('RelationCanvas', props);
   button(tree, '+ table_b · 中文名').props.onClick(); tree = harness.render('RelationCanvas', props);
+  assert.equal(harness.state[0].content.rootTableId, 'a');
+  all(tree, node => node.props['aria-label'] === '主表')[0].props.onChange({ target: { value: 'b' } });
+  tree = harness.render('RelationCanvas', props);
   button(tree, '连接字段 table_a.id').props.onClick(); tree = harness.render('RelationCanvas', props);
   button(tree, '连接字段 table_b.ref').props.onClick(); tree = harness.render('RelationCanvas', props);
   assert.equal(harness.state[0].content.edges.length, 1);
@@ -36,10 +39,11 @@ test('canvas point connection, compound pairs, cardinality and node removal use 
   tree = harness.render('RelationCanvas', props); button(tree, '移除表 table_b').props.onClick();
   assert.equal(harness.state[0].content.edges.length, 0);
   assert.equal(harness.state[0].content.nodes.length, 1);
+  assert.equal(harness.state[0].content.rootTableId, undefined);
 });
 
 test('unavailable references remain visible and permit replacing the unavailable table', () => {
-  const harness = load(), canvas = { name: 'broken', description: '', content: { nodes: [{ tableId: 'gone', label: '原表' }, { tableId: 'a', label: 'A' }], edges: [{ id: 'e', fromTableId: 'gone', toTableId: 'a', pairs: [{ fromField: 'missing', toField: 'id' }], cardinality: 'N:1' }] }, layout: { gone: { x: 40, y: 50 }, a: { x: 400, y: 50 } } };
+  const harness = load(), canvas = { name: 'broken', description: '', content: { rootTableId: 'gone', nodes: [{ tableId: 'gone', label: '原表' }, { tableId: 'a', label: 'A' }], edges: [{ id: 'e', fromTableId: 'gone', toTableId: 'a', pairs: [{ fromField: 'missing', toField: 'id' }], cardinality: 'N:1' }] }, layout: { gone: { x: 40, y: 50 }, a: { x: 400, y: 50 } } };
   let tree = harness.render('RelationCanvas', { canvas, tables });
   assert.equal(button(tree, '连接字段 原表.missing').props.disabled, true);
   const replacement = all(tree, node => node.props['aria-label'] === '替换不可用表 gone')[0];
@@ -47,8 +51,24 @@ test('unavailable references remain visible and permit replacing the unavailable
   assert.equal(harness.state[0].content.nodes[0].tableId, 'b');
   assert.equal(harness.state[0].content.edges[0].fromTableId, 'b');
   assert.equal(harness.state[0].layout.b.x, 40);
+  assert.equal(harness.state[0].content.rootTableId, 'b');
   tree = harness.render('RelationCanvas', { canvas, tables });
   assert.equal(button(tree, '连接字段 table_b.missing').props.disabled, true);
+});
+
+test('legacy draft opens and saves without forcing a root table, and selecting a root preserves it in requests', async () => {
+  const harness = load(), canvas = { id: 'legacy', name: '旧画布', description: '', content: { nodes: [{ tableId: 'a', label: 'A' }], edges: [] }, layout: {} }, requests = [];
+  const props = { canvas, tables, onSave: async payload => { requests.push(payload); return payload; } };
+  let tree = harness.render('RelationCanvas', props);
+  assert.equal(all(tree, node => node.props['aria-label'] === '主表')[0].props.value, '');
+  assert.equal(harness.state[0].content.rootTableId, undefined);
+  await button(tree, '保存').props.onClick();
+  assert.equal(requests[0].content.rootTableId, undefined);
+  tree = harness.render('RelationCanvas', props);
+  all(tree, node => node.props['aria-label'] === '主表')[0].props.onChange({ target: { value: 'a' } });
+  tree = harness.render('RelationCanvas', props);
+  await button(tree, '保存').props.onClick();
+  assert.equal(requests[1].content.rootTableId, 'a');
 });
 
 test('canvas request projection excludes server confirmation and validation metadata', () => {

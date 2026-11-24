@@ -109,23 +109,68 @@ test('目录扫描只变化时间保留认可，删除引用持久保留草稿�
   await assert.rejects(annotations.readSavedResults('s'), error => error.status === 409);
 });
 
-test('AI新增单张草稿，反向已有关系去重，空建议无写入，会话和revision在事务内校验', async t => {
+test('AI主题各自保存，跨画布共享边，完整主题反向去重，会话和revision受保护', async t => {
   const { annotations, store, sqlite, connection } = await fixture(t);
   const confirmed = await annotations.relationConfirm({ sourceId: 's', revision: await revision(annotations), canvas: canvas() });
   await store.bindSession('session', { sourceId: 's', retired: false });
   const relation = { fromTableId: 'b', toTableId: 'a', cardinality: 'N:1', pairs: [{ fromField: 'tenant', toField: 'tenant' }, { fromField: 'id', toField: 'id' }] };
-  let result = await annotations.aiRelationSave({ sourceId: 's', revision: await revision(annotations), sessionId: 'session', relations: [relation] });
-  assert.equal(result.count, 0); assert.equal(result.canvas, null);
-  result = await annotations.aiRelationSave({ sourceId: 's', revision: result.revision, sessionId: 'session', relations: [{ ...relation, toTableId: 'c', name: '订单明细' }] });
-  assert.equal(result.count, 1); assert.equal(result.canvas.confirmed, false); assert.equal(result.canvas.name, '订单明细');
+  const group = { name: '客户订单主题', description: '从客户查看订单', rootTableId: 'a', relations: [relation, canvas().content.edges[0]] };
+  const otherGroup = { name: '订单明细主题', description: '', rootTableId: 'b', relations: [relation, { ...relation, toTableId: 'c' }] };
+  let result = await annotations.aiRelationSave({ sourceId: 's', revision: await revision(annotations), sessionId: 'session', canvases: [group, otherGroup] });
+  assert.equal(result.count, 3); assert.equal(result.canvasCount, 2); assert.equal(result.canvasIds.length, 2);
+  assert.ok(result.canvases.every(canvas => !canvas.confirmed));
+  assert.equal(result.canvases.find(canvas => canvas.name === group.name).content.rootTableId, 'a');
+  assert.equal(result.canvases.find(canvas => canvas.name === group.name).content.edges.length, 1);
   assert.equal((await annotations.relations('s')).items.find(canvas => canvas.id === confirmed.canvas.id).confirmed, true);
-  assert.equal((await annotations.relations('other')).items.length, 0);
-  await assert.rejects(annotations.aiRelationSave({ sourceId: 's', revision: result.revision, sessionId: 'missing', relations: [] }), error => error.status === 409);
+  const before = result.revision;
+  result = await annotations.aiRelationSave({ sourceId: 's', revision: before, sessionId: 'session', canvases: [{ ...otherGroup, name: '另一个名称', relations: otherGroup.relations.toReversed() }, { ...group, relations: [canvas().content.edges[0]] }] });
+  assert.deepEqual(result, { revision: before, count: 0, canvasCount: 0, canvasIds: [], canvases: [] });
+  result = await annotations.aiRelationSave({ sourceId: 's', revision: before, sessionId: 'session', canvases: [{ ...group, relations: [...group.relations, { ...relation, fromTableId: 'a', toTableId: 'c' }] }] });
+  assert.equal(result.count, 2); assert.equal(result.canvasCount, 1);
+  await assert.rejects(annotations.aiRelationSave({ sourceId: 's', revision: before, sessionId: 'session', canvases: [] }), error => error.status === 409);
+  await assert.rejects(annotations.aiRelationSave({ sourceId: 's', revision: result.revision, sessionId: 'missing', canvases: [] }), error => error.status === 409);
   await store.retireSession('session');
-  await assert.rejects(annotations.aiRelationSave({ sourceId: 's', revision: result.revision, sessionId: 'session', relations: [] }), error => error.status === 409);
+  await assert.rejects(annotations.aiRelationSave({ sourceId: 's', revision: result.revision, sessionId: 'session', canvases: [] }), error => error.status === 409);
+  assert.equal((await annotations.relations('other')).items.length, 0);
   const other = createAnnotationStore({ db: { profileId: 'other-profile', transaction: async fn => fn(connection) } });
   await assert.rejects(other.relations('s'), error => error.status === 404);
-  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM dsh_relation_canvases').get().count, 2);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM dsh_relation_canvases').get().count, 4);
+});
+
+test('AI主题全部先校验再写入，后组非法或第二组落库失败均原子回滚，空批次无写入', async t => {
+  const { annotations, store, connection, calls, sqlite } = await fixture(t);
+  await store.bindSession('session', { sourceId: 's', retired: false });
+  await saveResults(annotations);
+  const initial = await annotations.readSavedResults('s'), current = initial.revision;
+  const group = { name: '客户订单', rootTableId: 'a', relations: canvas().content.edges };
+  const request = canvases => ({ sourceId: 's', revision: current, sessionId: 'session', canvases });
+  const beforeWrites = () => calls.filter(call => call.sql.startsWith('INSERT INTO dsh_relation_canvases')).length;
+  const count = beforeWrites();
+  await assert.rejects(annotations.aiRelationSave(request([group, { ...group, rootTableId: 'missing' }])), /主表/);
+  await assert.rejects(annotations.aiRelationSave(request([group, { ...group, rootTableId: 'c' }])), /主表/);
+  await assert.rejects(annotations.aiRelationSave(request([group, { ...group, relations: [{ ...group.relations[0], pairs: [{ fromField: 'missing', toField: 'id' }] }] }])), /字段/);
+  await assert.rejects(annotations.aiRelationSave(request([group, { ...group, relations: [] }])), /至少/);
+  assert.equal(beforeWrites(), count, '后组非法时第一组也不能开始写入');
+  let insertCount = 0;
+  connection.fail = sql => sql.startsWith('INSERT INTO dsh_relation_canvases') && ++insertCount === 2;
+  await assert.rejects(annotations.aiRelationSave(request([group, { ...group, rootTableId: 'b' }])), /fixture failure/);
+  connection.fail = null;
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM dsh_relation_canvases').get().count, 0);
+  assert.equal(await revision(annotations), current);
+  assert.equal((await annotations.readSavedResults('s')).fingerprint, initial.fingerprint);
+  assert.deepEqual(await annotations.aiRelationSave(request([])), { revision: current, count: 0, canvasCount: 0, canvasIds: [], canvases: [] });
+});
+
+test('主表语义修改撤销人工确认及全局认可，历史无主表画布保持确认', async t => {
+  const { annotations } = await fixture(t);
+  const legacy = await annotations.relationConfirm({ sourceId: 's', revision: await revision(annotations), canvas: canvas() });
+  await saveResults(annotations);
+  assert.equal((await annotations.relations('s')).items[0].confirmed, true);
+  const changed = await annotations.relationSave({ sourceId: 's', revision: await revision(annotations), canvas: { ...legacy.canvas, content: { ...legacy.canvas.content, rootTableId: 'a' } } });
+  assert.equal(changed.canvas.confirmed, false);
+  await assert.rejects(annotations.readSavedResults('s'), error => error.status === 409);
+  const confirmed = await annotations.relationConfirm({ sourceId: 's', revision: changed.revision, canvasId: changed.canvas.id });
+  assert.equal(confirmed.canvas.content.rootTableId, 'a'); assert.equal(confirmed.canvas.confirmed, true);
 });
 
 test('启用表结果进度按人工确认计数，允许部分成果保存，连接换目标清理画布并失效', async t => {

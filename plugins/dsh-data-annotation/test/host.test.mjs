@@ -179,13 +179,13 @@ test('任务查询形状、显式取消与异步业务失败', async () => {
   await failing.close(); other.unregister();
 });
 
-test('标注插件拒绝旧共享服务并接受版本2', async () => {
-  for (const version of [undefined, 1]) assert.throws(() => apply({ datasourceCatalog: version ? { version } : undefined }), /版本2/);
+test('标注插件拒绝旧共享服务并接受版本3', async () => {
+  for (const version of [undefined, 1, 2]) assert.throws(() => apply({ datasourceCatalog: version ? { version } : undefined }), /版本3/);
   const dsh = new Map(), internal = new Map();
   let dispose, tool;
   const register = map => route => { map.set(route.path, route); return () => map.delete(route.path); };
   apply({
-    datasourceCatalog: { version: 2 },
+    datasourceCatalog: { version: 3 },
     connection: { fetch: { register: register(dsh) } }, datasourceHttp: { register: register(internal) },
     tools: { register: value => { tool = value; } },
     sessionController: { create() {}, prompt() {}, resolveAgent() {}, cancel() {} },
@@ -223,7 +223,7 @@ test('七个关系与成果接口由DSH和内部HTTP共享同一服务与错误�
   h.unregister();
 });
 
-test('关系任务跨入口观察投影画布ID与零建议结果，仍与表任务共享每源互斥', async () => {
+test('关系任务跨入口投影多主题计数和ID，零主题成功且仍与表任务共享每源互斥', async () => {
   let finish;
   const tasks = taskFixture(async () => new Promise(resolve => { finish = resolve; }));
   const h = host({}, tasks);
@@ -231,12 +231,12 @@ test('关系任务跨入口观察投影画布ID与零建议结果，仍与表任
   const response = await h.call('ai-tasks', input, h.internal);
   assert.equal(response.status, 202); const { task } = await response.json(); await tick();
   assert.equal((await h.call('ai-tasks', taskInput)).status, 409);
-  finish({ revision: 'r2', count: 3, canvasId: 'canvas' }); await tick();
+  finish({ revision: 'r2', count: 3, canvasCount: 2, canvasIds: ['canvas-a', 'canvas-b'] }); await tick();
   const completed = await (await h.call(`ai-tasks?taskId=${task.taskId}`)).json();
   assert.equal(completed.task.kind, 'relation');
-  assert.deepEqual(completed.task.result, { revision: 'r2', count: 3, canvasId: 'canvas' });
-  await h.call('ai-tasks', input); await tick(); finish({ revision: 'r2', count: 0, canvasId: null }); await tick();
-  assert.deepEqual((await (await h.call('ai-tasks?sourceId=s', undefined, h.internal)).json()).task.result, { revision: 'r2', count: 0, canvasId: null });
+  assert.deepEqual(completed.task.result, { revision: 'r2', count: 3, canvasCount: 2, canvasIds: ['canvas-a', 'canvas-b'] });
+  await h.call('ai-tasks', input); await tick(); finish({ revision: 'r2', count: 0, canvasCount: 0, canvasIds: [] }); await tick();
+  assert.deepEqual((await (await h.call('ai-tasks?sourceId=s', undefined, h.internal)).json()).task.result, { revision: 'r2', count: 0, canvasCount: 0, canvasIds: [] });
   await tasks.close(); h.unregister();
 });
 

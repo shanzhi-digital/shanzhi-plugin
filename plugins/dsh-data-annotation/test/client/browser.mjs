@@ -20,7 +20,7 @@ export async function runBrowserCheck({ tools = process.env.ANNOTATION_BROWSER_T
     { id: 'customers', name: 'customers', schema: 'demo', annotation: annotation('客户'), fields: [{ name: 'id', enabled: true, annotation: annotation('编号') }, { name: 'tenant_id', enabled: true, annotation: annotation('租户') }] },
     { id: 'empty', name: 'empty', schema: 'demo', annotation: annotation(''), fields: [] },
   ];
-  let revision = 1, saved = false;
+  let revision = 1, saved = false, aiRuns = 0;
   const invalidCanvas = { id: 'broken', name: '待修复', description: '', content: { nodes: [{ tableId: 'gone', label: '已删除表' }, { tableId: 'orders', label: 'orders' }], edges: [{ id: 'old-edge', fromTableId: 'gone', toTableId: 'orders', pairs: [{ fromField: 'gone_id', toField: 'id' }], cardinality: 'N:1' }] }, layout: { gone: { x: 50, y: 50 }, orders: { x: 400, y: 50 } }, confirmed: false, valid: false, invalid: [{ kind: 'table', tableId: 'gone', reason: 'missing' }], validationErrors: [], status: 'partial' };
   let canvases = [invalidCanvas];
   const catalog = () => ({ source: { id: 'source', name: '测试数据源' }, revision: `r${revision}`, tables });
@@ -32,7 +32,15 @@ export async function runBrowserCheck({ tools = process.env.ANNOTATION_BROWSER_T
     let body;
     if (action === 'sources') body = { items: [{ id: 'source', name: '测试数据源', enabledTableCount: 3, requiredCount: 7, annotatedCount: 3, status: 'partial' }] };
     else if (action === 'catalog') body = catalog();
-    else if (action === 'ai-tasks') body = { task: input ? { taskId: 'relation-task', sourceId: 'source', kind: 'relation', status: 'succeeded', result: { revision: `r${revision}`, count: 0, canvasId: null } } : null };
+    else if (action === 'ai-tasks') {
+      if (!input) body = { task: null };
+      else {
+        aiRuns++;
+        const generated = aiRuns === 1 ? ['订单分析', '客户经营'].map((name, index) => ({ id: `ai-canvas-${index}`, name, description: `主题 ${index + 1}`, content: { rootTableId: index ? 'customers' : 'orders', nodes: [{ tableId: 'orders', label: 'orders' }, { tableId: 'customers', label: 'customers' }], edges: [{ id: `ai-edge-${index}`, fromTableId: index ? 'customers' : 'orders', toTableId: index ? 'orders' : 'customers', pairs: [{ fromField: index ? 'id' : 'customer_id', toField: index ? 'customer_id' : 'id' }], cardinality: index ? '1:N' : 'N:1' }] }, layout: { orders: { x: 50, y: 50 }, customers: { x: 400, y: 50 } }, confirmed: false, valid: true, invalid: [], validationErrors: [], status: 'partial' })) : [];
+        if (generated.length) { canvases.push(...generated); saved = false; revision++; }
+        body = { task: { taskId: `relation-task-${aiRuns}`, sourceId: 'source', kind: 'relation', status: 'succeeded', result: { revision: `r${revision}`, count: generated.length, canvasCount: generated.length, canvasIds: generated.map(canvas => canvas.id) } } };
+      }
+    }
     else if (action === 'relations') body = { revision: `r${revision}`, items: canvases };
     else if (['relation-save', 'relation-confirm'].includes(action)) {
       const previous = canvases.find(item => item.id === (input.canvas?.id || input.canvasId));
@@ -60,6 +68,8 @@ export async function runBrowserCheck({ tools = process.env.ANNOTATION_BROWSER_T
     await dialog.getByRole('textbox', { name: '画布名称' }).fill('订单客户');
     await dialog.getByRole('button', { name: '+ orders · 订单', exact: true }).click();
     await dialog.getByRole('button', { name: '+ customers · 客户', exact: true }).click();
+    assert.equal(await dialog.getByRole('combobox', { name: '主表', exact: true }).inputValue(), 'orders');
+    await dialog.getByRole('combobox', { name: '主表', exact: true }).selectOption('customers');
     const nodeHead = dialog.locator('.da-canvas-node-head').first(), box = await nodeHead.boundingBox();
     await page.mouse.move(box.x + 30, box.y + 20); await page.mouse.down(); await page.mouse.move(box.x + 100, box.y + 60, { steps: 5 }); await page.mouse.up();
     // First edge via field drag.
@@ -74,6 +84,7 @@ export async function runBrowserCheck({ tools = process.env.ANNOTATION_BROWSER_T
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
     await dialog.getByRole('status').filter({ hasText: '已保存' }).waitFor();
     const savedCall = calls.findLast(call => call.action === 'relation-save');
+    assert.equal(savedCall.input.canvas.content.rootTableId, 'customers');
     assert.equal(savedCall.input.canvas.content.edges[0].pairs.length, 2);
     assert.equal(savedCall.input.canvas.content.edges[0].cardinality, '1:N');
     assert.ok(savedCall.input.canvas.layout.orders.x > 50);
@@ -116,15 +127,32 @@ export async function runBrowserCheck({ tools = process.env.ANNOTATION_BROWSER_T
     page.once('dialog', message => message.accept()); await page.getByRole('button', { name: '删除', exact: true }).click();
     await page.getByRole('button', { name: '草稿 (0)', exact: true }).waitFor();
     assert.equal(canvases.length, 1);
+    const originalCanvas = JSON.stringify(canvases[0]);
     await page.getByRole('searchbox', { name: '搜索关系标注' }).fill('筛选不匹配');
     await page.getByRole('button', { name: 'AI 辅助标注', exact: true }).click();
-    await page.getByText('未生成新关系', { exact: true }).waitFor();
+    await page.getByText('已生成 2 个业务画布，共 2 条关联', { exact: true }).waitFor();
     const aiRequest = calls.findLast(call => call.action === 'ai-tasks' && call.input);
     assert.equal(aiRequest.input.kind, 'relation');
     assert.deepEqual(aiRequest.input.items.map(item => item.tableId), ['orders', 'customers', 'empty']);
-    assert.equal(canvases.length, 1);
+    assert.equal(canvases.length, 3);
+    assert.equal(JSON.stringify(canvases.find(canvas => canvas.id === 'new-canvas')), originalCanvas);
+    assert.deepEqual(canvases.slice(1).map(canvas => canvas.content.nodes.map(node => node.tableId)), [['orders', 'customers'], ['orders', 'customers']]);
+    await page.getByRole('searchbox', { name: '搜索关系标注' }).fill('');
+    await page.getByText('主表：orders', { exact: true }).waitFor();
+    await page.getByText('主表：customers', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '草稿 (2)', exact: true }).waitFor();
+    await page.getByRole('button', { name: '4. 标注确认', exact: true }).click();
+    await relations.getByRole('button', { name: '订单客户', exact: true }).waitFor();
+    assert.equal(await relations.locator('tbody tr').count(), 1);
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await page.getByRole('status').filter({ hasText: '已保存' }).waitFor(); assert.equal(saved, true);
+    await page.getByRole('button', { name: '3. 表关系标注', exact: true }).click();
+    await page.getByRole('button', { name: 'AI 辅助标注', exact: true }).click();
+    await page.getByText('未生成新业务画布', { exact: true }).waitFor();
+    assert.equal(canvases.length, 3);
+    assert.equal(saved, true);
     assert.deepEqual(errors, []);
-    return { assertions: 'four steps; drag node; drag/click fields; composite pair; draft/confirm; discard prompt; invalid repair; search; confirmed results; red/yellow/green; locate; global save; delete', calls: calls.length, pageErrors: errors };
+    return { assertions: 'four steps; drag node; drag/click fields; root default/select; composite pair; draft/confirm; discard prompt; invalid repair; search; confirmed results; red/yellow/green; locate; global save; delete; multiple business canvases sharing tables; AI zero result', calls: calls.length, pageErrors: errors };
   } finally { await browser.close(); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) console.log(JSON.stringify(await runBrowserCheck(), null, 2));
