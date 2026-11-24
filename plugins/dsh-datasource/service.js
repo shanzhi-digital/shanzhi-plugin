@@ -5,7 +5,7 @@ export function createDatasourceService(current) {
     return value;
   };
   return Object.freeze({
-    version: 2,
+    version: 3,
     list: () => annotations().list(),
     catalog: sourceId => annotations().catalog(sourceId),
     action: input => annotations().action(input),

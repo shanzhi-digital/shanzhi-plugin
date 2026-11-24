@@ -1,6 +1,6 @@
 {
   "name": "dsh-sql",
-  "version": "0.9.0-local.12",
+  "version": "0.9.0-local.13",
   "description": "数据源接入：只读目录、源表启停、问题与业务域辅助选表；独立 MySQL 管理库保存当前成果。",
   "type": "module",
   "main": "./index.js",

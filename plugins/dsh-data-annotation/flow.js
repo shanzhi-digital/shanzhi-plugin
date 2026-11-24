@@ -65,7 +65,7 @@ export class AnnotationFlow {
         const existing = await this.service.relations(op.sourceId);
         this._active(op);
         if (existing.revision !== op.revision) fail('数据已更新，请重新加载。');
-        op.relations = existing.items.map(canvas => ({ id: canvas.id, name: canvas.name, confirmed: Boolean(canvas.confirmed), valid: Boolean(canvas.valid), edges: canvas.content.edges }));
+        op.canvases = existing.items.map(canvas => ({ id: canvas.id, name: canvas.name, description: canvas.description, rootTableId: canvas.content.rootTableId ?? null, confirmed: Boolean(canvas.confirmed), valid: Boolean(canvas.valid), content: canvas.content }));
         op.readPages = new Set();
       }
       let resolveDone, rejectDone;
@@ -151,7 +151,7 @@ export class AnnotationFlow {
         op.pageCount = pages.length;
         op.readPages.add(cursor);
       }
-      return { kind: op.kind, items: pages[cursor], cursor, nextCursor: cursor + 1 < pages.length ? cursor + 1 : null, ...(op.kind === 'relation' ? { relations: op.relations } : {}) };
+      return { kind: op.kind, items: pages[cursor], cursor, nextCursor: cursor + 1 < pages.length ? cursor + 1 : null, ...(op.kind === 'relation' ? { canvases: op.canvases } : {}) };
     }
     if (op.kind === 'relation') return this._submitRelations(op, input);
     if (!Array.isArray(input.annotations)) fail('缺少 annotations 标注数组。');
@@ -183,31 +183,46 @@ export class AnnotationFlow {
 
   async _submitRelations(op, input) {
     if (!op.pageCount || op.readPages.size !== op.pageCount) fail('请先分页读取全部关系结构。');
-    if (!Array.isArray(input.relations) || input.annotations !== undefined) fail('请使用 relations 数组提交关系建议。');
+    if (!Array.isArray(input.canvases) || input.annotations !== undefined || input.relations !== undefined) fail('请使用 canvases 数组提交业务主题画布。');
     if (Buffer.byteLength(JSON.stringify(input)) > 1048576) throw Object.assign(new Error('关系建议内容过长。'), { publicMessage: '关系建议内容过长。', status: 413 });
-    const allowed = new Set(['fromTableId', 'toTableId', 'pairs', 'cardinality', 'name', 'description']);
-    const relations = input.relations.map(relation => {
-      if (!relation || Object.keys(relation).some(key => !allowed.has(key)) || !validText(relation.fromTableId) || !validText(relation.toTableId) || relation.fromTableId === relation.toTableId || !['1:1', '1:N', 'N:1'].includes(relation.cardinality) || !Array.isArray(relation.pairs) || !relation.pairs.length) fail('关系建议格式无效。');
-      const from = op.selected.get(key('relation', { tableId: relation.fromTableId }))?.table;
-      const to = op.selected.get(key('relation', { tableId: relation.toTableId }))?.table;
-      if (!from || !to) fail('关系包含未知或停用表。');
-      const seen = new Set();
-      const pairs = relation.pairs.map(pair => {
-        if (!pair || Object.keys(pair).some(key => !['fromField', 'toField'].includes(key)) || !validText(pair.fromField) || !validText(pair.toField)) fail('关系字段配对无效。');
-        if (!from.fields.some(field => field.name === pair.fromField && field.enabled) || !to.fields.some(field => field.name === pair.toField && field.enabled)) fail('关系包含未知或停用字段。');
-        const id = JSON.stringify([pair.fromField, pair.toField]);
-        if (seen.has(id)) fail('关系字段配对重复。');
-        seen.add(id);
-        return { fromField: pair.fromField, toField: pair.toField };
+    const canvases = input.canvases.map(canvas => {
+      if (!canvas || Object.keys(canvas).some(key => !['name', 'description', 'rootTableId', 'relations'].includes(key)) || !validText(canvas.name) || !validText(canvas.description) || !validText(canvas.rootTableId) || !op.selected.has(key('relation', { tableId: canvas.rootTableId })) || !Array.isArray(canvas.relations) || !canvas.relations.length) fail('业务主题画布必须包含名称、说明、有效核心主表和关系。');
+      const neighbors = new Map();
+      const relations = canvas.relations.map(relation => {
+        if (!relation || Object.keys(relation).some(key => !['fromTableId', 'toTableId', 'pairs', 'cardinality'].includes(key)) || !validText(relation.fromTableId) || !validText(relation.toTableId) || relation.fromTableId === relation.toTableId || !['1:1', '1:N', 'N:1'].includes(relation.cardinality) || !Array.isArray(relation.pairs) || !relation.pairs.length) fail('关系建议格式无效。');
+        const from = op.selected.get(key('relation', { tableId: relation.fromTableId }))?.table;
+        const to = op.selected.get(key('relation', { tableId: relation.toTableId }))?.table;
+        if (!from || !to) fail('关系包含未知或停用表。');
+        const seen = new Set();
+        const pairs = relation.pairs.map(pair => {
+          if (!pair || Object.keys(pair).some(key => !['fromField', 'toField'].includes(key)) || !validText(pair.fromField) || !validText(pair.toField)) fail('关系字段配对无效。');
+          if (!from.fields.some(field => field.name === pair.fromField && field.enabled) || !to.fields.some(field => field.name === pair.toField && field.enabled)) fail('关系包含未知或停用字段。');
+          const id = JSON.stringify([pair.fromField, pair.toField]);
+          if (seen.has(id)) fail('关系字段配对重复。');
+          seen.add(id);
+          return { fromField: pair.fromField, toField: pair.toField };
+        });
+        if (!neighbors.has(from.id)) neighbors.set(from.id, new Set());
+        if (!neighbors.has(to.id)) neighbors.set(to.id, new Set());
+        neighbors.get(from.id).add(to.id);
+        neighbors.get(to.id).add(from.id);
+        return { fromTableId: from.id, toTableId: to.id, pairs, cardinality: relation.cardinality };
       });
-      for (const name of ['name', 'description']) if (relation[name] !== undefined && typeof relation[name] !== 'string') fail('关系名称和说明必须为文本。');
-      return { fromTableId: from.id, toTableId: to.id, pairs, cardinality: relation.cardinality, ...(relation.name !== undefined ? { name: relation.name.trim() } : {}), ...(relation.description !== undefined ? { description: relation.description.trim() } : {}) };
+      const reachable = new Set(), pending = [canvas.rootTableId];
+      while (pending.length) {
+        const tableId = pending.pop();
+        if (reachable.has(tableId)) continue;
+        reachable.add(tableId);
+        for (const next of neighbors.get(tableId) ?? []) if (!reachable.has(next)) pending.push(next);
+      }
+      if (!neighbors.has(canvas.rootTableId) || reachable.size !== neighbors.size) fail('业务主题中的所有表必须通过关系从核心主表可达。');
+      return { name: canvas.name.trim(), description: canvas.description.trim(), rootTableId: canvas.rootTableId, relations };
     });
     op.submitting = true;
     try {
-      const result = await this.service.aiRelationSave({ sourceId: op.sourceId, revision: op.revision, sessionId: op.sessionId, relations });
+      const result = await this.service.aiRelationSave({ sourceId: op.sourceId, revision: op.revision, sessionId: op.sessionId, canvases });
       op.committed = true;
-      op.resolve({ revision: result.revision, count: result.count, canvasId: result.canvas?.id ?? null });
+      op.resolve({ revision: result.revision, count: result.count, canvasCount: result.canvasCount, canvasIds: result.canvasIds });
       return { ok: true };
     } finally {
       op.submitting = false;
@@ -218,13 +233,16 @@ export class AnnotationFlow {
   getTool() {
     return {
       name: 'data_annotation_task',
-      description: '分页读取本次全部结构后提交。表/字段标注通过 annotations 每对象一条；关系建议通过 relations 提交0到多条，只引用真实启用表字段，不能设置ID、布局或人工确认。',
+      description: '分页读取全部结构后提交。表/字段标注通过 annotations 每对象一条；关系通过 canvases 提交0到多个业务查询主题，每组有名称、粒度说明、一个核心主表和必要关系，允许不同主题复用关系。',
       parameters: { type: 'object', required: ['action'], additionalProperties: false, properties: {
         action: { type: 'string', enum: ['read', 'submit'] }, cursor: { type: 'integer', minimum: 0 },
         annotations: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['tableId', 'text'], properties: { tableId: { type: 'string' }, fieldName: { type: 'string' }, text: { type: 'string' } } } },
-        relations: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['fromTableId', 'toTableId', 'pairs', 'cardinality'], properties: {
-          fromTableId: { type: 'string' }, toTableId: { type: 'string' }, cardinality: { type: 'string', enum: ['1:1', '1:N', 'N:1'] }, name: { type: 'string' }, description: { type: 'string' },
-          pairs: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false, required: ['fromField', 'toField'], properties: { fromField: { type: 'string' }, toField: { type: 'string' } } } },
+        canvases: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['name', 'description', 'rootTableId', 'relations'], properties: {
+          name: { type: 'string', minLength: 1 }, description: { type: 'string', minLength: 1 }, rootTableId: { type: 'string' },
+          relations: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false, required: ['fromTableId', 'toTableId', 'pairs', 'cardinality'], properties: {
+            fromTableId: { type: 'string' }, toTableId: { type: 'string' }, cardinality: { type: 'string', enum: ['1:1', '1:N', 'N:1'] },
+            pairs: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false, required: ['fromField', 'toField'], properties: { fromField: { type: 'string' }, toField: { type: 'string' } } } },
+          } } },
         } } },
       } },
       output: { schema: { type: 'object' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
