@@ -1,6 +1,6 @@
 {
   "name": "dsh-sql",
-  "version": "0.9.0-local.10",
+  "version": "0.9.0-local.11",
   "description": "数据源接入：只读目录、源表启停、问题与业务域辅助选表；独立 MySQL 管理库保存当前成果。",
   "type": "module",
   "main": "./index.js",
@@ -8,6 +8,7 @@
     ".": "./index.js",
     "./client": "./client.js",
     "./host-bridge": "./host-bridge.js",
+    "./ai-tasks": "./ai-tasks.js",
     "./service.js": "./service.js",
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"
@@ -17,6 +18,10 @@
     "runtime.js",
     "store.js",
     "flow.js",
+    "ai-executor.js",
+    "ai-tasks.js",
+    "routes.js",
+    "internal-http.js",
     "flow-store.js",
     "management-db.js",
     "annotation-store.js",
@@ -38,7 +43,7 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check annotation-store.js && node --check service.js && node --check index.js && node --check client.js && node --check runtime.js && node --check store.js && node --check flow.js && node --check flow-store.js && node --check management-db.js && node --check task-prompts.js && node --check selection-flow.js && node --check sql-policy.js && node --check freshness.js && node --check vendor/tools.js && node --check vendor/adapters.js && node --check host-bridge.js"
+    "check": "node --check ai-executor.js && node --check ai-tasks.js && node --check routes.js && node --check internal-http.js && node --check annotation-store.js && node --check service.js && node --check index.js && node --check client.js && node --check runtime.js && node --check store.js && node --check flow.js && node --check flow-store.js && node --check management-db.js && node --check task-prompts.js && node --check selection-flow.js && node --check sql-policy.js && node --check freshness.js && node --check vendor/tools.js && node --check vendor/adapters.js && node --check host-bridge.js"
   },
   "dsh": {
     "bundle": {

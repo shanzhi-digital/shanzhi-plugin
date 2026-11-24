@@ -17,9 +17,16 @@ export class AnnotationFlow {
     this.closed = false;
   }
 
-  async run(input, signal) {
+  validate(input) {
+    if (!input || !validText(input.sourceId) || !validText(input.revision) || !['table', 'field'].includes(input.kind) || !Array.isArray(input.items) || !input.items.length) throw Object.assign(new Error('标注任务参数无效。'), { status: 400 });
+    for (const item of input.items) {
+      if (!item || !validText(item.tableId) || (input.kind === 'field' && !validText(item.fieldName)) || (input.kind === 'table' && item.fieldName !== undefined)) throw Object.assign(new Error('标注对象无效。'), { status: 400 });
+    }
+  }
+
+  async run(input, signal, report = () => {}) {
     if (this.closed) fail('标注服务已关闭。');
-    if (!input || !validText(input.sourceId) || !validText(input.revision) || !['table', 'field'].includes(input.kind) || !Array.isArray(input.items) || !input.items.length) fail('标注任务参数无效。');
+    this.validate(input);
     if (this.operations.has(input.sourceId)) fail('该数据源已有标注任务。');
     const op = { sourceId: input.sourceId, revision: input.revision, kind: input.kind, controller: new AbortController() };
     let finished;
@@ -28,8 +35,8 @@ export class AnnotationFlow {
     const abort = () => {
       if (op.committed) return;
       op.controller.abort();
-      if (op.sessionId) void Promise.resolve(this.service.retireSession(op.sessionId)).catch(() => {});
-      op.reject?.(new Error('标注任务已取消或超时。'));
+      if (op.sessionId && !op.submitting) void Promise.resolve(this.service.retireSession(op.sessionId)).catch(() => {});
+      op.reject?.(Object.assign(new Error('标注任务已取消或超时。'), { publicMessage: '标注任务已取消或超时。' }));
     };
     op.abort = abort;
     signal?.addEventListener('abort', abort, { once: true });
@@ -65,15 +72,17 @@ export class AnnotationFlow {
       op.resolve = resolveDone;
       const { sessionId } = await this.bridge.create({ cwd: this.defaultCwd });
       op.sessionId = sessionId;
+      report({ sessionId });
       const bound = await this.service.bindSession(sessionId, op.sourceId);
       if (bound === false) fail('标注会话绑定失败。');
       this._active(op);
       this.sessions.set(sessionId, op);
-      op.cleanup = await this.bridge.observe({ sessionId, signal: op.controller.signal, onEnd: cause => op.reject(cause || new Error('会话已结束，未提交有效结果。')) });
+      op.cleanup = await this.bridge.observe({ sessionId, signal: op.controller.signal, onEnd: cause => op.reject(cause || Object.assign(new Error('会话已结束，未提交有效结果。'), { publicMessage: '会话已结束，未提交有效结果。' })) });
       await this._assertSession(op);
-      const sending = this.bridge.send({ sessionId, requestId: randomUUID(), text: annotationPrompt(op.kind, op.selected.size), signal: op.controller.signal }).catch(op.reject);
-      const [, result] = await Promise.all([sending, done]);
-      return result;
+      // Sending is observed independently: only the business commit completes a task.
+      // Do not resend if acknowledgement fails or remains pending.
+      void Promise.resolve().then(() => this.bridge.send({ sessionId, requestId: randomUUID(), text: annotationPrompt(op.kind, op.selected.size), signal: op.controller.signal })).catch(op.reject);
+      return await done;
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
@@ -151,7 +160,7 @@ export class AnnotationFlow {
     try {
       const result = await this.service.aiSave({ sourceId: op.sourceId, revision: op.revision, kind: op.kind, items: annotations, sessionId: op.sessionId });
       op.committed = true;
-      op.resolve(result);
+      op.resolve({ revision: result.revision, count: annotations.length });
       return { ok: true };
     } finally {
       op.submitting = false;

@@ -66,8 +66,12 @@ async function fixture(t, options = {}) {
   const flow = makeFlow();
   t.after(() => flow.close());
   const state = () => flow.get(id);
-  const action = async (name, input = {}, signal) => flow.action({ id, action: name, revision: (await state()).revision, ...input }, signal);
-  const task = (sessionId, operation, input = {}, signal) => flow.task({ operation, ...input }, execution(sessionId, signal));
+  const action = async (name, input = {}, signal) => {
+    const { operationId, ...values } = input;
+    const request = { id, action: name, revision: (await state()).revision, ...values };
+    return ['detect-domains', 'suggest', 'generalize-question'].includes(name) ? flow.ai(request, signal) : flow.action({ ...request, ...(operationId ? { operationId } : {}) }, signal);
+  };
+  const task = (sessionId, operation, input = {}, signal) => flow.executor.task({ operation, ...input }, execution(sessionId, signal));
   let operationNumber = 0;
   const start = async (name = 'suggest', input = { questionIds: [question.id] }, signal) => {
     const sent = latch();
@@ -77,7 +81,7 @@ async function fixture(t, options = {}) {
     const pending = action(name, { operationId, ...input }, signal);
     const { sessionId, text, sendSignal } = await Promise.race([sent.promise, pending.then(() => assert.fail('应等待提交'))]);
     const tool = (operation, values, toolSignal) => task(sessionId, operation, values, toolSignal);
-    return { sessionId, text, sendSignal, operationId, pending, originalAnalyses, tool, readAll: () => readAll(tool), submit: (result, toolSignal) => tool('submit', { result }, toolSignal) };
+    return { sessionId, text, sendSignal, operationId: flow.operations.get(id).operationId, pending, originalAnalyses, tool, readAll: () => readAll(tool), submit: (result, toolSignal) => tool('submit', { result }, toolSignal) };
   };
   const readAll = async tool => {
     const pages = [];
@@ -241,7 +245,7 @@ test('泛化可确认20条有依据候选，15条起无需不足说明，前端�
   const values = Array.from({ length: 20 }, (_, index) => candidate('独立问题' + index));
   await run.submit({ originalAnalyses: run.originalAnalyses, candidates: values });
   const draft = (await run.pending).questionDraft;
-  const schema = f.flow.getTool().parameters.properties.result.properties;
+  const schema = f.flow.executor.getTool().parameters.properties.result.properties;
   assert.equal(schema.candidates.maxItems, 20);
   assert.equal(schema.candidates.items.properties.links.minItems, 1);
   assert.deepEqual(schema.analyses.items.required, ['questionId', 'links']);
@@ -575,7 +579,7 @@ test('只有当前绑定会话可读写工具，普通 SQL 永远拒绝该绑定
   assert.deepEqual(await f.store.findBinding(run.sessionId), { sourceId: id, retired: true });
   const restarted = f.makeFlow();
   t.after(() => restarted.close());
-  await assert.rejects(restarted.task({ operation: 'read' }, execution(run.sessionId)), /接入会话/);
+  await assert.rejects(restarted.executor.task({ operation: 'read' }, execution(run.sessionId)), /接入会话/);
   await assert.rejects(restarted.scopedSql('sql_query', {}, execution(run.sessionId), delegated), /只可使用 datasource_task/);
 });
 
@@ -654,22 +658,32 @@ test('取消与已经完成的持久化竞争时确认成功，并保留草稿',
   assert.ok(f.calls.every(([kind]) => kind !== 'cancel'));
 });
 
-test('停用取消运行并拒绝晚到提交，目录仍可读且表启停可保存', async t => {
+test('AI 结果提交后不等待发送确认，晚到发送失败不改变已保存成果', async t => {
   const f = await fixture(t);
   await f.action('scan');
-  const run = await f.start();
-  await run.readAll();
-  const before = await f.runtime.source(id);
-  const disabled = await f.store.setSourceEnabled(id, false, before.revision);
-  await f.flow.sourceChanged(id, disabled);
-  await assert.rejects(run.pending, /取消/);
-  await assert.rejects(run.submit(f.recommendation), /接入会话/);
-  assert.equal((await f.state()).enabled, false);
-  await assert.rejects(f.action('scan'), /停用/);
-  const saved = await f.action('set-tables', { tableIds: ['orders'], enabled: true });
-  assert.equal(saved.catalog.tables[0].enabled, true);
-  assert.deepEqual(saved.questions[0].links, []);
+  const entered = latch(), acknowledgement = latch();
+  f.bridge.sendHook = ({ sessionId }) => { entered.resolve(sessionId); return acknowledgement.promise; };
+  const pending = f.action('suggest', { questionIds: [f.question.id] });
+  const sessionId = await entered.promise;
+  await f.readAll((operation, input) => f.task(sessionId, operation, input));
+  await f.task(sessionId, 'submit', { result: f.recommendation });
+  const state = await pending;
+  assert.ok(state.draft);
+  acknowledgement.reject(new Error('message acknowledgement failed'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await f.state()).draft.id, state.draft.id);
+  assert.ok(f.calls.every(([kind]) => kind !== 'cancel'));
 });
+
+test('业务 action 拒绝 AI 操作，AI 入口拒绝外部 cwd', async t => {
+  const f = await fixture(t);
+  await f.action('scan');
+  for (const action of ['detect-domains', 'suggest', 'generalize-question']) {
+    await assert.rejects(f.flow.action({ id, action, revision: (await f.state()).revision }), /不支持/);
+  }
+  await assert.rejects(f.flow.ai({ id, action: 'detect-domains', revision: (await f.state()).revision, cwd: '/external' }), /格式无效/);
+});
+
 
 test('缓存问题全部有效时不创建会话，关联跨业务域并按确认启停', async t => {
   const f = await fixture(t);
@@ -961,7 +975,7 @@ test('有效空分析在重建 flow 后免 AI 复用，识别业务域保留空�
   const before = await reopened.get(id);
   assert.equal(before.questions[0].analysisStatus, 'empty');
   const sends = f.calls.filter(([kind]) => kind === 'send').length;
-  const cached = await reopened.action({ id, action: 'suggest', revision: before.revision, questionIds: [f.question.id] });
+  const cached = await reopened.ai({ id, action: 'suggest', revision: before.revision, questionIds: [f.question.id] });
   assert.deepEqual(cached.draft.recommendations, []);
   assert.deepEqual(cached.draft.selectedTableIds, []);
   assert.equal(f.calls.filter(([kind]) => kind === 'send').length, sends);

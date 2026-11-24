@@ -15,7 +15,7 @@ window.__ModuleLoader__.load({
       const response = await fetch(`/api/data-annotation/${path}`, { ...(input === undefined ? { method: 'GET' } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) }), credentials: 'same-origin', cache: 'no-store', signal });
       let value;
       try { value = await response.json(); } catch { throw new Error('无法读取服务响应。'); }
-      if (!response.ok) throw new Error(typeof value?.error === 'string' ? value.error : '操作失败，请重试。');
+      if (!response.ok) throw Object.assign(new Error(typeof value?.error === 'string' ? value.error : '操作失败，请重试。'), { status: response.status, taskId: value?.taskId });
       return value;
     }
     const btn = (label, onClick, props = {}) => h('button', { type: 'button', className: 'da-btn', onClick, ...props }, label);
@@ -37,25 +37,79 @@ window.__ModuleLoader__.load({
     const eligible = row => !row.field || row.field.enabled;
 
     function Page() {
-      const [sources, setSources] = useState([]), [catalog, setCatalog] = useState(null), [loading, setLoading] = useState(false), [error, setError] = useState('');
+      const [sources, setSources] = useState([]), [catalog, setCatalog] = useState(null), [requestBusy, setRequestBusy] = useState(false), [error, setError] = useState('');
       const [step, setStep] = useState('table'), [tableId, setTableId] = useState(null), [search, setSearch] = useState(''), [tableSearch, setTableSearch] = useState(''), [status, setStatus] = useState(''), [enabled, setEnabled] = useState(''), [onlySelected, setOnlySelected] = useState(false), [page, setPage] = useState(1);
-      const [selectedTables, setSelectedTables] = useState(() => new Set()), [selectedFields, setSelectedFields] = useState(() => new Set()), [editing, setEditing] = useState(null), [elapsed, setElapsed] = useState(0), [aiBusy, setAiBusy] = useState(false), [requestPath, setRequestPath] = useState('');
+      const [selectedTables, setSelectedTables] = useState(() => new Set()), [selectedFields, setSelectedFields] = useState(() => new Set()), [editing, setEditing] = useState(null), [elapsed, setElapsed] = useState(0), [task, setTask] = useState(null), [restoring, setRestoring] = useState(false), [requestPath, setRequestPath] = useState('');
       const request = useRef(null), alive = useRef(true);
-      const cancel = () => { request.current?.abort(); request.current = null; setLoading(false); setAiBusy(false); };
-      async function run(path, input, onSuccess, isAi = false) {
+      const sourceId = catalog?.source.id;
+      const aiBusy = task && ['running', 'cancelling'].includes(task.status);
+      const loading = requestBusy || restoring || aiBusy;
+      const cancel = () => { request.current?.abort(); request.current = null; setRequestBusy(false); };
+      const message = err => err instanceof TypeError || err?.message === 'Failed to fetch' ? '无法连接标注服务，请稍后重试。' : err.message;
+      async function run(path, input, onSuccess) {
         request.current?.abort();
         const controller = new AbortController(); request.current = controller;
-        setLoading(true); setRequestPath(path); setAiBusy(isAi); setElapsed(0); setError('');
+        setRequestBusy(true); setRequestPath(path); setError('');
         try { const result = await api(path, input, controller.signal); if (!controller.signal.aborted && alive.current) onSuccess(result); }
-        catch (err) { if (!controller.signal.aborted && alive.current) setError(err instanceof TypeError || err?.message === 'Failed to fetch' ? '无法连接标注服务，请稍后重试。' : err.message); }
-        finally { if (request.current === controller && alive.current) { request.current = null; setLoading(false); setAiBusy(false); } }
+        catch (err) {
+          if (!controller.signal.aborted && alive.current) {
+            setError(message(err));
+            if (path === 'ai-tasks') {
+              try { const result = await api(`ai-tasks?sourceId=${encodeURIComponent(input.sourceId)}`, undefined, controller.signal); if (!controller.signal.aborted && alive.current) setTask(result.task); }
+              catch { /* The user can re-enter the source to resume observation. */ }
+            }
+          }
+        }
+        finally { if (request.current === controller && alive.current) { request.current = null; setRequestBusy(false); } }
       }
       useEffect(() => { alive.current = true; run('sources', undefined, result => setSources(result.items)); return () => { alive.current = false; request.current?.abort(); }; }, []);
-      useEffect(() => { if (!aiBusy) return; const start = Date.now(); const timer = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000); return () => clearInterval(timer); }, [aiBusy]);
-      function openSource(source) { run('catalog', { sourceId: source.id }, result => { setCatalog(result); setStep('table'); setTableId(result.tables[0]?.id ?? null); setSelectedTables(new Set()); setSelectedFields(new Set()); setSearch(''); setTableSearch(''); setStatus(''); setEnabled(''); setOnlySelected(false); setPage(1); }); }
-      function refresh() { if (catalog) run('catalog', { sourceId: catalog.source.id }, setCatalog); }
-      function cancelVisible() { const wasAi = aiBusy; cancel(); if (wasAi) refresh(); }
-      function back() { cancel(); setEditing(null); setCatalog(null); setError(''); setSearch(''); setStatus(''); setPage(1); run('sources', undefined, result => setSources(result.items)); }
+      useEffect(() => {
+        if (!sourceId) return;
+        const controller = new AbortController();
+        setRestoring(true);
+        api(`ai-tasks?sourceId=${encodeURIComponent(sourceId)}`, undefined, controller.signal)
+          .then(result => { if (!controller.signal.aborted) setTask(result.task); })
+          .catch(err => { if (!controller.signal.aborted) setError(message(err)); })
+          .finally(() => { if (!controller.signal.aborted) setRestoring(false); });
+        return () => controller.abort();
+      }, [sourceId]);
+      useEffect(() => {
+        if (!sourceId || !task || task.sourceId !== sourceId) return;
+        const controller = new AbortController();
+        let timer;
+        async function observe() {
+          try {
+            const result = await api(`ai-tasks?taskId=${encodeURIComponent(task.taskId)}`, undefined, controller.signal);
+            if (controller.signal.aborted) return;
+            setTask(result.task);
+            if (['running', 'cancelling'].includes(result.task.status)) timer = setTimeout(observe, 1000);
+          } catch (err) {
+            if (!controller.signal.aborted) {
+              setError(message(err));
+              if (err.status === 404) {
+                try { const result = await api('catalog', { sourceId }, controller.signal); if (!controller.signal.aborted) { setCatalog(result); setTask(null); } }
+                catch (cause) { if (!controller.signal.aborted) { setTask(null); setError(message(cause)); } }
+              } else timer = setTimeout(observe, 1000);
+            }
+          }
+        }
+        if (aiBusy) timer = setTimeout(observe, 1000);
+        else {
+          if (task.status === 'failed') setError(task.error?.message || 'AI 标注失败，请重试。');
+          if (task.status === 'cancelled') setError('AI 标注已取消。');
+          api('catalog', { sourceId }, controller.signal).then(result => { if (!controller.signal.aborted) setCatalog(result); }).catch(err => { if (!controller.signal.aborted) setError(message(err)); });
+        }
+        return () => { controller.abort(); clearTimeout(timer); };
+      }, [sourceId, task?.taskId, task?.status]);
+      useEffect(() => {
+        if (!aiBusy) return;
+        const update = () => setElapsed(Math.max(0, Math.floor((Date.now() - Date.parse(task.startedAt)) / 1000)));
+        update(); const timer = setInterval(update, 1000); return () => clearInterval(timer);
+      }, [aiBusy, task?.startedAt]);
+      function openSource(source) { setTask(null); setRestoring(true); run('catalog', { sourceId: source.id }, result => { setCatalog(result); setStep('table'); setTableId(result.tables[0]?.id ?? null); setSelectedTables(new Set()); setSelectedFields(new Set()); setSearch(''); setTableSearch(''); setStatus(''); setEnabled(''); setOnlySelected(false); setPage(1); }).finally(() => setRestoring(false)); }
+      function refresh() { if (catalog) run('catalog', { sourceId }, setCatalog); }
+      function cancelVisible() { if (aiBusy) run('ai-tasks/cancel', { taskId: task.taskId }, result => setTask(result.task)); else cancel(); }
+      function back() { cancel(); setTask(null); setRestoring(false); setEditing(null); setCatalog(null); setError(''); setSearch(''); setStatus(''); setPage(1); run('sources', undefined, result => setSources(result.items)); }
       function changeStep(value) { setStep(value); setSearch(''); setStatus(''); setEnabled(''); setOnlySelected(false); setPage(1); }
       const selection = step === 'table' ? selectedTables : selectedFields;
       const setSelection = step === 'table' ? setSelectedTables : setSelectedFields;
@@ -70,11 +124,11 @@ window.__ModuleLoader__.load({
       const allChecked = filteredKeys.length > 0 && filteredKeys.every(key => selection.has(key));
       function toggle(keys, checked) { setSelection(previous => { const next = new Set(previous); keys.forEach(key => checked ? next.add(key) : next.delete(key)); return next; }); }
       function act(operation, list, extra) { if (!catalog || !list.length) return; run('action', { sourceId: catalog.source.id, revision: catalog.revision, operation, kind: step, items: list.map(row => ({ ...target(row), ...(extra ? extra(row) : {}) })) }, result => { setCatalog(result); setEditing(null); }); }
-      function ai(list) { if (!list.length) return; run('ai', { sourceId: catalog.source.id, revision: catalog.revision, kind: step, items: list.map(target) }, setCatalog, true); }
+      function ai(list) { if (!list.length) return; run('ai-tasks', { sourceId: catalog.source.id, revision: catalog.revision, kind: step, items: list.map(target) }, result => setTask(result.task)); }
       function edit(list) { if (list.length) setEditing(list.map(row => ({ row, text: annotation(row).text || '' }))); }
       const actionable = selectedRows.filter(row => eligible(row) && annotation(row).status !== 'confirmed');
       const confirmable = selectedRows.filter(row => annotation(row).status === 'pending');
-      const loadingView = loading && h('div', { className: 'da-loading' }, h('span', { className: 'da-spinner', 'aria-hidden': true }), h('span', { role: 'status' }, aiBusy ? `AI 标注中 · ${elapsed} 秒` : '加载中'), requestPath !== 'action' && btn('取消操作', cancelVisible));
+      const loadingView = loading && h('div', { className: 'da-loading' }, h('span', { className: 'da-spinner', 'aria-hidden': true }), h('span', { role: 'status' }, aiBusy ? `${task.status === 'cancelling' ? '正在取消 AI 标注' : 'AI 标注中'} · ${elapsed} 秒` : '加载中'), aiBusy ? btn('取消标注', cancelVisible, { disabled: task.status === 'cancelling' || requestBusy }) : requestBusy && !['action', 'ai-tasks', 'ai-tasks/cancel'].includes(requestPath) && btn('取消操作', cancelVisible));
       const errorView = error && h('div', { className: 'da-error', role: 'alert' }, error);
       const pagination = h('div', { className: 'da-row da-between' }, h('span', { className: 'da-muted' }, `共 ${rows.length} 项 · 第 ${activePage} / ${Math.max(1, Math.ceil(rows.length / size))} 页`), h('div', { className: 'da-row' }, btn('上一页', () => setPage(activePage - 1), { disabled: activePage <= 1 }), btn('下一页', () => setPage(activePage + 1), { disabled: activePage * size >= rows.length })));
       const rowTable = h('div', { className: 'da-table-wrap' }, h('table', null,

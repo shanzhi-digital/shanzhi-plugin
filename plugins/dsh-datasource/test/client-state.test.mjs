@@ -78,7 +78,14 @@ async function mountClient() {
   const submit = async () => { nodes().filter((node) => node.type === 'form').at(-1).props.onSubmit({ preventDefault() {} }); await flush(); };
   await flush();
   return { fixture: context.__fixture, flush, nodes, text, click, change, calls, timers, submit,
-    advance: async (milliseconds) => { clock += milliseconds; for (const timer of timers.values()) if (timer.interval) timer.callback(); await flush(); },
+    advance: async (milliseconds) => {
+      clock += milliseconds;
+      for (const [id, timer] of [...timers]) {
+        if (timer.interval) timer.callback();
+        else if (timer.delay <= milliseconds) { timers.delete(id); timer.callback(); }
+      }
+      await flush();
+    },
     unmount: () => context.__fixture.unmount() };
 }
 
@@ -642,8 +649,9 @@ test('generalization selection spans more than twenty originals and cancel keeps
   assert.equal(dialogNamed(ui, 'original-questions-dialog'), undefined);
   assert.match(ui.text(dialogNamed(ui, 'questions-dialog')), /正在泛化问题/);
   await ui.click('取消操作');
-  assert.equal(ui.calls('cancel').at(-1).payload.operationId, ui.calls('generalize-question')[0].payload.operationId);
+  assert.equal(ui.calls('ai-tasks/cancel').at(-1).payload.taskId, ui.fixture.latestTasks['fixture-mysql']);
   assert.equal(ui.fixture.pending.size, 0);
+  await ui.advance(1000);
   await ui.click('泛化问题');
   assert.match(ui.text(dialogNamed(ui, 'original-questions-dialog')), /已选 12 \/ 24 个原问题/);
 });
@@ -663,7 +671,7 @@ test('reuse hints follow source version and all table structures and loading des
   assert.match(ui.text(dialogNamed(ui, 'ai-selection-dialog')), /可复用关联 1 个，已分析无关联 0 个，待分析 0 个/);
   ui.fixture.holdActions.add('suggest'); await ui.click('AI 选表');
   assert.match(ui.text(dialogNamed(ui, 'ai-selection-dialog')), /正在合并已分析结果/);
-  await ui.click('取消操作'); await ui.change('参考问题 测试问题 02', true); await ui.click('AI 选表');
+  await ui.click('取消操作'); await ui.advance(1000); await ui.change('参考问题 测试问题 02', true); await ui.click('AI 选表');
   assert.match(ui.text(dialogNamed(ui, 'ai-selection-dialog')), /正在复用 1 个问题关联，分析 1 个问题/);
   await ui.click('取消操作');
 });
@@ -742,6 +750,106 @@ test('suggestion analyses preserve explicit empty results and omit reusable ques
   await ui.change('全选问题', false); await ui.change('参考问题 测试问题 01', true); await ui.change('参考问题 测试问题 02', true);
   const aiCalls = ui.fixture.aiResults.length;
   await ui.click('AI 选表'); assert.equal(ui.fixture.aiResults.length, aiCalls);
+});
+
+test('AI tasks use task endpoints, poll serially and refresh business state after completion', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  await ui.click('测试业务库'); await ui.click('AI 辅助选表');
+  ui.fixture.holdActions.add('detect-domains'); ui.fixture.holdTaskReads = true;
+  await ui.click('识别业务域');
+  const start = ui.calls('detect-domains')[0];
+  assert.equal(start.operation, 'ai-tasks'); assert.equal(start.method, 'POST');
+  assert.equal(ui.calls('flow-action').some(({ payload }) => payload.action === 'detect-domains'), false);
+  const reads = ui.fixture.stateReads;
+  await ui.advance(1000); assert.equal(ui.fixture.taskReads.length, 1);
+  await ui.advance(5000); assert.equal(ui.fixture.taskReads.length, 1);
+  assert.equal(ui.calls('ensure-scan').length, 1);
+  await [...ui.fixture.pending.values()][0].finish();
+  ui.fixture.taskReads.shift()(); await ui.flush();
+  assert.equal(ui.fixture.stateReads, reads + 1);
+  assert.equal(checked(ui, '参考业务域 订单业务'), false);
+  await ui.click('取消'); await ui.click('查看分析会话');
+  assert.deepEqual(Array.from(ui.fixture.sessions), ['fixture-session']);
+});
+
+test('AI cancellation waits for terminal outcome and preserves a commit that wins the race', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  await ui.click('测试业务库'); await ui.click('AI 辅助选表');
+  ui.fixture.holdActions.add('suggest'); ui.fixture.holdCancellation = true;
+  await ui.click('AI 选表'); await ui.click('取消操作');
+  const task = ui.fixture.tasks[ui.fixture.latestTasks['fixture-mysql']];
+  assert.equal(task.status, 'cancelling');
+  assert.equal(buttonNamed(ui, 'AI 选表').props.disabled, true);
+  assert.equal(ui.nodes().some((node) => ui.text(node).includes('未保存')), false);
+  await [...ui.fixture.pending.values()][0].finish(); await ui.advance(1000);
+  assert.equal(task.status, 'succeeded'); assert.ok(dialogNamed(ui, 'recommendation-dialog'));
+  assert.equal(ui.calls('ai-tasks/cancel').length, 1);
+});
+
+test('leaving only stops observation and reentry restores running tasks without scanning or opening old drafts', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  await ui.click('测试业务库'); await ui.click('AI 辅助选表');
+  ui.fixture.holdActions.add('suggest'); await ui.click('AI 选表');
+  const pending = [...ui.fixture.pending.values()][0], scans = ui.calls('ensure-scan').length;
+  await ui.click('返回数据源');
+  assert.equal(ui.calls('ai-tasks/cancel').length, 0); assert.equal(ui.fixture.pending.size, 1);
+  assert.equal(ui.timers.size, 0);
+  await ui.click('测试业务库');
+  assert.equal(ui.calls('ensure-scan').length, scans);
+  assert.equal(buttonNamed(ui, '刷新目录').props.disabled, true);
+  await pending.finish(); await ui.advance(1000);
+  assert.equal(dialogNamed(ui, 'recommendation-dialog'), undefined);
+  await ui.click('查看推荐结果'); assert.ok(dialogNamed(ui, 'recommendation-dialog'));
+  await ui.click('返回数据源'); await ui.click('测试业务库');
+  assert.equal(dialogNamed(ui, 'recommendation-dialog'), undefined);
+  assert.equal(ui.calls('ensure-scan').length, scans);
+});
+
+test('lost AI acceptance is recovered by source without resubmission and restored question drafts stay closed', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  await openQuestions(ui); ui.fixture.loseStartResponse = true;
+  await startGeneralization(ui, '测试问题 01');
+  assert.equal(ui.calls('generalize-question').length, 1);
+  assert.ok(dialogNamed(ui, 'question-draft-dialog'));
+  await ui.click('返回数据源'); await ui.click('测试业务库');
+  assert.equal(dialogNamed(ui, 'question-draft-dialog'), undefined);
+  await ui.click('查看泛化结果'); assert.ok(dialogNamed(ui, 'question-draft-dialog'));
+});
+
+test('a failed AI start does not mistake the previously completed latest task for a new success', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  await ui.click('测试业务库'); await ui.click('AI 辅助选表'); await ui.click('识别业务域');
+  ui.fixture.failStartRequest = true; await ui.click('AI 选表');
+  assert.equal(ui.calls('suggest').length, 1);
+  assert.equal(dialogNamed(ui, 'recommendation-dialog'), undefined);
+  assert.match(ui.text(dialogNamed(ui, 'ai-selection-dialog')), /模拟请求未送达/);
+  assert.equal(ui.fixture.taskCounter, 1);
+});
+
+test('an AI start conflict observes the existing task without treating it as the requested action', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  await ui.click('测试业务库'); await ui.click('AI 辅助选表');
+  const task = { taskId: 'other-task', sourceId: 'fixture-mysql', kind: 'detect-domains', status: 'running', startedAt: new Date().toISOString(), sessionId: 'other-session' };
+  ui.fixture.tasks[task.taskId] = task; ui.fixture.latestTasks[task.sourceId] = task.taskId;
+  await ui.click('AI 选表');
+  assert.equal(buttonNamed(ui, 'AI 选表').props.disabled, true);
+  task.status = 'succeeded'; await ui.advance(1000);
+  assert.equal(dialogNamed(ui, 'recommendation-dialog'), undefined);
+  assert.ok(dialogNamed(ui, 'ai-selection-dialog'));
+  assert.equal(buttonNamed(ui, 'AI 选表').props.disabled, false);
+});
+
+test('unmount during a task request stops observation without cancelling the backend task', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  await ui.click('测试业务库'); await ui.click('AI 辅助选表');
+  ui.fixture.holdActions.add('suggest'); ui.fixture.holdTaskReads = true;
+  await ui.click('AI 选表'); await ui.advance(1000);
+  assert.equal(ui.fixture.taskReads.length, 1);
+  ui.unmount(); await ui.flush();
+  assert.equal(ui.timers.size, 0); assert.equal(ui.fixture.pending.size, 1);
+  assert.equal(ui.calls('ai-tasks/cancel').length, 0);
+  await [...ui.fixture.pending.values()][0].finish(); ui.fixture.taskReads.shift()(); await ui.flush();
+  assert.equal(ui.nodes().length, 0);
 });
 
 test('detail refresh owns its timer and cancels an in-flight operation by id', async (t) => {

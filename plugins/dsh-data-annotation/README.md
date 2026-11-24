@@ -1,6 +1,6 @@
 # 数据标注
 
-独立 DSH 插件 `dsh-data-annotation 0.1.0-local.8`。依赖配套 `dsh-sql 0.9.0-local.10` 提供的 `datasourceCatalog` 宿主服务和管理库 schema 6，不重复配置业务库。
+独立 DSH 插件 `dsh-data-annotation 0.1.0-local.9`。依赖配套 `dsh-sql 0.9.0-local.11` 提供的 `datasourceCatalog` 宿主服务和管理库 schema 6，不重复配置业务库。
 
 ## 功能
 
@@ -10,7 +10,7 @@
 
 字段支持单项及批量启停，默认启用，停用保留已有标注。左侧表进度为“人工已确认的启用字段数 / 启用字段总数”。完全标注要求所有启用表的名称及其启用字段均人工确认；零启用表显示未标注。字段启停本版用于标注范围和有效配置保存，Cube.js 建模及查询执行限制后续实现，当前普通 SQL 权限不受其控制。
 
-AI 辅助只处理选中的未确认对象；不覆盖已确认内容，不读取停用字段或业务样例。根据目录结构生成建议，保存后为黄色。取消/离开页面会使会话失效；若提交先于取消完成，以管理库已提交结果为准，页面重新读取状态。目录或标注并发变化拒绝覆盖。AI 仅使用受限的 `data_annotation_task`，不能借源插件普通 SQL 或接入任务扩大范围。
+AI 辅助只处理选中的未确认对象；不覆盖已确认内容，不读取停用字段或业务样例。表标注生成简短中文业务名称，字段标注说明字段含义，保存后为黄色。离开页面只停止任务观察，重进数据源恢复最新任务；显式点击取消才请求结束后台任务。若提交先于取消完成，以管理库已提交结果为准，页面重新读取状态。目录或标注并发变化拒绝覆盖。AI 仅使用受限的 `data_annotation_task`，不能借源插件普通 SQL 或接入任务扩大范围。
 
 目录相同刷新保留标注；原备注或字段结构变化取消受影响项确认但保留文本。删除表字段清理记录；换库目标通过目录级联清理原标注。AI 效果仍需真实宿主验收。
 
@@ -21,9 +21,30 @@ AI 辅助只处理选中的未确认对象；不覆盖已确认内容，不读�
 按顺序安装配套数据源包、标注包，再完整重启 DSH。源插件未就绪时标注插件等待依赖服务，管理库配置仍在“数据源”页面。不要在 v6 库上运行旧版 v5 插件。
 
 ```powershell
-dsh plugin --profile desktop add '<dsh-sql-0.9.0-local.10.tgz>'
-dsh plugin --profile desktop add '<dsh-data-annotation-0.1.0-local.8.tgz>'
+dsh plugin --profile desktop add '<dsh-sql-0.9.0-local.11.tgz>'
+dsh plugin --profile desktop add '<dsh-data-annotation-0.1.0-local.9.tgz>'
 ```
+
+## 供 Web 后端调用
+
+数据源插件启用 `internalApi` 后，本插件自动把相同业务处理器注册到同一个本机端口，默认示例为 `http://127.0.0.1:17861`。不另外启动监听器或配置凭据，未启用内部端口仍可正常在 DSH 使用。Web 页面经自己的后端调用；同一部署共用插件管理库和 profile，不直接读取 DataHub 的其他数据库。
+
+所有路径以 `/api/data-annotation/` 开头，POST 使用 JSON：
+
+| 路径 | 方法与参数 | 响应 |
+| --- | --- | --- |
+| `sources` | GET | `{items}`，数据源及标注统计 |
+| `catalog` | POST `{sourceId}` | `{source,revision,tables,summary}` |
+| `action` | POST `{sourceId,revision,operation,kind,items}` | 最新目录；operation 为 edit、confirm 或 enable |
+| `ai-tasks` | POST `{sourceId,revision,kind,items}` | 202 `{task}`，仅表示受理 |
+| `ai-tasks` | GET `?taskId=...` 或 `?sourceId=...`，二选一 | `{task}`；sourceId 获取最新任务，无任务为 null |
+| `ai-tasks/cancel` | POST `{taskId}` | `{task}`，取消中或当前终态 |
+
+`kind` 为 table 或 field；表条目为 `{tableId}`，字段条目为 `{tableId,fieldName}`。编辑附 text，字段启停附 enabled。revision 是非空 opaque 字符串，调用方应原样传递，不能转换成数字。确认、编辑与启停均由同一业务存储校验并保存。
+
+任务快照字段与数据源任务一致：`taskId,sourceId,kind,status,startedAt,finishedAt,sessionId,result,error`。状态为 `running/cancelling/succeeded/failed/cancelled`；成功 result 为 `{revision,count}`，完成后重新请求 catalog 获取最新数据。目录版本等异步检查失败时任务为 failed；冲突返回 409 和 taskId；不存在或过期 taskId 为 404。每数据源只执行一个标注任务，不排队。页面每秒串行观察任务，HTTP 断开不取消执行；响应丢失后按 sourceId 查询，不自动重发。
+
+任务仅驻留当前进程，终态保留一小时、最多 200 个；重启后刷新目录查看已保存成果，未完成任务需重新发起。local.9 移除旧 `/ai` 长请求接口，两个插件及调用方需成套更新。无需管理库升级。
 
 ## 开发验证
 

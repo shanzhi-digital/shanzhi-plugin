@@ -2,14 +2,18 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { DatasourceRuntime } from './runtime.js';
-import { DatasourceFlow } from './flow.js';
+import { DatasourceFlow, validateAiInput } from './flow.js';
+import { DatasourceAiExecutor } from './ai-executor.js';
+import { AiTasks } from './ai-tasks.js';
+import { InternalHttp } from './internal-http.js';
+import { registerRoutes } from './routes.js';
 import { DatasourceSessionBridge, injectKeys } from './host-bridge.js';
 import { createAnnotationStore } from './annotation-store.js';
 import { createDatasourceService } from './service.js';
 
+export { API_PREFIX, registerRoutes } from './routes.js';
 export const name = 'sql';
 export const inject = ['tools', 'connection', 'credentials', ...injectKeys];
-export const API_PREFIX = '/api/datasources';
 const SETUP_MESSAGE = '请先在数据源页面配置 MySQL 管理库。';
 const MANAGEMENT_ERROR = '管理库连接或结构校验失败，请先在独立管理库执行初始化 SQL，再检查配置和凭据。';
 
@@ -33,84 +37,6 @@ export function createSecrets(credentials) {
     },
     async delete(key) { await credentials.deleteRecord(recordKey(key)); },
   };
-}
-
-function json(body, status = 200) {
-  return Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
-}
-
-export function registerRoutes(ctx, runtimeOrGetter, flow, management) {
-  const current = typeof runtimeOrGetter === 'function' ? runtimeOrGetter : () => ({ runtime: runtimeOrGetter, flow });
-  const definitions = [
-    ...(management ? [
-      ['management-status', 'GET', () => management.status()],
-      ['management-save', 'POST', (input) => management.save(input)],
-    ] : []),
-    ['list', 'GET', async () => ({ items: await current().runtime.list() })],
-    ['save', 'POST', async (input) => {
-      const { runtime, flow } = current();
-      const item = await runtime.save(input);
-      if (input.id) await flow?.sourceChanged(item.id, item);
-      return { item };
-    }],
-    ['test', 'POST', async (input) => await current().runtime.test(input)],
-    ['remove', 'POST', async (input) => {
-      if (typeof input.id !== 'string' || !input.id) throw publicError('请选择要删除的数据源。');
-      const { runtime, flow } = current();
-      await runtime.remove(input.id, input.revision);
-      await flow?.sourceChanged(input.id, null);
-      return { ok: true };
-    }],
-    ['source-status', 'POST', async (input) => {
-      if (!Array.isArray(input.items) || input.items.length > 1000) throw publicError('请选择有效的数据源。');
-      const { runtime, flow } = current();
-      const results = [];
-      for (const entry of input.items) {
-        try {
-          const item = await runtime.setEnabled(entry.id, entry.enabled, entry.revision);
-          await flow?.sourceChanged(item.id, item);
-          results.push({ id: item.id, ok: true, item });
-        } catch (error) { results.push({ id: entry?.id, ok: false, error: error?.publicMessage || '更新数据源状态失败。' }); }
-      }
-      return { results };
-    }],
-    ...(flow || typeof runtimeOrGetter === 'function' ? [
-      ['questions-list', 'POST', async (input) => ({ items: await current().store.listQuestions(input.id) })],
-      ['questions-save', 'POST', async (input) => ({ item: await current().store.saveQuestion(input) })],
-      ['questions-remove', 'POST', async (input) => { await current().store.removeQuestion(input.id, input.version); return { ok: true }; }],
-      ['flow-state', 'POST', async (input) => ({ state: await current().flow.get(input.id) })],
-      ['flow-action', 'POST', async (input, signal) => {
-        const { sessionId, ...state } = await current().flow.action(input, signal);
-        return { state, ...(sessionId ? { sessionId } : {}) };
-      }],
-      ['flow-samples', 'POST', (input, signal) => current().flow.sampleTable(input, signal)],
-    ] : []),
-  ];
-  for (const [operation, method, handler] of definitions) {
-    // Exact-fetch routes are protected by the Host's authenticated-owner boundary.
-    ctx.connection.fetch.register({
-      path: `${API_PREFIX}/${operation}`,
-      methods: [method],
-      requestBody: 'buffered',
-      async fetch(request) {
-        try {
-          let input = {};
-          if (method === 'POST') {
-            if (request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') return json({ error: '请使用 JSON 提交连接信息。' }, 415);
-            const body = await request.text();
-            if (Buffer.byteLength(body, 'utf8') > (operation.startsWith('flow-') ? 1048576 : 32768)) return json({ error: '提交信息过长。' }, 413);
-            try { input = JSON.parse(body); } catch { return json({ error: '连接信息格式无效。' }, 400); }
-            if (!input || typeof input !== 'object' || Array.isArray(input)) return json({ error: '连接信息格式无效。' }, 400);
-          }
-          if (request.signal.aborted) return json({ error: '请求已取消。' }, 408);
-          return json(await handler(input, request.signal));
-        } catch (error) {
-          const status = [400, 404, 409, 413, 503].includes(error?.status) ? error.status : 400;
-          return json({ error: error?.publicMessage || '操作失败，请检查连接信息后重试。', ...(typeof error?.sessionId === 'string' ? { sessionId: error.sessionId } : {}) }, status);
-        }
-      },
-    });
-  }
 }
 
 function managementConfig(input, previous) {
@@ -160,6 +86,7 @@ export async function applyWithServices(ctx, config = {}, { createServices = cre
   const profileId = createHash('sha256').update(process.platform === 'win32' ? profileDir.toLowerCase() : profileDir).digest('hex');
   const recordKey = `sql/management-${profileId}`;
   const secrets = createSecrets(ctx.credentials);
+  const internalHttp = new InternalHttp(config.internalApi);
   let savedConfig, services = initialServices, startupMessage, closed = false;
   let tail = Promise.resolve();
   const closeServices = async (value) => {
@@ -184,6 +111,14 @@ export async function applyWithServices(ctx, config = {}, { createServices = cre
     if (!services) throw publicError(startupMessage || SETUP_MESSAGE, 503);
     return services;
   };
+  const tasks = new AiTasks({
+    validate: validateAiInput,
+    identify: input => ({ sourceId: input.id.trim(), kind: input.action }),
+    execute: async (input, signal, report) => {
+      const state = await current().flow.ai(input, signal, report);
+      return { revision: state.revision, ...(input.action === 'suggest' && state.draft ? { draftId: state.draft.id } : {}), ...(input.action === 'generalize-question' && state.questionDraft ? { questionDraftId: state.questionDraft.id } : {}) };
+    },
+  });
   const status = () => ({
     configured: Boolean(savedConfig || initialServices), ready: Boolean(services) && !closed,
     message: startupMessage || (services ? '管理库已就绪。' : SETUP_MESSAGE),
@@ -218,23 +153,36 @@ export async function applyWithServices(ctx, config = {}, { createServices = cre
       return operation;
     },
   };
-  ctx.provide('datasourceCatalog', createDatasourceService(current));
-  const templateRuntime = new DatasourceRuntime({ store: {}, secrets });
-  for (const definition of templateRuntime.getTools()) {
-    ctx.tools.register({ ...definition, execute: async (args, execution) => {
-      const { runtime, flow } = current();
-      const tool = runtime.getTools().find(item => item.name === definition.name);
-      return flow.scopedSql(definition.name, args, execution, tool.execute);
-    } });
-  }
-  const taskDefinition = DatasourceFlow.prototype.getTool.call({ task() {} });
-  ctx.tools.register({ ...taskDefinition, execute: async (args, execution) => current().flow.getTool().execute(args, execution) });
-  registerRoutes(ctx, current, undefined, management);
-  ctx.on('dispose', async () => {
+  let unregister = () => {};
+  const close = async () => {
+    if (closed) return;
     closed = true;
+    internalHttp.stopAccepting();
+    await tasks.close();
     await tail;
     const previous = services;
     services = undefined;
-    await closeServices(previous);
-  });
+    try { await closeServices(previous); }
+    finally { unregister(); await internalHttp.close(); }
+  };
+  try {
+    ctx.provide('datasourceCatalog', createDatasourceService(current));
+    ctx.provide('datasourceHttp', internalHttp);
+    const templateRuntime = new DatasourceRuntime({ store: {}, secrets });
+    for (const definition of templateRuntime.getTools()) {
+      ctx.tools.register({ ...definition, execute: async (args, execution) => {
+        const { runtime, flow } = current();
+        const tool = runtime.getTools().find(item => item.name === definition.name);
+        return flow.scopedSql(definition.name, args, execution, tool.execute);
+      } });
+    }
+    const taskDefinition = DatasourceAiExecutor.prototype.getTool.call({ task() {} });
+    ctx.tools.register({ ...taskDefinition, execute: async (args, execution) => current().flow.executor.getTool().execute(args, execution) });
+    unregister = registerRoutes(ctx, current, undefined, management, tasks, internalHttp);
+    await internalHttp.listen();
+    ctx.on('dispose', close);
+  } catch (cause) {
+    await close();
+    throw cause;
+  }
 }

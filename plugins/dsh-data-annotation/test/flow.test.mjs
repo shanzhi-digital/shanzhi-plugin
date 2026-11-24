@@ -38,7 +38,7 @@ test('读取选择范围并保存完整标注，提交期间结束事件不抢�
   const save = f.service.aiSave;
   f.service.aiSave = async input => { f.end(); return save(input); };
   assert.deepEqual(await tool.execute({ action: 'submit', annotations: [{ tableId: 't', fieldName: 'id', text: '标识' }] }, f.execution), { ok: true });
-  assert.equal((await run).saved[0].text, '标识');
+  assert.deepEqual(await run, { revision: 'sha-one', count: 1 });
   await f.flow.close();
 });
 
@@ -94,8 +94,8 @@ test('表结构按百字段分片且不暴露停用字段', async () => {
   await f.sent;
   assert.match(f.bridge.sentText, /共选中 1 张表/);
   assert.match(f.bridge.sentText, /不要包含 fieldName/);
-  assert.match(f.bridge.sentText, /不超过 40 字/);
-  assert.match(f.bridge.sentText, /自然描述/);
+  assert.match(f.bridge.sentText, /不超过 15 字/);
+  assert.match(f.bridge.sentText, /中文业务名称/);
   const tool = f.flow.getTool();
   const pages = [];
   let cursor = 0;
@@ -111,6 +111,59 @@ test('表结构按百字段分片且不暴露停用字段', async () => {
   await assert.rejects(tool.execute({ action: 'submit', annotations: [{ tableId: 't', fieldName: 'id', text: '表说明' }] }, f.execution), /不应包含 fieldName/);
   await tool.execute({ action: 'submit', annotations: [{ tableId: 't', text: '表说明' }] }, f.execution);
   await run;
+  await f.flow.close();
+});
+
+test('提交成功不等待发送确认，发送随后失败不会推翻已提交结果', async () => {
+  const f = fixture();
+  let rejectSend, sent;
+  const started = new Promise(resolve => { sent = resolve; });
+  f.bridge.send = () => { sent(); return new Promise((_resolve, reject) => { rejectSend = reject; }); };
+  const reports = [];
+  const run = f.flow.run(f.input, undefined, value => reports.push(value));
+  await started;
+  await f.flow.task({ action: 'submit', annotations: [{ tableId: 't', fieldName: 'id', text: '标识' }] }, f.execution);
+  assert.deepEqual(await run, { revision: 'sha-one', count: 1 });
+  assert.deepEqual(reports, [{ sessionId: 'session' }]);
+  rejectSend(new Error('发送确认失败'));
+  await new Promise(resolve => setImmediate(resolve));
+  await f.flow.close();
+});
+
+test('提交中的取消等待保存结果，不提前退役会话，保存成功为成功', async () => {
+  const f = fixture(), controller = new AbortController();
+  let releaseSave, saving;
+  const started = new Promise(resolve => { saving = resolve; });
+  const save = f.service.aiSave;
+  f.service.aiSave = async input => { saving(); await new Promise(resolve => { releaseSave = resolve; }); return save(input); };
+  const run = f.flow.run(f.input, controller.signal);
+  await f.sent;
+  const submitting = f.flow.task({ action: 'submit', annotations: [{ tableId: 't', fieldName: 'id', text: '标识' }] }, f.execution);
+  await started;
+  controller.abort();
+  await f.service.assertSession('session', 's');
+  releaseSave();
+  await submitting;
+  assert.deepEqual(await run, { revision: 'sha-one', count: 1 });
+  assert.equal(f.bridge.cancelled, undefined);
+  await f.flow.close();
+});
+
+test('取消发生在失败提交期间时，运行等待事务失败后结束', async () => {
+  const f = fixture(), controller = new AbortController();
+  let releaseSave, saving;
+  const started = new Promise(resolve => { saving = resolve; });
+  f.service.aiSave = async () => { saving(); await new Promise(resolve => { releaseSave = resolve; }); throw new Error('事务失败'); };
+  const run = f.flow.run(f.input, controller.signal);
+  await f.sent;
+  const submitting = f.flow.task({ action: 'submit', annotations: [{ tableId: 't', fieldName: 'id', text: '标识' }] }, f.execution);
+  await started;
+  controller.abort();
+  const rejected = assert.rejects(run, /取消/);
+  releaseSave();
+  await assert.rejects(submitting, /事务失败/);
+  await rejected;
+  assert.equal(f.bridge.cancelled, true);
   await f.flow.close();
 });
 

@@ -1,6 +1,6 @@
 # DSH 数据源接入
 
-本地定制版 `dsh-sql 0.9.0-local.10`，支持 MySQL、PostgreSQL、SQLite 的只读接入、原始目录管理、源表启停、问题及业务域辅助选表。通过 `datasourceCatalog` 宿主服务为独立的数据标注插件提供目录、标注存储和会话绑定；标注页面与 AI 标注由 `dsh-data-annotation` 提供。Cube.js 建模和查询接入留待后续，本版字段启停仅作为标注范围保存，不改变普通 SQL 查询权限。
+本地定制版 `dsh-sql 0.9.0-local.11`，支持 MySQL、PostgreSQL、SQLite 的只读接入、原始目录管理、源表启停、问题及业务域辅助选表。通过 `datasourceCatalog` 宿主服务为独立的数据标注插件提供目录、标注存储和会话绑定；标注页面与 AI 标注由 `dsh-data-annotation` 提供。Cube.js 建模和查询接入留待后续，本版字段启停仅作为标注范围保存，不改变普通 SQL 查询权限。
 
 ## 初始化独立管理库
 
@@ -44,7 +44,55 @@ AI 辅助选表包含问题与业务域两个区域。问题独立于数据源�
 
 普通聊天保留 `sql_list`、`sql_schema`、`sql_query`。只访问当前启用的源和表，查询最多 1000 行；`node-sql-parser` 三方言 AST 校验递归检查 JOIN、CTE、子查询及 UNION，拒绝写入、跨库、未知函数、外部关系与不支持语法。查询被拒绝时可调整为支持的只读 SELECT，查看结构使用 `sql_schema`。此子集不等同于支持数据库的全部查询语法。特殊引擎表、外部/虚拟表、PostgreSQL 分区父表与启用行级策略的表不提供普通查询和固定采样/检测。
 
-AI 接入会话只能通过 `datasource_task` 读取本次目录和受控样例、提交结构化成果，不能调用普通 SQL 工具扩大范围。每个操作一个 DSH 会话，订阅原生事件后发送，校验成果保存成功才返回；无 worker、持久队列或两秒轮询。取消、超时、源停用和重启使旧会话失效，晚到成果不能保存。等待 AI 不占用数据库事务。
+AI 接入会话只能通过 `datasource_task` 读取本次目录和受控样例、提交结构化成果，不能调用普通 SQL 工具扩大范围。每个操作一个 DSH 会话，订阅原生事件后发送，以成果提交完成判定成功。AI 任务由后端持有，页面每秒查询状态，离页只停止观察；显式取消、超时、源停用和重启使旧会话失效，晚到成果不能保存。提交与取消并发时以管理库实际提交结果为准。等待 AI 不占用数据库事务。任务状态、选表草稿和泛化候选仅保留在当前进程，不跨重启恢复。
+
+## 供 Web 后端调用
+
+DSH 页面与 Web 后端复用同一套处理器、运行状态和管理库。Web 页面由自己的后端转发，不直接连接管理库。本插件默认不监听额外端口；在 DSH 的 sql 插件配置中显式启用：
+
+```yaml
+config:
+  internalApi:
+    enabled: true
+    port: 17861
+```
+
+内部入口固定绑定 `127.0.0.1`，无需新增登录或 API Key。Web 后端使用 `http://127.0.0.1:17861`，不要把此端口代理到公网；接口拒绝浏览器 Origin 与非本机 Host。同机的其他进程可访问此入口。容器调用需共享网络命名空间或安排等效内部通道，容器各自的 localhost 并不互通。端口冲突会报错，不自动换端口。管理库初始化接口仅保留在 DSH 页面入口。
+
+以下路径统一以 `/api/datasources/` 开头；POST 使用 `Content-Type: application/json`，响应为 JSON，错误返回 `{error}`，版本冲突为 409：
+
+| 路径 | 方法与参数 | 结果 |
+| --- | --- | --- |
+| `list` | GET | `{items}`，不含密码 |
+| `save` | POST，名称、engine、连接参数；更新附 `id,revision` | `{item}`；密码只在创建/修改时提交 |
+| `test` | POST，连接参数或已有源信息 | 连接测试结果 |
+| `remove` | POST `{id,revision}` | `{ok:true}` |
+| `source-status` | POST `{items:[{id,revision,enabled}]}` | 逐项 `{results}` |
+| `questions-list` | POST `{id}`，id 为数据源 ID | `{items}` |
+| `questions-save` | POST `{text,answer?}`；更新附 `id,version` | `{item}`；问题独立保存 |
+| `questions-remove` | POST `{id,version}`，id 为问题 ID | `{ok:true}` |
+| `flow-state` | POST `{id}` | `{state}`，含整数 revision、目录、问题和当前有效草稿 |
+| `flow-action` | POST `{id,action,revision,...}` | `{state}`；action 为 scan、ensure-scan、detect-freshness、set-tables、confirm-selection、confirm-question-draft 或 cancel |
+| `flow-samples` | POST `{id,tableId,snapshotId}` | 固定限量样例 |
+| `ai-tasks` | POST `{id,action,revision,...}` | 202 `{task}`；action 为 detect-domains、suggest 或 generalize-question |
+| `ai-tasks` | GET `?taskId=...` 或 `?sourceId=...`，二选一 | `{task}`；sourceId 返回最新任务或 null，未知 taskId 为 404 |
+| `ai-tasks/cancel` | POST `{taskId}` | `{task}`，取消中或已有终态 |
+
+选表任务附 `questionIds` 和/或 `domains`；泛化任务附 `questions:[{id,version}]`。AI 的工作目录由服务配置决定，不接受调用方提交 cwd。受理后读取目录、版本等业务检查可能失败，202 不表示执行成功。
+
+```powershell
+$base = 'http://127.0.0.1:17861'
+$state = (Invoke-RestMethod "$base/api/datasources/flow-state" -Method Post -ContentType 'application/json' -Body '{"id":"数据源ID"}').state
+$body = @{ id = $state.id; action = 'suggest'; revision = $state.revision; questionIds = @('问题ID'); domains = @() } | ConvertTo-Json
+$task = (Invoke-RestMethod "$base/api/datasources/ai-tasks" -Method Post -ContentType 'application/json' -Body $body).task
+Invoke-RestMethod "$base/api/datasources/ai-tasks?taskId=$($task.taskId)"
+```
+
+任务快照包括 `taskId,sourceId,kind,status,startedAt,finishedAt,sessionId,result,error`。状态为 `running/cancelling/succeeded/failed/cancelled`；成功结果只提供 revision 和适用的 draftId/questionDraftId，完成后重新读取 flow-state。任务中的 sessionId 仅用于 DSH 会话诊断，不是访问凭证。每插件每数据源至多一个活跃 AI 任务，冲突为 409 并附当前 taskId；不会排队。响应丢失可按 sourceId 恢复观察，不自动重复创建。终态保留一小时，每插件最多 200 个，重启后任务查询为 404，已落库成果不丢失。
+
+推荐确认沿用 `flow-action` 的 `{id,action:'confirm-selection',revision,draftId,selectedTableIds}`；泛化候选确认使用 `{id,action:'confirm-question-draft',revision,draftId,candidates:[{id,text}]}`。取消候选/推荐草稿使用 `action:'cancel'` 并传 questionDraftId/draftId，区别于取消运行中的 AI 任务。
+
+local.11 起，三个 AI action 不再经 flow-action 执行，调用方与两个插件须成套更新。标注接口及同端口使用见配套标注插件 README。管理库仍为 schema 6，无需新增迁移。
 
 ## 时效检测
 
