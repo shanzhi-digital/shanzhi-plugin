@@ -1,0 +1,13 @@
+{
+  "meta": {
+    "title": "Contract Sure",
+    "description": "Connect to Contract Sure for contract document extraction, verification cards, transaction reconciliation, dashboard analytics, and original document preview."
+  },
+  "settings": {
+    "title": "Contract Sure Settings",
+    "serverUrl": "Backend API URL",
+    "apiToken": "Plugin API Token",
+    "ocrApiUrl": "DeepSeek OCR URL",
+    "ocrApiKey": "DeepSeek OCR API Key"
+  }
+}
