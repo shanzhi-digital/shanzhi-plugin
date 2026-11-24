@@ -10,7 +10,8 @@ import { MysqlFlowStore, nextQuestion, newQuestions, sourceTarget, readAnalysisC
 import { DatasourceStore } from '../store.js';
 
 const finalTables = ['dsh_management_profiles', 'dsh_management_migrations', 'dsh_sources', 'dsh_source_catalogs',
-  'dsh_source_tables', 'dsh_questions', 'dsh_question_links', 'dsh_flow_bindings', 'dsh_table_annotations', 'dsh_field_annotations'];
+  'dsh_source_tables', 'dsh_questions', 'dsh_question_links', 'dsh_flow_bindings', 'dsh_table_annotations', 'dsh_field_annotations',
+  'dsh_relation_canvases', 'dsh_annotation_results'];
 const retiredTables = ['dsh_flow_states', 'dsh_flow_entities', 'dsh_legacy_imports', 'dsh_flow_runs', 'dsh_flow_batches', 'dsh_flow_receipts'];
 const sqlFile = async name => (await readFile(new URL(`../${name}`, import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
 const statements = sql => sql.replace(/^--.*$/gm, '').split(';').map(value => value.trim()).filter(Boolean);
@@ -596,13 +597,13 @@ test('管理库以 execute 绑定多行文本、引号和反斜杠', async t => 
 
 test('空库、旧 schema、未知版本和不专用对象在 DML 前被拒绝', async t => {
   for (const [variant, expected] of [
-    ['empty', /初始化 v6/], ['old', /重建/], ['future', /高于/], ['missing-column', /重建/], ['multiple-versions', /重建/],
+    ['empty', /初始化 v7/], ['old', /重建/], ['future', /高于/], ['missing-column', /重建/], ['multiple-versions', /重建/],
     ['table', /非插件管理对象/], ['view', /非插件管理对象/], ['trigger', /非插件管理对象/],
     ['PROCEDURE', /非插件管理对象/], ['EVENT', /非插件管理对象/], ['CROSS_SCHEMA_FOREIGN_KEY', /非插件管理对象/],
   ]) {
     const pool = await managementFixture(t, variant !== 'empty');
     if (variant === 'old') pool.sqlite.exec('UPDATE dsh_management_migrations SET version = 3');
-    if (variant === 'future') pool.sqlite.exec('UPDATE dsh_management_migrations SET version = 7');
+    if (variant === 'future') pool.sqlite.exec('UPDATE dsh_management_migrations SET version = 8');
     if (variant === 'multiple-versions') pool.sqlite.exec('INSERT INTO dsh_management_migrations (version) VALUES (4)');
     if (variant === 'missing-column') pool.sqlite.exec('ALTER TABLE dsh_questions DROP COLUMN answer');
     if (variant === 'table') pool.sqlite.exec('CREATE TABLE business_orders (id INTEGER)');
@@ -619,13 +620,13 @@ test('空库、旧 schema、未知版本和不专用对象在 DML 前被拒绝',
 test('完整 v4 库仅提示无损增量升级，异常旧结构保留重建保护', async t => {
   for (const damaged of [false, true]) {
     const pool = await managementFixture(t);
-    pool.sqlite.exec('DROP TABLE dsh_field_annotations; DROP TABLE dsh_table_annotations; ALTER TABLE dsh_questions DROP COLUMN origin; ALTER TABLE dsh_questions DROP COLUMN source_question_id; UPDATE dsh_management_migrations SET version = 4');
+    pool.sqlite.exec('DROP TABLE dsh_annotation_results; DROP TABLE dsh_relation_canvases; DROP TABLE dsh_field_annotations; DROP TABLE dsh_table_annotations; ALTER TABLE dsh_questions DROP COLUMN origin; ALTER TABLE dsh_questions DROP COLUMN source_question_id; UPDATE dsh_management_migrations SET version = 4');
     if (damaged) pool.sqlite.exec('ALTER TABLE dsh_questions DROP COLUMN answer');
     const columns = pool.sqlite.prepare('PRAGMA table_info(dsh_questions)').all().map(row => row.name);
     const error = await openManagementDb(config, { pool }).catch(error => error);
     if (damaged) assert.match(error.message, /重建/);
     else {
-      assert.match(error.message, /002-question-origin\.sql.*003-data-annotation\.sql.*增量升级至 v6/);
+      assert.match(error.message, /002-question-origin\.sql.*003-data-annotation\.sql.*004-relation-results\.sql.*增量升级至 v7/);
       assert.doesNotMatch(error.message, /reset-management|清理|重建/);
     }
     assert.deepEqual(pool.sqlite.prepare('PRAGMA table_info(dsh_questions)').all().map(row => row.name), columns);
@@ -652,7 +653,7 @@ test('v4 到 v5 增量 SQL 检查版本并保留数据与单条版本记录', as
     pool.sqlite.exec(`ALTER TABLE dsh_questions ${column}`);
   }
   pool.sqlite.exec(sql.match(/UPDATE dsh_management_migrations SET[\s\S]*?;/)[0]);
-  pool.sqlite.exec('UPDATE dsh_management_migrations SET version = 6');
+  pool.sqlite.exec('UPDATE dsh_management_migrations SET version = 7');
   const db = await openManagementDb(config, { pool });
   const store = new MysqlFlowStore(db);
   const [legacy] = await store.listQuestions();
@@ -662,19 +663,52 @@ test('v4 到 v5 增量 SQL 检查版本并保留数据与单条版本记录', as
   const edited = await store.saveQuestion({ ...legacy, answer: '编辑旧记录', origin: 'original' });
   assert.equal(edited.origin, 'unknown');
   await assert.rejects(store.saveQuestions({ questions: [{ id: legacy.id, version: edited.version }], items: [{ text: '未知来源不能泛化' }] }), /仅原问题/);
-  assert.deepEqual(pool.sqlite.prepare('SELECT version FROM dsh_management_migrations').all().map(row => row.version), [6]);
+  assert.deepEqual(pool.sqlite.prepare('SELECT version FROM dsh_management_migrations').all().map(row => row.version), [7]);
 });
 
+async function applyRelationMigration(pool) {
+  const sql = await sqlFile('migrations/004-relation-results.sql');
+  for (const ddl of sql.match(/CREATE TABLE dsh_(?:relation_canvases|annotation_results)[\s\S]*?ENGINE=InnoDB[^;]*;/g)) {
+    pool.sqlite.exec(ddl.replace(/\) ENGINE=InnoDB[^;]*;/, ')'));
+  }
+  pool.sqlite.exec(sql.match(/UPDATE dsh_management_migrations SET[^;]*;/)[0]);
+}
+
+test('v6 升级新增关系与全局保存表并保留现有标注', async t => {
+  const { db, store, pool } = await mysqlStore(t);
+  await store.saveSource(source('a'));
+  await applyCatalog(store, 'a', catalog('a', [{ ...table('t'), enabled: true }]));
+  const annotations = createAnnotationStore({ db, store });
+  let page = await annotations.catalog('a');
+  page = await annotations.action({ sourceId: 'a', revision: page.revision, operation: 'edit', kind: 'table', items: [{ tableId: 't', text: '订单' }] });
+  await annotations.action({ sourceId: 'a', revision: page.revision, operation: 'confirm', kind: 'table', items: [{ tableId: 't' }] });
+  const before = pool.sqlite.prepare('SELECT * FROM dsh_table_annotations').all();
+  pool.sqlite.exec('DROP TABLE dsh_annotation_results; DROP TABLE dsh_relation_canvases; UPDATE dsh_management_migrations SET version = 6');
+  await assert.rejects(openManagementDb(config, { pool }), /v6.*004-relation-results\.sql.*v7/);
+  const sql = await sqlFile('migrations/004-relation-results.sql');
+  assert.match(sql, /COUNT\(\*\) FROM dsh_management_migrations\) <> 1/);
+  assert.match(sql, /COUNT\(\*\) FROM dsh_management_migrations WHERE version = 6\) <> 1/);
+  assert.match(sql, /SIGNAL SQLSTATE '45000'/);
+  assert.doesNotMatch(sql, /^\s*(?:DELETE|TRUNCATE|DROP TABLE|DROP DATABASE|INSERT INTO dsh_annotation_results)\b/im);
+  await applyRelationMigration(pool);
+  await openManagementDb(config, { pool });
+  assert.deepEqual(pool.sqlite.prepare('SELECT * FROM dsh_table_annotations').all(), before);
+  assert.deepEqual(pool.sqlite.prepare('SELECT version FROM dsh_management_migrations').all().map(row => row.version), [7]);
+  assert.equal(pool.sqlite.prepare('SELECT COUNT(*) AS n FROM dsh_annotation_results').get().n, 0);
+  assert.equal(pool.sqlite.prepare('SELECT COUNT(*) AS n FROM dsh_relation_canvases').get().n, 0);
+});
 test('v5 管理库提示无损升级，迁移保留已有数据', async t => {
   const pool = await managementFixture(t);
-  pool.sqlite.exec("DROP TABLE dsh_field_annotations; DROP TABLE dsh_table_annotations; UPDATE dsh_management_migrations SET version = 5; INSERT INTO dsh_management_profiles VALUES ('existing')");
-  await assert.rejects(openManagementDb(config, { pool }), /003-data-annotation\.sql.*升级至 v6/);
+  pool.sqlite.exec("DROP TABLE dsh_annotation_results; DROP TABLE dsh_relation_canvases; DROP TABLE dsh_field_annotations; DROP TABLE dsh_table_annotations; UPDATE dsh_management_migrations SET version = 5; INSERT INTO dsh_management_profiles VALUES ('existing')");
+  await assert.rejects(openManagementDb(config, { pool }), /003-data-annotation\.sql.*004-relation-results\.sql.*升级至 v7/);
   const sql = await sqlFile('migrations/003-data-annotation.sql');
   assert.match(sql, /COUNT\(\*\) FROM dsh_management_migrations WHERE version = 5/);
   for (const ddl of sql.match(/CREATE TABLE dsh_(?:table|field)_annotations[\s\S]*?ENGINE=InnoDB[^;]*;/g)) {
     pool.sqlite.exec(ddl.replace(/\) ENGINE=InnoDB[^;]*;/, ')'));
   }
   pool.sqlite.exec(sql.match(/UPDATE dsh_management_migrations SET[^;]*;/)[0]);
+  await assert.rejects(openManagementDb(config, { pool }), /004-relation-results\.sql.*升级至 v7/);
+  await applyRelationMigration(pool);
   await openManagementDb(config, { pool });
   assert.equal(pool.sqlite.prepare('SELECT profile_id FROM dsh_management_profiles').get().profile_id, 'existing');
 });
@@ -739,13 +773,13 @@ test('合法 schema 启动只读，后续出现额外对象会阻止写入', asy
   assert.equal(pool.ended, true);
 });
 
-test('初始化及重建 SQL 限定十张 v6 表和明确的历史插件表', async t => {
+test('初始化及重建 SQL 限定十二张 v7 表和明确的历史插件表', async t => {
   const init = await sqlFile('migrations/001-management.sql');
   const reset = await sqlFile('scripts/reset-management.sql');
   const create = statements(init), drop = statements(reset);
-  assert.equal(create.length, 11);
+  assert.equal(create.length, 13);
   assert.deepEqual(create.slice(0, -1).map(sql => sql.match(/^CREATE TABLE IF NOT EXISTS (\w+)/)?.[1]).sort(), [...finalTables].sort());
-  assert.match(create.at(-1), /^INSERT IGNORE INTO dsh_management_migrations \(version\) VALUES \(6\)$/);
+  assert.match(create.at(-1), /^INSERT IGNORE INTO dsh_management_migrations \(version\) VALUES \(7\)$/);
   assert.deepEqual(drop.map(sql => sql.match(/^DROP TABLE IF EXISTS (\w+)$/)?.[1]).sort(), [...finalTables, ...retiredTables].sort());
   const pool = await managementFixture(t);
   pool.sqlite.exec('CREATE TABLE dsh_unrelated (id INTEGER); CREATE TABLE business_orders (id INTEGER)');

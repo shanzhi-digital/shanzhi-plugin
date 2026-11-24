@@ -1,18 +1,18 @@
 # DSH 数据源接入
 
-本地定制版 `dsh-sql 0.9.0-local.11`，支持 MySQL、PostgreSQL、SQLite 的只读接入、原始目录管理、源表启停、问题及业务域辅助选表。通过 `datasourceCatalog` 宿主服务为独立的数据标注插件提供目录、标注存储和会话绑定；标注页面与 AI 标注由 `dsh-data-annotation` 提供。Cube.js 建模和查询接入留待后续，本版字段启停仅作为标注范围保存，不改变普通 SQL 查询权限。
+本地定制版 `dsh-sql 0.9.0-local.12`，支持 MySQL、PostgreSQL、SQLite 的只读接入、原始目录管理、源表启停、问题及业务域辅助选表。通过 `datasourceCatalog` 宿主服务为独立的数据标注插件提供目录、标注存储和会话绑定；标注页面与 AI 标注由 `dsh-data-annotation` 提供。Cube.js 建模和查询接入留待后续，本版字段启停仅作为标注范围保存，不改变普通 SQL 查询权限。
 
 ## 初始化独立管理库
 
-新建管理库：准备专用 MySQL 管理数据库，在明确选中的空管理数据库执行 [完整初始化 SQL](migrations/001-management.sql)，建立 schema 6。插件启动只校验结构和版本，不自动建表、升级或清库。
+新建管理库：准备专用 MySQL 管理数据库，在明确选中的空管理数据库执行 [完整初始化 SQL](migrations/001-management.sql)，建立 schema 7。插件启动只校验结构和版本，不自动建表、升级或清库。
 
-现有 schema 5：停止所有插件实例并备份管理库，手工执行 [v5 → v6 标注升级 SQL](migrations/003-data-annotation.sql)，再安装配套新版数据源和标注插件。保留既有数据，新增两张标注表；升级账号需创建/删除过程及建表权限。
+现有 schema 6：停止所有插件实例并备份管理库，手工执行 [v6 → v7 关系与全局保存升级 SQL](migrations/004-relation-results.sql)，再安装配套新版数据源和标注插件。新增关系画布与每源最新全局保存记录，保留原表字段标注，不自动认可旧成果。升级账号需创建/删除过程及建表权限；MySQL DDL 隐式提交，脚本不能回滚已创建的表，失败时应检查实际状态后处理。
 
-现有 schema 4：先执行 [v4 → v5 增量升级 SQL](migrations/002-question-origin.sql)，再执行 003 升级至 v6；每一步均需停用使用该库的实例并备份。历史问题来源仍保留原升级语义。
+现有 schema 5：先执行 [v5 → v6 标注升级 SQL](migrations/003-data-annotation.sql)，再执行 004 升级至 v7。现有 schema 4：先执行 [v4 → v5 增量升级 SQL](migrations/002-question-origin.sql)，再依次执行 003、004；每一步均需停用使用该库的实例并备份。
 
 其他旧版结构若允许舍弃管理数据，可停止相关实例后人工执行 [一次性重建清理 SQL](scripts/reset-management.sql)，随后执行完整初始化 SQL。清理只列出插件自己的表，不删除数据库，也不在正常启动中执行。增量升级不使用该清理脚本。
 
-管理库十张表：`dsh_management_profiles`、`dsh_management_migrations`、`dsh_sources`、`dsh_source_catalogs`、`dsh_source_tables`、`dsh_questions`、`dsh_question_links`、`dsh_flow_bindings`、`dsh_table_annotations`、`dsh_field_annotations`。只保存配置、当前目录/启停、域、检测成果、问题及来源、关联、最小会话范围；不保存任务队列、批次、运行详情或样例行。不自动导入本地 JSON。
+管理库十二张表：`dsh_management_profiles`、`dsh_management_migrations`、`dsh_sources`、`dsh_source_catalogs`、`dsh_source_tables`、`dsh_questions`、`dsh_question_links`、`dsh_flow_bindings`、`dsh_table_annotations`、`dsh_field_annotations`、`dsh_relation_canvases`、`dsh_annotation_results`。保存当前配置、目录、启停、问题关联、表字段标注、关系画布和每源一条最新全局认可；无历史快照，不保存任务队列、运行详情或样例行。不自动导入本地 JSON。
 
 在插件管理库弹框填写连接参数。管理账号需要能完整查看该专用 schema 的对象元数据并读写管理表；含其他可见表、视图、例程、事件、触发器或跨库外键的目标会被拒绝。运行期间不要由外部工具向管理库加入业务对象。管理库目标固定，更换使用新的 DSH profile。业务源不能指向已识别的管理库目标。
 
@@ -32,7 +32,7 @@ AI 辅助选表包含问题与业务域两个区域。问题独立于数据源�
 
 业务域由目录识别并保存，支持全选，不需要预设字典，识别本身不启用表。选表依据左右区域统一在标题下显示已选数量及右侧全选；左侧完整显示全部问题，两侧列表各自滚动，全选覆盖完整集合。问题条目保留独立边框、整条可点击，选中只显示复选框勾选，不增加底色。问题列表全选作用于当前搜索结果全部分页，可删除全部已选问题及其关联；确认框列出完整待删清单，部分失败保留失败项供重试。AI 操作显示加载状态与真实经过时间；后台目录每页读取 20 张表，减少工具往返。
 
-各类弹窗采用稳定目标高度并限制在视口内；标题及底部操作固定，超出内容内部滚动。问题列表继续分页，最后一页少数据时不收缩窗口，分页与完成按钮位置保持稳定。配置、编辑、详情、候选及删除确认沿用各自大小档位；管理库仍为 schema 5，local.4/5/6/7 升 local.8 不需要数据库升级。
+各类弹窗采用稳定目标高度并限制在视口内；标题及底部操作固定，超出内容内部滚动。问题列表继续分页，最后一页少数据时不收缩窗口，分页与完成按钮位置保持稳定。配置、编辑、详情、候选及删除确认沿用各自大小档位。当前管理库为 schema 7，旧库按上文升级链处理。
 
 选表依据分别显示可复用关联、已分析无关联及待分析数量。点击 AI 选表时，问题在当前数据源有完整且版本、表结构均有效的关联则直接复用；显式已分析无关联结果也直接复用，不额外推荐表。只将未分析或失效的问题交给 AI，并要求逐题明确提交结果。空结果保存在现有目录上下文中，与关联原子维护，可跨重启复用；问题版本、连接或完整目录结构变化后失效，同结构刷新、业务域识别及启停不影响有效空结果。界面区分“尚未分析关联”“已分析，未找到关联表”“关联待重新分析”。全部问题均可复用或只选择业务域时直接形成推荐草稿，不创建 AI 会话。旧版保存时丢失的关联无法还原，首次选表需分析一次。保存关联依据并展示推荐草稿。结果默认勾选“此前启用表 ∪ 所选业务域匹配表 ∪ AI 推荐表”，已启用与 AI 推荐分开显示标签，保留业务域匹配标签，不在推荐列表输出长段理由。仅推荐结果弹窗采用表格内部滚动，支持全选当前搜索结果并保留范围外勾选；其他列表继续分页。用户调整后确认才保存启停；取消不改启停，已完成的问题关联成果仍保留。并发目录、问题或表状态变化会拒绝覆盖，要求重新核对。
 
@@ -92,7 +92,7 @@ Invoke-RestMethod "$base/api/datasources/ai-tasks?taskId=$($task.taskId)"
 
 推荐确认沿用 `flow-action` 的 `{id,action:'confirm-selection',revision,draftId,selectedTableIds}`；泛化候选确认使用 `{id,action:'confirm-question-draft',revision,draftId,candidates:[{id,text}]}`。取消候选/推荐草稿使用 `action:'cancel'` 并传 questionDraftId/draftId，区别于取消运行中的 AI 任务。
 
-local.11 起，三个 AI action 不再经 flow-action 执行，调用方与两个插件须成套更新。标注接口及同端口使用见配套标注插件 README。管理库仍为 schema 6，无需新增迁移。
+local.11 起，三个 AI action 不再经 flow-action 执行，调用方与两个插件须成套更新。local.12 使用管理库 schema 7、共享服务 version 2，提供关系画布及全局保存存储。`readSavedResults(sourceId)` 在同一事务校验启用源、当前指纹和全局保存记录后取数；未保存或成果变动返回 409。后续建模必须使用此入口取数，长任务落库前再核对起始 fingerprint；本仓库本轮没有实现建模入口。标注接口及同端口使用见配套标注插件 README。
 
 ## 时效检测
 
@@ -111,7 +111,7 @@ npm run check
 npm pack --ignore-scripts
 ```
 
-本次交付验证范围为代码静态检查和必要后端测试；实际页面、真实管理库连接及 DSH AI 使用由用户验收。已有浏览器模拟脚本保留为可选工具，不列为交付门槛，也不继续扩充。
+验证包含必要后端测试、语法与打包检查，以及配套标注插件新增画布/第四步的受控浏览器流程。管理库测试用内存 SQLite 转译 SQL，未替代真实 MySQL 上执行升级脚本或 DSH＋模型端到端验收。
 
 正式安装使用 Desktop carrier `<安装目录>/resources/runtime/cli/bin/dsh.cmd`：
 

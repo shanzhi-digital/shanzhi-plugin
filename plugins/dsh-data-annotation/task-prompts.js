@@ -1,4 +1,5 @@
 export function annotationPrompt(kind, selectedTotal) {
+  if (kind === 'relation') return `请分析当前数据源全部 ${selectedTotal} 张启用表的关系建议。只使用 data_annotation_task：先用 read 从cursor 0开始读取所有nextCursor，读完全部结构后一次submit提交relations数组。每条关系填写fromTableId、toTableId、pairs:[{fromField,toField}]、cardinality（1:1、1:N或N:1），可填写简短中文业务name和description。只引用read中的真实启用表字段，复合键使用多组非重复配对，不允许自关联；不要设置ID、布局或人工确认。根据名称、类型、primaryKey、notNull、原备注和中文标注推断；缺失结构值为null，不代表已发现真实外键或得到采样证明。已有关系会在read的relations返回，反向表达同一关系也属于重复，不应重新提交。建议允许0到多条，无可靠关系时提交relations:[]，不要凑数。相同tableId的字段可能分片，fieldOffset和moreFields表示分片位置，必须读完。只提供结构推断建议，后续由人工确认；不要调用SQL、采样或其他插件工具，不修改源库。`;
   const table = kind === 'table';
   const shape = table
     ? '表标注每条只填写 tableId 和 text，不要包含 fieldName；read 返回的 fields 仅供理解表用途，不需要逐字段提交'

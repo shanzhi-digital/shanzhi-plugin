@@ -121,4 +121,29 @@ CREATE TABLE IF NOT EXISTS dsh_field_annotations (
   FOREIGN KEY (profile_id, source_id, table_id) REFERENCES dsh_source_tables (profile_id, source_id, table_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
-INSERT IGNORE INTO dsh_management_migrations (version) VALUES (6);
+CREATE TABLE IF NOT EXISTS dsh_relation_canvases (
+  profile_id VARCHAR(128) NOT NULL,
+  source_id VARCHAR(128) NOT NULL,
+  canvas_id VARCHAR(128) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  description TEXT NOT NULL,
+  content JSON NOT NULL,
+  layout JSON NOT NULL,
+  confirmed BOOLEAN NOT NULL,
+  signature CHAR(64) NULL,
+  created_at BIGINT UNSIGNED NOT NULL,
+  updated_at BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (profile_id, source_id, canvas_id),
+  FOREIGN KEY (profile_id, source_id) REFERENCES dsh_source_catalogs (profile_id, source_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS dsh_annotation_results (
+  profile_id VARCHAR(128) NOT NULL,
+  source_id VARCHAR(128) NOT NULL,
+  saved_fingerprint CHAR(64) NULL,
+  saved_at BIGINT UNSIGNED NULL,
+  PRIMARY KEY (profile_id, source_id),
+  FOREIGN KEY (profile_id, source_id) REFERENCES dsh_sources (profile_id, source_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+INSERT IGNORE INTO dsh_management_migrations (version) VALUES (7);

@@ -10,7 +10,7 @@ export const inject = ['connection', 'tools', 'datasourceCatalog', 'datasourceHt
 
 export function apply(ctx, config = {}) {
   const service = ctx.datasourceCatalog;
-  if (service?.version !== 1) throw new Error('请启用支持数据标注的配套数据源插件。');
+  if (service?.version !== 2) throw new Error('请启用支持关系标注的配套版本2数据源服务。');
   const flow = new AnnotationFlow({ service, bridge: new DatasourceSessionBridge(ctx), defaultCwd: resolve(config.workingDirectory || process.cwd()) });
   const tasks = new AiTasks({
     validate: input => flow.validate(input),

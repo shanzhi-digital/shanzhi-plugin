@@ -1,6 +1,6 @@
 import mysql from 'mysql2/promise';
 
-const schemaVersion = 6;
+const schemaVersion = 7;
 const schemaColumns = new Map(Object.entries({
   dsh_management_profiles: 'profile_id',
   dsh_management_migrations: 'version applied_at',
@@ -12,11 +12,14 @@ const schemaColumns = new Map(Object.entries({
   dsh_flow_bindings: 'profile_id session_id source_id retired',
   dsh_table_annotations: 'profile_id source_id table_id text confirmed signature updated_at revision',
   dsh_field_annotations: 'profile_id source_id table_id field_name text confirmed signature updated_at revision enabled',
+  dsh_relation_canvases: 'profile_id source_id canvas_id name description content layout confirmed signature created_at updated_at',
+  dsh_annotation_results: 'profile_id source_id saved_fingerprint saved_at',
 }).map(([name, columns]) => [name, new Set(columns.split(' '))]));
 const retiredTables = new Set(['dsh_flow_states', 'dsh_flow_entities', 'dsh_legacy_imports', 'dsh_flow_runs', 'dsh_flow_batches', 'dsh_flow_receipts']);
-const initializeMessage = '请在专用空管理库中手工执行 migrations/001-management.sql 初始化 v6 结构。';
-const upgradeMessage = '管理库为 v4，请停止旧插件，依次手工执行 migrations/002-question-origin.sql 和 migrations/003-data-annotation.sql 增量升级至 v6，保留现有数据。';
-const upgradeV5Message = '管理库为 v5，请停止旧插件，手工执行 migrations/003-data-annotation.sql 增量升级至 v6，保留现有数据。';
+const initializeMessage = '请在专用空管理库中手工执行 migrations/001-management.sql 初始化 v7 结构。';
+const upgradeMessage = '管理库为 v4，请停止旧插件，依次手工执行 migrations/002-question-origin.sql、migrations/003-data-annotation.sql 和 migrations/004-relation-results.sql 增量升级至 v7，保留现有数据。';
+const upgradeV5Message = '管理库为 v5，请停止旧插件，依次手工执行 migrations/003-data-annotation.sql 和 migrations/004-relation-results.sql 增量升级至 v7，保留现有数据。';
+const upgradeV6Message = '管理库为 v6，请停止旧插件，手工执行 migrations/004-relation-results.sql 增量升级至 v7，保留现有数据。';
 const rebuildMessage = '管理库结构与当前插件不兼容，请停止旧插件，手工执行 scripts/reset-management.sql 清理旧管理表后，再执行 migrations/001-management.sql 重建。';
 const dedicatedMessage = '所选数据库含非插件管理对象，请配置仅用于本插件的独立管理库。';
 
@@ -41,6 +44,10 @@ async function checkObjects(connection, version) {
   if (!objects.length) throw new Error(initializeMessage);
   if (version === undefined) return;
   const expected = new Set(schemaColumns.keys());
+  if (version < 7) {
+    expected.delete('dsh_relation_canvases');
+    expected.delete('dsh_annotation_results');
+  }
   if (version === 4 || version === 5) {
     expected.delete('dsh_table_annotations');
     expected.delete('dsh_field_annotations');
@@ -54,6 +61,10 @@ async function checkSchema(connection, version) {
   const [columns] = await connection.query(`SELECT TABLE_NAME AS name, COLUMN_NAME AS column_name,
     GENERATION_EXPRESSION AS generation_expression FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()`);
   const remaining = new Map([...schemaColumns].map(([name, names]) => [name, new Set(names)]));
+  if (version < 7) {
+    remaining.delete('dsh_relation_canvases');
+    remaining.delete('dsh_annotation_results');
+  }
   if (version === 4 || version === 5) {
     remaining.delete('dsh_table_annotations');
     remaining.delete('dsh_field_annotations');
@@ -71,10 +82,10 @@ async function checkSchema(connection, version) {
 async function checkVersion(connection, { allowUpgrade = false } = {}) {
   const [versions] = await connection.query('SELECT version FROM dsh_management_migrations');
   if (versions.some(row => Number(row.version) > schemaVersion)) throw new Error('管理库版本高于当前插件支持版本。');
-  if (versions.length === 1 && [4, 5].includes(Number(versions[0].version))) {
+  if (versions.length === 1 && [4, 5, 6].includes(Number(versions[0].version))) {
     const version = Number(versions[0].version);
     if (allowUpgrade) return version;
-    throw new Error(version === 4 ? upgradeMessage : upgradeV5Message);
+    throw new Error(version === 4 ? upgradeMessage : version === 5 ? upgradeV5Message : upgradeV6Message);
   }
   if (versions.length !== 1 || Number(versions[0].version) !== schemaVersion) throw new Error(rebuildMessage);
   return schemaVersion;
@@ -101,6 +112,7 @@ export async function openManagementDb(config, { pool: suppliedPool } = {}) {
       await checkSchema(connection, version);
       if (version === 4) throw new Error(upgradeMessage);
       if (version === 5) throw new Error(upgradeV5Message);
+      if (version === 6) throw new Error(upgradeV6Message);
     } finally { connection.release(); }
   } catch (error) {
     await pool.end().catch(() => {});

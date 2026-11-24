@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
-import { syncAnnotations } from './annotation-store.js';
+import { syncAnnotations, invalidateResults } from './annotation-store.js';
 
 const sourceFields = ['id', 'name', 'description', 'engine', 'host', 'port', 'user', 'database', 'file', 'credentialRef'];
 const sourceColumns = 'metadata, connection_version, revision, enabled, created_at, updated_at';
@@ -331,6 +331,7 @@ export class MysqlFlowStore {
       assertUniqueName(rows.map(row => json(row.metadata)), source);
       await this.#writeSource(connection, source);
       if (targetChanged) await connection.execute('DELETE FROM dsh_source_catalogs WHERE profile_id = ? AND source_id = ?', [this.profileId, source.id]);
+      if (current && (connectionChanged || current.name !== source.name)) await invalidateResults(connection, this.profileId, source.id);
       if (connectionChanged) await this.#retireSourceBindings(connection, source.id);
       return source;
     });
@@ -342,6 +343,7 @@ export class MysqlFlowStore {
       const source = nextSourceEnabled(current, enabled, revision, await databaseTime(connection));
       if (source !== current) {
         await this.#writeSource(connection, source);
+        await invalidateResults(connection, this.profileId, id);
         if (!enabled) await this.#retireSourceBindings(connection, id);
       }
       return source;
