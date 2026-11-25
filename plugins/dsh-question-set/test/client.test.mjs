@@ -6,7 +6,8 @@ import vm from 'node:vm';
 const source = await readFile(new URL('../client.js', import.meta.url), 'utf8');
 const question = (index) => ({ id: `q${index}`, version: 1, text: `问题 ${index}`, answer: index === 1 ? '原答案' : '', origin: index === 2 ? 'generated' : 'original', links: index === 1 ? [{ tableName: 'orders', schema: 'sales', sourceName: '业务库' }] : [] });
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
-const task = (status = 'running', result = null, id = 'task-1') => ({ taskId: id, sourceId: 's1', status, startedAt: '2026-05-01T00:00:00Z', finishedAt: status === 'running' || status === 'cancelling' ? null : '2026-05-01T00:00:03Z', sessionId: 'session-1', result, error: null });
+const task = (status = 'running', result = null, id = 'task-1') => ({ taskId: id, sourceId: 's1', status, startedAt: '2026-05-01T00:00:00Z', finishedAt: status === 'running' || status === 'cancelling' ? null : '2026-05-01T00:00:03Z', sessionId: 'session-1', result, error: null,
+  progress: { phase: status === 'running' || status === 'cancelling' ? 'reading' : 'done', completed: result ? 3 : 0, total: result ? 3 : 0, success: result ? 2 : 0, failed: result ? 1 : 0 } });
 const result = () => ({ updates: [{ id: 'q1', text: '问题 1', answer: '补答结果', links: [{ tableName: 'orders', schema: 'sales', sourceName: '业务库' }] }], candidates: [
   { id: 'c1', text: '新增问题 A', answer: '查询结果 A', links: [{ tableName: 'customers', schema: 'crm', sourceName: '客户库', sourceComment: '客户基础信息' }] },
   { id: 'c2', text: '新增问题 B', answer: '', links: [], error: 'SQL 查询失败' },
@@ -62,6 +63,15 @@ async function mountClient(options = {}) {
     let value, status = 200;
     if (operation === 'questions') value = { items: structuredClone(fixture.items) };
     else if (operation === 'sources') value = { items: [{ id: 's1', name: '业务库' }, { id: 's2', name: '客户库' }] };
+    else if (operation === 'prompt-settings') {
+      if (fixture.promptGate) await fixture.promptGate.promise;
+      if (fixture.promptError) { status = 503; value = { error: '提示词服务不可用' }; }
+      else {
+        fixture.settings ||= { prompt: '当前提示词', defaultPrompt: '默认提示词', protocol: '调用 query 工具查询答案。' };
+        if (payload) fixture.settings.prompt = payload.prompt;
+        value = structuredClone(fixture.settings);
+      }
+    }
     else if (operation.startsWith('ai-tasks?')) {
       if (fixture.poll) await fixture.poll.promise;
       value = { task: structuredClone(fixture.task) };
@@ -179,49 +189,81 @@ test('CRUD sends versions and batch deletion retains only failures for retry', a
   assert.equal(table(ui, 'delete-dialog'), undefined);
 });
 
-test('any question origin can start generalization and partial results stay inline until query completion', async (t) => {
+test('generalization progress stays in the top bar and completed results open one selectable dialog', async (t) => {
   const ui = await mountClient(); t.after(ui.unmount);
   await ui.change('泛化数据源', 's2');
   await ui.change('选择问题 问题 2', true); await ui.click('泛化问题');
   assert.equal(calls(ui, 'ai-tasks')[0].payload.sourceId, 's2');
-  ui.fixture.task = { ...task('running', result()), sourceId: 's2' }; await ui.advance();
-  assert.ok(table(ui, 'updates-results')); assert.ok(table(ui, 'candidates-results'));
-  assert.match(ui.text(table(ui, 'candidates-results')), /新增问题 A查询结果 Acustomers客户基础信息/);
-  assert.doesNotMatch(ui.text(table(ui, 'candidates-results')), /crm\.|客户库/);
-  assert.match(ui.text(table(ui, 'candidates-results')), /SQL 查询失败/);
-  assert.equal(ui.control('选择新增泛化问题 新增问题 B').props.disabled, true);
-  assert.equal(ui.namedButton('保存所选结果'), undefined);
-  assert.equal(ui.nodes().filter((node) => node.type === 'textarea').length, 0);
+  assert.match(ui.text(table(ui, 'task-status')), /正在读取结构.*秒/);
+  assert.equal(ui.control('任务进度'), undefined);
+  assert.equal(table(ui, 'combined-results'), undefined);
+  assert.equal(ui.namedButton('查看结果'), undefined);
+  ui.fixture.task = { ...task('running', result()), sourceId: 's2', progress: { phase: 'planning', completed: 0, total: 0, success: 0, failed: 0 } }; await ui.advance();
+  assert.match(ui.text(table(ui, 'task-status')), /正在生成候选问题/); assert.equal(ui.control('任务进度'), undefined);
+  ui.fixture.task.progress = { phase: 'answering', completed: 2, total: 3, success: 2, failed: 0 }; await ui.advance();
+  assert.match(ui.text(table(ui, 'task-status')), /正在查询答案 · 2\/3/);
+  assert.equal(ui.control('任务进度').props.value, 2); assert.equal(ui.control('任务进度').props.max, 3);
+  assert.equal(table(ui, 'combined-results'), undefined);
   ui.fixture.task = { ...task('succeeded', result()), sourceId: 's2' }; await ui.advance();
-  await ui.change('选择已选问题补答 问题 1', false); await ui.click('保存所选结果');
+  assert.match(ui.text(table(ui, 'task-status')), /成功 2 · 失败 1.*3 秒/);
+  assert.equal(ui.nodes().findIndex(node => node.props['data-testid'] === 'task-status') < ui.nodes().findIndex(node => node.props.className === 'qs-toolbar'), true);
+  await ui.click('查看结果');
+  assert.equal(ui.nodes().filter((node) => node.type === 'dialog').length, 1);
+  assert.equal(ui.nodes().filter((node) => node.type === 'table' && node.props.className === 'qs-results').length, 1);
+  assert.match(ui.text(table(ui, 'combined-results')), /问题.*答案.*关联表.*补答结果.*新增问题 A.*查询结果 A.*customers客户基础信息.*SQL 查询失败/);
+  assert.doesNotMatch(ui.text(table(ui, 'combined-results')), /crm\.|客户库|已选问题补答|新增泛化问题/);
+  assert.equal(ui.control('选择结果 新增问题 B').props.disabled, true);
+  await ui.change('全选结果', false); assert.equal(ui.namedButton('保存所选结果').props.disabled, true);
+  await ui.change('全选结果', true); await ui.change('选择结果 问题 1', false); await ui.click('保存所选结果');
   assert.deepEqual(calls(ui, 'results-save')[0].payload, { taskId: 'task-1', candidateIds: ['c1'], updateIds: [] });
-  assert.equal(table(ui, 'task-results'), undefined);
+  assert.equal(table(ui, 'task-status'), undefined); assert.equal(table(ui, 'result-dialog'), undefined);
   await ui.change('搜索问题或答案', '保存的泛化问题');
   assert.match(ui.text(table(ui, 'questions-table')), /保存的泛化问题/);
 });
 
-test('failed-result retry uses task identity and saving consumes the replacement task only', async (t) => {
+test('top-bar saving includes every successful result independently of dialog selection', async (t) => {
   const ui = await mountClient({ task: task('succeeded', result()) }); t.after(ui.unmount);
-  await ui.click('重新处理失败');
-  assert.deepEqual(calls(ui, 'ai-tasks')[0].payload, { taskId: 'task-1', retryFailed: true });
-  assert.match(ui.text(table(ui, 'updates-results')), /补答结果/);
-  ui.fixture.task = task('succeeded', { updates: result().updates, candidates: result().candidates.map((item) => ({ ...item, answer: '重试答案', error: undefined })) }, 'task-2');
-  await ui.advance(); await ui.change('选择新增泛化问题 新增问题 A', false); await ui.click('保存所选结果');
-  assert.deepEqual(calls(ui, 'results-save')[0].payload, { taskId: 'task-2', candidateIds: ['c2'], updateIds: ['q1'] });
-  assert.equal(ui.namedButton('重新处理失败'), undefined);
+  await ui.click('查看结果'); await ui.change('全选结果', false); await ui.click('关闭');
+  await ui.click('保存结果');
+  assert.deepEqual(calls(ui, 'results-save')[0].payload, { taskId: 'task-1', candidateIds: ['c1'], updateIds: ['q1'] });
 });
 
-test('reentry restores by source, cancel waits for a terminal snapshot and discard removes preview', async (t) => {
+test('failed-result retry uses task identity and saving consumes the replacement task only', async (t) => {
+  const ui = await mountClient({ task: task('succeeded', result()) }); t.after(ui.unmount);
+  await ui.click('重试失败');
+  assert.deepEqual(calls(ui, 'ai-tasks')[0].payload, { taskId: 'task-1', retryFailed: true });
+  assert.equal(table(ui, 'combined-results'), undefined);
+  ui.fixture.task = task('succeeded', { updates: result().updates, candidates: result().candidates.map((item) => ({ ...item, answer: '重试答案', error: undefined })) }, 'task-2');
+  await ui.advance(); await ui.click('查看结果'); await ui.change('选择结果 新增问题 A', false); await ui.click('保存所选结果');
+  assert.deepEqual(calls(ui, 'results-save')[0].payload, { taskId: 'task-2', candidateIds: ['c2'], updateIds: ['q1'] });
+  assert.equal(ui.namedButton('重试失败'), undefined);
+});
+
+test('viewing conversation and reentry restore the real task by source without POST or cancellation', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  await ui.change('泛化数据源', 's2'); await ui.change('选择问题 问题 1', true); await ui.click('泛化问题');
+  await ui.click('查看对话'); assert.deepEqual(ui.sessions, ['session-1']);
+  await ui.remount();
+  assert.equal(ui.control('泛化数据源').props.value, 's2');
+  assert.equal(calls(ui, 'ai-tasks?sourceId=s2').length, 2);
+  assert.equal(calls(ui, 'ai-tasks').length, 1); assert.equal(calls(ui, 'ai-tasks/cancel').length, 0);
+  assert.match(ui.text(table(ui, 'task-status')), /正在读取结构/);
+});
+
+test('cancel waits for a terminal snapshot and cancelled or failed tasks remain discardable', async (t) => {
   const ui = await mountClient({ task: task('running', result()) }); t.after(ui.unmount);
   assert.ok(calls(ui, 'ai-tasks?sourceId=s1').length);
-  await ui.click('查看会话'); assert.deepEqual(ui.sessions, ['session-1']);
   await ui.click('取消操作');
   assert.deepEqual(calls(ui, 'ai-tasks/cancel')[0].payload, { taskId: 'task-1' });
   assert.equal(ui.namedButton('正在取消…').props.disabled, true);
-  assert.equal(ui.namedButton('丢弃结果'), undefined);
-  ui.fixture.task = task('cancelled', result()); await ui.advance(); await ui.click('丢弃结果');
+  assert.equal(ui.namedButton('丢弃'), undefined);
+  ui.fixture.task = task('cancelled', result()); await ui.advance(); await ui.click('丢弃');
   assert.deepEqual(calls(ui, 'results-discard')[0].payload, { taskId: 'task-1' });
-  assert.equal(table(ui, 'task-results'), undefined);
+  assert.equal(table(ui, 'task-status'), undefined);
+  ui.fixture.task = { ...task('failed'), error: '任务执行失败' }; await ui.remount();
+  assert.equal(ui.namedButton('查看结果'), undefined); assert.equal(table(ui, 'combined-results'), undefined);
+  assert.match(ui.text(table(ui, 'task-status')), /任务执行失败/); await ui.click('丢弃');
+  assert.equal(calls(ui, 'results-discard').length, 2);
 });
 
 test('polling is serial and unmount aborts the in-flight request without cancelling the task', async () => {
@@ -252,13 +294,13 @@ test('lost start response restores by source without repeating the task POST', a
   await ui.change('选择问题 问题 1', true); await ui.click('泛化问题');
   assert.equal(calls(ui, 'ai-tasks').length, 1);
   assert.equal(calls(ui, 'ai-tasks?sourceId=s1').length, 2);
-  assert.ok(table(ui, 'task-results'));
+  assert.ok(table(ui, 'task-status'));
   assert.equal(ui.namedButton('取消操作').props.disabled, false);
 });
 
 test('consumed task snapshots do not restore candidates and source selection survives reentry', async (t) => {
   const ui = await mountClient({ task: { ...task('succeeded', result()), resultState: 'saved' } }); t.after(ui.unmount);
-  assert.equal(table(ui, 'task-results'), undefined);
+  assert.equal(table(ui, 'task-status'), undefined);
   await ui.change('泛化数据源', 's2');
   ui.fixture.task = { ...task('succeeded', result()), sourceId: 's2', resultState: 'discarded' };
   await ui.remount();
@@ -273,6 +315,71 @@ test('unmount during cancel aborts its observation and keeps all polling cleared
   assert.equal(ui.namedButton('取消操作').props.disabled, true);
   ui.unmount(); assert.equal(calls(ui, 'ai-tasks/cancel')[0].request.signal.aborted, true);
   gate.resolve(); await ui.flush(); assert.equal(ui.timers.size, 0);
+});
+
+test('prompt settings cancel, draft reset and save use the shared API', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  await ui.click('泛化提示词');
+  assert.equal(calls(ui, 'prompt-settings')[0].request.method, 'GET');
+  assert.equal(ui.control('提示词').props.value, '当前提示词');
+  const details = ui.nodes().find(node => node.type === 'details'); assert.match(ui.text(details), /工具调用说明.*调用 query 工具查询答案/);
+  assert.equal(ui.nodes().filter(node => node.type === 'textarea').length, 1);
+  await ui.change('提示词', '未保存修改'); await ui.click('取消');
+  assert.equal(calls(ui, 'prompt-settings').length, 1);
+  await ui.change('泛化数据源', 's2'); await ui.click('泛化提示词');
+  assert.equal(ui.control('提示词').props.value, '当前提示词');
+  await ui.click('恢复默认'); assert.equal(ui.control('提示词').props.value, '默认提示词');
+  assert.equal(calls(ui, 'prompt-settings').filter(call => call.request.method === 'POST').length, 0);
+  await ui.click('取消'); await ui.click('泛化提示词'); assert.equal(ui.control('提示词').props.value, '当前提示词');
+  await ui.click('恢复默认'); await ui.submit();
+  assert.deepEqual(calls(ui, 'prompt-settings').at(-1).payload, { prompt: '默认提示词' });
+  assert.equal(table(ui, 'prompt-dialog'), undefined);
+  await ui.click('泛化提示词'); await ui.change('提示词', '自定义提示词'); await ui.submit();
+  assert.deepEqual(calls(ui, 'prompt-settings').at(-1).payload, { prompt: '自定义提示词' });
+});
+
+test('prompt editing stays available during an active task without restarting or cancelling it', async (t) => {
+  const ui = await mountClient({ task: task() }); t.after(ui.unmount);
+  await ui.click('泛化提示词'); await ui.change('提示词', '运行时修改'); await ui.submit();
+  assert.equal(ui.fixture.task.status, 'running'); assert.equal(calls(ui, 'ai-tasks').length, 0); assert.equal(calls(ui, 'ai-tasks/cancel').length, 0);
+  assert.deepEqual(calls(ui, 'prompt-settings').at(-1).payload, { prompt: '运行时修改' });
+  assert.ok(table(ui, 'task-status'));
+});
+
+test('prompt errors stay visible with no automatic resend and unmount releases requests', async (t) => {
+  const ui = await mountClient({ fixture: { promptError: true } }); t.after(ui.unmount);
+  await ui.click('泛化提示词'); assert.match(ui.text(table(ui, 'prompt-dialog')), /提示词服务不可用/);
+  assert.equal(ui.namedButton('保存').props.disabled, true); await ui.advance(); assert.equal(calls(ui, 'prompt-settings').length, 1);
+  await ui.click('取消'); ui.fixture.promptError = false; await ui.click('泛化提示词');
+  ui.fixture.promptError = true; await ui.submit(); assert.match(ui.text(table(ui, 'prompt-dialog')), /提示词服务不可用/);
+  await ui.advance(); assert.equal(calls(ui, 'prompt-settings').length, 3);
+  await ui.click('取消'); ui.fixture.promptError = false; ui.fixture.promptGate = deferred();
+  await ui.click('泛化提示词'); const pending = calls(ui, 'prompt-settings').at(-1);
+  ui.unmount(); assert.equal(pending.request.signal.aborted, true); ui.fixture.promptGate.resolve(); await ui.flush();
+  assert.equal(calls(ui, 'prompt-settings').length, 4);
+});
+
+test('unmount during prompt saving aborts the pending POST without resending it', async () => {
+  const ui = await mountClient(); await ui.click('泛化提示词'); await ui.change('提示词', '待保存提示词');
+  const gate = deferred(); ui.fixture.promptGate = gate; await ui.submit();
+  const pending = calls(ui, 'prompt-settings').at(-1);
+  assert.equal(pending.request.method, 'POST'); assert.equal(ui.namedButton('正在保存…').props.disabled, true);
+  ui.unmount(); assert.equal(pending.request.signal.aborted, true); gate.resolve(); await ui.flush();
+  assert.equal(calls(ui, 'prompt-settings').length, 2); assert.equal(ui.timers.size, 0);
+});
+
+test('answer previews clamp via CSS while edit and result dialogs retain the complete string', async (t) => {
+  const answer = '完整答案'.repeat(500) + '\n尾行'; const item = { ...question(1), answer };
+  const snapshot = result(); snapshot.updates[0].answer = answer;
+  const ui = await mountClient({ fixture: { items: [item] } }); t.after(ui.unmount);
+  const preview = ui.nodes().find(node => node.props.className === 'qs-text qs-answer-preview');
+  assert.equal(ui.text(preview), answer); assert.match(source, /-webkit-line-clamp:3/);
+  await ui.click('编辑 问题 1', true); assert.equal(ui.control('答案（选填）').props.value, answer); await ui.click('取消');
+  ui.fixture.task = task('succeeded', snapshot); await ui.remount(); await ui.click('查看结果');
+  assert.ok(ui.text(table(ui, 'combined-results')).includes(answer));
+  assert.equal(ui.nodes().some(node => node.props.className === 'qs-text qs-answer-preview' && ui.text(node) === answer), true);
+  assert.equal(ui.nodes().filter(node => node.type === 'dialog').length, 1);
+  assert.ok(ui.nodes().some(node => node.props.className === 'qs-text' && ui.text(node) === answer));
 });
 
 test('unmount while starting aborts observation and does not schedule task polling', async () => {

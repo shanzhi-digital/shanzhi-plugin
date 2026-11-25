@@ -12,18 +12,18 @@ const rows = [
 ];
 const refs = rows.map(({ id, version }) => ({ id, version }));
 function fixture(script) {
-  let flow, commits = [], calls = [], operation, end;
+  let flow, commits = [], calls = [], reports = [], prompts = [], operation, end;
   const bridge = {
     async create() { return { sessionId: 's1' }; },
     async observe({ onEnd }) { end = onEnd; return async () => {}; },
-    async send() { try { await script({ call: (value) => flow.task(value, { agent: { session: { id: 's1' } } }), end }); } catch (error) { end(error); } return { accepted: true }; },
+    async send({ text }) { prompts.push(text); try { await script({ call: (value) => flow.task(value, { agent: { session: { id: 's1' } } }), end }); } catch (error) { end(error); } return { accepted: true }; },
     async cancel() { calls.push('cancel'); }, async close() {},
   };
   const store = { async list() { return structuredClone(rows); }, async commit(input) { commits.push(structuredClone(input)); } };
   const query = { async schema() { return { sourceId: 'source', name: 'source', engine: 'sqlite', tables: [table] }; }, async query(sourceId, sql) { calls.push({ sourceId, sql }); if (sql === 'broken') throw new Error('SQL失败'); return { columns: ['total'], rows: [[12]], rowCount: 1, truncated: false, tables: [table] }; } };
   flow = new QuestionFlow({ store, query, bridge, cwd: process.cwd(), timeoutMs: 2000 });
-  const run = (input = { sourceId: 'source', questions: refs }, signal = new AbortController().signal, taskId = 'task1') => flow.run(input, signal, update => { operation = update; }, taskId);
-  return { flow, run, commits, calls, store, query, latest: () => operation };
+  const run = (input = { sourceId: 'source', questions: refs }, signal = new AbortController().signal, taskId = 'task1') => flow.run(input, signal, update => { operation = update; reports.push(structuredClone(update)); }, taskId);
+  return { flow, run, commits, calls, reports, prompts, store, query, latest: () => operation };
 }
 async function plan(call) {
   await call({ operation: 'read' });
@@ -33,6 +33,64 @@ async function answer(call, item) {
   const result = await call({ operation: 'query', itemId: item.id, sql: 'SELECT sum(count) FROM beds' });
   await call({ operation: 'answer', itemId: item.id, answer: '床位合计12张。', queryIds: [result.queryId] });
 }
+
+test('任务按真实阶段报告进度，答案或失败才计入已处理，重试沿用提示词快照', async () => {
+  let iteration = 0;
+  const fx = fixture(async ({ call }) => {
+    if (iteration++ === 0) {
+      const items = await plan(call);
+      await answer(call, items[0]);
+      await call({ operation: 'fail-item', itemId: items[1].id, error: '缺少维度' });
+    } else {
+      const { items } = await call({ operation: 'read' });
+      for (const item of items) await answer(call, item);
+    }
+    await call({ operation: 'finish' });
+  });
+  await fx.run({ sourceId: 'source', questions: refs, prompt: '只围绕养老床位提问，每条答案只写结论。' });
+  const progress = fx.reports.filter(report => report.progress).map(report => report.progress);
+  assert.equal(progress[0].phase, 'reading');
+  assert.equal(progress[0].total, null);
+  assert.ok(progress.some(value => value.phase === 'planning' && value.total === null));
+  assert.ok(progress.some(value => value.phase === 'answering' && value.total === 2 && value.completed === 0));
+  assert.ok(progress.some(value => value.completed === 1 && value.success === 1 && value.failed === 0));
+  assert.deepEqual(progress.at(-1), { phase: 'done', completed: 2, total: 2, success: 1, failed: 1 });
+  const retry = fx.flow.retry('task1');
+  assert.equal(retry.prompt, '只围绕养老床位提问，每条答案只写结论。');
+  await fx.run(retry, new AbortController().signal, 'task2');
+  assert.ok(fx.prompts.every(prompt => prompt.includes(retry.prompt)));
+  assert.equal(fx.reports.at(-1).progress.failed, 0);
+});
+
+test('用户可降低泛化数量且无需为正常数量提供不足原因', async () => {
+  const fx = fixture(async ({ call }) => {
+    await call({ operation: 'read' });
+    const { items } = await call({ operation: 'plan', candidates: [{ text: '床位最小值是多少？' }] });
+    for (const item of items) await answer(call, item);
+    await call({ operation: 'finish' });
+  });
+  const result = await fx.run({ sourceId: 'source', questions: refs, prompt: '只生成1个问题。' });
+  assert.equal(result.candidates.length, 1);
+});
+
+test('任务快照返回进度副本，观察和离页不会改变后台状态', async () => {
+  let done;
+  const wait = new Promise(resolve => { done = resolve; });
+  const tasks = new AiTasks({ identify: () => ({ sourceId: 's', kind: 'generalize' }), execute: async (_input, _signal, report) => {
+    report({ progress: { phase: 'answering', completed: 1, total: 2, success: 1, failed: 0 } });
+    await wait;
+    return {};
+  } });
+  const started = tasks.start({});
+  await new Promise(resolve => setImmediate(resolve));
+  const snapshot = tasks.get(started.taskId);
+  snapshot.progress.completed = 99;
+  assert.equal(tasks.latest('s').progress.completed, 1);
+  assert.equal(tasks.get(started.taskId).status, 'running');
+  done();
+  await tasks.tasks.get(started.taskId).done;
+  await tasks.close();
+});
 
 test('任意来源问题泛化、补答并以真实查询结果形成三项结果，已有答案不改写', async () => {
   const fx = fixture(async ({ call }) => {

@@ -27,8 +27,8 @@ export class AiTasks {
   }
 
   _view(task) {
-    const { taskId, sourceId, kind, status, startedAt, finishedAt, sessionId, result, error } = task;
-    return structuredClone({ taskId, sourceId, kind, status, startedAt, finishedAt, sessionId, result, error });
+    const { taskId, sourceId, kind, status, startedAt, finishedAt, sessionId, result, error, progress } = task;
+    return structuredClone({ taskId, sourceId, kind, status, startedAt, finishedAt, sessionId, result, error, progress });
   }
 
   start(input) {
@@ -41,7 +41,7 @@ export class AiTasks {
     if (previous && active(previous)) throw failure('该数据源已有 AI 任务。', 409, { taskId: previous.taskId });
     const task = {
       taskId: randomUUID(), sourceId, kind, status: 'running', startedAt: new Date(this.now()).toISOString(), finishedAt: null,
-      sessionId: null, result: null, error: null, controller: new AbortController(),
+      sessionId: null, result: null, error: null, progress: { phase: 'reading', completed: 0, total: null, success: 0, failed: 0 }, controller: new AbortController(),
     };
     const snapshot = structuredClone(input);
     this.tasks.set(task.taskId, task);
@@ -50,6 +50,7 @@ export class AiTasks {
       if (!active(task)) return;
       if (typeof update?.sessionId === 'string') task.sessionId = update.sessionId;
       if (update && Object.hasOwn(update, 'result')) task.result = structuredClone(update.result);
+      if (update?.progress) task.progress = structuredClone(update.progress);
     };
     task.done = Promise.resolve().then(() => this.execute(snapshot, task.controller.signal, report, task.taskId)).then(result => {
       // A fulfilled executor has committed, even if cancellation raced that commit.

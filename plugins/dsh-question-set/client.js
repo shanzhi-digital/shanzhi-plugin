@@ -32,8 +32,8 @@ window.__ModuleLoader__.load({
 .dsh-qs th{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform);white-space:nowrap}.dsh-qs th,.dsh-qs td{padding:12px 14px;border-bottom:1px solid var(--dsw-alias-border-l2);vertical-align:middle;overflow-wrap:anywhere}.dsh-qs tbody tr:last-child td{border-bottom:0}.dsh-qs tbody tr:nth-child(even){background:var(--dsw-alias-bg-base)}.dsh-qs th:first-child{width:44px}.dsh-qs th:last-child{width:160px}.dsh-qs .qs-main-table th:nth-child(4){width:140px}.dsh-qs .qs-main-table th:nth-child(5){width:100px}.dsh-qs .qs-results th:last-child{width:28%}.dsh-qs .qs-assessment{color:var(--dsw-alias-label-secondary)}.dsh-qs .qs-row-actions .qs-evaluate{border:0;background:transparent;padding:3px 0}
 .dsh-qs .qs-empty{padding:32px 12px;text-align:center;color:var(--dsw-alias-label-secondary)}.dsh-qs .qs-text{white-space:pre-wrap;overflow-wrap:anywhere}.dsh-qs .qs-tag{display:inline-block;border:1px solid var(--dsw-alias-border-l2);border-radius:5px;padding:1px 6px;font-size:11px;color:var(--dsw-alias-label-secondary);margin:4px 5px 0 0}
 .dsh-qs .qs-pagination{margin-top:10px}.dsh-qs .qs-notice{padding:9px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:7px;background:var(--dsw-alias-interactive-bg-hover-danger);margin:8px 0 12px;overflow-wrap:anywhere}.dsh-qs .qs-error{color:var(--dsw-alias-state-error-primary)}
-.dsh-qs .qs-result{margin-top:24px}.dsh-qs .qs-result h2{margin:16px 0 10px}.dsh-qs .qs-status{margin:16px 0}.dsh-qs .qs-links{display:grid;gap:7px}.dsh-qs .qs-links strong{font-weight:500}.dsh-qs .qs-row-actions{display:flex;gap:6px}.dsh-qs .qs-row-actions button{padding:3px 8px;font-size:12px}
-.dsh-qs .qs-modal{width:min(620px,calc(100% - 24px));max-height:calc(100dvh - 24px);border:1px solid var(--dsw-alias-border-l4);border-radius:12px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding:0;box-shadow:0 20px 80px rgb(0 0 0 / .24)}.dsh-qs .qs-modal::backdrop{background:rgb(0 0 0 / .43)}.dsh-qs .qs-modal[open]{display:flex;flex-direction:column}.dsh-qs .qs-modal-head,.dsh-qs .qs-modal-body,.dsh-qs .qs-modal-footer{padding:16px 20px}.dsh-qs .qs-modal-head{border-bottom:1px solid var(--dsw-alias-border-l2)}.dsh-qs .qs-modal-body{overflow:auto}.dsh-qs .qs-modal-footer{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end}.dsh-qs .qs-field{display:block;margin-bottom:14px}.dsh-qs .qs-field>span{display:block;font-size:12px;color:var(--dsw-alias-label-secondary);margin-bottom:5px}.dsh-qs .qs-delete-list{padding-left:22px;max-height:240px;overflow:auto}
+.dsh-qs .qs-answer-preview{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden}.dsh-qs .qs-status{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 14px;margin:0 0 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:var(--dsw-alias-bg-layer-1)}.dsh-qs .qs-status-main{display:grid;gap:6px;flex:1;min-width:200px}.dsh-qs .qs-status progress{width:min(360px,100%);height:6px;accent-color:var(--dsw-alias-brand-primary)}.dsh-qs .qs-status .qs-notice{margin:0}.dsh-qs .qs-links{display:grid;gap:7px}.dsh-qs .qs-links strong{font-weight:500}.dsh-qs .qs-row-actions{display:flex;gap:6px}.dsh-qs .qs-row-actions button{padding:3px 8px;font-size:12px}
+.dsh-qs .qs-modal{width:min(620px,calc(100% - 24px));max-height:calc(100dvh - 24px);border:1px solid var(--dsw-alias-border-l4);border-radius:12px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding:0;box-shadow:0 20px 80px rgb(0 0 0 / .24)}.dsh-qs .qs-modal.qs-result-dialog{width:min(1040px,calc(100% - 24px))}.dsh-qs .qs-protocol{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:10px;color:var(--dsw-alias-label-secondary)}.dsh-qs .qs-protocol summary{cursor:pointer}.dsh-qs .qs-protocol p{margin-top:8px}.dsh-qs .qs-modal::backdrop{background:rgb(0 0 0 / .43)}.dsh-qs .qs-modal[open]{display:flex;flex-direction:column}.dsh-qs .qs-modal>form,.dsh-qs .qs-modal>div{display:flex;flex-direction:column;min-height:0}.dsh-qs .qs-modal-head,.dsh-qs .qs-modal-body,.dsh-qs .qs-modal-footer{padding:16px 20px}.dsh-qs .qs-modal-head{border-bottom:1px solid var(--dsw-alias-border-l2)}.dsh-qs .qs-modal-body{overflow:auto}.dsh-qs .qs-modal-footer{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end}.dsh-qs .qs-field{display:block;margin-bottom:14px}.dsh-qs .qs-field>span{display:block;font-size:12px;color:var(--dsw-alias-label-secondary);margin-bottom:5px}.dsh-qs .qs-delete-list{padding-left:22px;max-height:240px;overflow:auto}
 @media(max-width:650px){.dsh-qs .qs-header{padding:16px}.dsh-qs .qs-content{padding:16px 12px 24px}.dsh-qs .qs-toolbar>div{width:100%}.dsh-qs th,.dsh-qs td{padding:8px 10px}.dsh-qs .qs-modal-head,.dsh-qs .qs-modal-body,.dsh-qs .qs-modal-footer{padding:12px}}
     `;
     async function api(operation, input, signal) {
@@ -65,14 +65,14 @@ window.__ModuleLoader__.load({
         entry.sourceComment && h('div', { className: 'qs-muted' }, entry.sourceComment),
         entry.valid === false && h('span', { className: 'qs-tag' }, '关联待重新查询')))) : h('span', { className: 'qs-muted' }, '—');
     }
-    function Dialog({ title, onClose, busy, children, footer, formProps, testId }) {
+    function Dialog({ title, onClose, busy, children, footer, formProps, testId, wide }) {
       const ref = useRef(null);
       useEffect(() => {
         const previous = document.activeElement, dialog = ref.current;
         dialog.showModal();
         return () => { dialog.close(); previous?.focus?.(); };
       }, []);
-      return h('dialog', { ref, className: 'qs-modal', 'aria-label': title, 'data-testid': testId,
+      return h('dialog', { ref, className: `qs-modal${wide ? ' qs-result-dialog' : ''}`, 'aria-label': title, 'data-testid': testId,
         onCancel: (event) => { event.preventDefault(); if (!busy) onClose(); } },
       h('header', { className: 'qs-modal-head' }, h('h2', null, title)),
       h(formProps ? 'form' : 'div', formProps, h('div', { className: 'qs-modal-body' }, children), h('footer', { className: 'qs-modal-footer qs-actions' }, footer)));
@@ -122,26 +122,71 @@ window.__ModuleLoader__.load({
         button('取消', onClose, { disabled: busy }), button(busy ? '正在删除…' : '删除', () => void remove(), { className: 'qs-button danger', disabled: busy })) },
       notice(error), h('p', null, `确认删除以下 ${pending.length} 个问题？`), h('ul', { className: 'qs-delete-list' }, pending.map((item) => h('li', { key: item.id }, item.text))));
     }
-    function TaskStatus({ task, onCancel, onOpenSession, busy }) {
+    function PromptDialog({ onClose }) {
+      const [settings, setSettings] = useState(null), [draft, setDraft] = useState('');
+      const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState(null);
+      const request = useRef(null);
+      useEffect(() => {
+        const controller = new AbortController(); request.current = controller;
+        api('prompt-settings', undefined, controller.signal).then((value) => {
+          if (!controller.signal.aborted) { setSettings(value); setDraft(value.prompt); }
+        }).catch((cause) => { if (!controller.signal.aborted) setError(cause); })
+          .finally(() => { if (!controller.signal.aborted) { request.current = null; setLoading(false); } });
+        return () => request.current?.abort();
+      }, []);
+      const save = async (event) => {
+        event.preventDefault();
+        if (request.current) return;
+        if (!draft.trim()) { setError('请填写泛化提示词。'); return; }
+        const controller = new AbortController(); request.current = controller; setBusy(true); setError(null);
+        try { await api('prompt-settings', { prompt: draft }, controller.signal); if (!controller.signal.aborted) onClose(); }
+        catch (cause) { if (!controller.signal.aborted) setError(cause); }
+        finally { if (!controller.signal.aborted) { request.current = null; setBusy(false); } }
+      };
+      return h(Dialog, { title: '泛化提示词', onClose, busy, testId: 'prompt-dialog', formProps: { onSubmit: (event) => void save(event) },
+        footer: h(React.Fragment, null, button('恢复默认', () => setDraft(settings.defaultPrompt), { disabled: !settings || busy }),
+          button('取消', onClose, { disabled: busy }), h('button', { type: 'submit', className: 'qs-button primary', disabled: loading || !settings || busy }, busy ? '正在保存…' : '保存')) },
+      notice(error), loading ? h('p', { role: 'status' }, '正在加载…') : settings && h(React.Fragment, null,
+        h('label', { className: 'qs-field' }, h('span', null, '提示词'), h('textarea', { 'aria-label': '提示词', value: draft, rows: 12, maxLength: 20000, disabled: busy, onChange: (event) => setDraft(event.target.value) })),
+        h('details', { className: 'qs-protocol' }, h('summary', null, '工具调用说明'), h('p', null, settings.protocol))));
+    }
+    function TaskStatus({ task, onCancel, onOpenSession, busy, onView, onSave, onRetry, onDiscard, resultCount, successCount, hasFailures }) {
       const [now, setNow] = useState(Date.now);
       useEffect(() => {
         if (!active(task)) return;
+        setNow(Date.now());
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
         return () => window.clearInterval(timer);
       }, [task.taskId, task.status]);
-      const labels = { running: '正在泛化与查询', cancelling: '正在取消', succeeded: '查询完成', failed: '任务失败', cancelled: '已取消' };
+      const labels = { running: '正在处理', cancelling: '正在取消', succeeded: '查询完成', failed: '任务失败', cancelled: '已取消' };
+      const phases = { reading: '正在读取结构', planning: '正在生成候选问题', answering: '正在查询答案', done: '查询完成' };
+      const progress = task.progress;
       const elapsed = Math.max(0, Math.floor(((active(task) ? now : Date.parse(task.finishedAt)) - Date.parse(task.startedAt)) / 1000));
-      return h('div', { className: 'qs-row qs-status' }, h('span', { role: 'status' }, `${labels[task.status] || task.status}${Number.isFinite(elapsed) ? ` · ${elapsed} 秒` : ''}`),
-        h('div', { className: 'qs-actions' }, task.sessionId && onOpenSession && button('查看会话', () => onOpenSession(task.sessionId)),
-          active(task) && button(task.status === 'cancelling' ? '正在取消…' : '取消操作', onCancel, { disabled: busy || task.status === 'cancelling' })));
+      const measured = ['answering', 'done'].includes(progress?.phase) && progress.total > 0;
+      const completed = Math.min(progress?.completed || 0, progress?.total || 0);
+      const terminal = !active(task);
+      const summary = terminal && progress ? ` · 成功 ${progress.success} · 失败 ${progress.failed}` : '';
+      return h('section', { className: 'qs-status', 'data-testid': 'task-status' },
+        h('div', { className: 'qs-status-main' }, h('span', { role: 'status' }, `${task.status === 'running' ? phases[progress?.phase] || labels.running : labels[task.status] || task.status}${measured ? ` · ${completed}/${progress.total}` : ''}${summary}${Number.isFinite(elapsed) ? ` · ${elapsed} 秒` : ''}`),
+          measured && h('progress', { value: completed, max: progress.total, 'aria-label': '任务进度' }), notice(task.error)),
+        h('div', { className: 'qs-actions' },
+          terminal && resultCount > 0 && button('查看结果', onView, { disabled: busy }),
+          terminal && task.status === 'succeeded' && button('保存结果', onSave, { disabled: busy || !successCount, className: 'qs-button primary' }),
+          terminal && task.status === 'succeeded' && hasFailures && button('重试失败', onRetry, { disabled: busy }),
+          terminal && button('丢弃', onDiscard, { disabled: busy }),
+          active(task) && button(task.status === 'cancelling' ? '正在取消…' : '取消操作', onCancel, { disabled: busy || task.status === 'cancelling' }),
+          task.sessionId && onOpenSession && button('查看对话', () => onOpenSession(task.sessionId))));
     }
-    function ResultTable({ title, items, chosen, onChoose, disabled, kind }) {
+    function ResultDialog({ items, chosen, onChoose, onClose, onSave, disabled, canSave, error }) {
       const valid = items.filter(savable);
-      return h('section', null, h('h2', null, title), h(DataTable, { results: true, testId: `${kind}-results`, labels: [
-        h(SelectAll, { label: `全选${title}`, rows: valid, chosen, disabled, onChange: (value) => onChoose(valid.map(({ id }) => id), value) }), '问题', '答案', '关联表'],
-      rows: items.map((item) => h('tr', { key: item.id },
-        cell(check(`选择${title} ${item.text}`, chosen.has(item.id), (value) => onChoose([item.id], value), { disabled: disabled || !savable(item) })),
-        cell(h('div', { className: 'qs-text' }, item.text)), cell(h('div', { className: `qs-text${item.error ? ' qs-error' : ''}` }, item.error ? errorText(item.error) : item.answer || '—')),
+      return h(Dialog, { title: '泛化结果', onClose, busy: disabled, wide: true, testId: 'result-dialog',
+        footer: h(React.Fragment, null, button('关闭', onClose, { disabled }), button('保存所选结果', onSave, { className: 'qs-button primary', disabled: disabled || !canSave || !valid.some(({ key }) => chosen.has(key)) })) },
+      notice(error), h(DataTable, { results: true, testId: 'combined-results', labels: [
+        h(SelectAll, { label: '全选结果', rows: valid.map((item) => ({ id: item.key })), chosen, disabled, onChange: (value) => onChoose(valid.map(({ key }) => key), value) }), '问题', '答案', '关联表'],
+      rows: items.map((item) => h('tr', { key: item.key },
+        cell(check(`选择结果 ${item.text}`, chosen.has(item.key), (value) => onChoose([item.key], value), { disabled: disabled || !savable(item) })),
+        cell(h('div', null, h('div', { className: 'qs-text' }, item.text), h('span', { className: 'qs-tag' }, item.kind === 'updates' ? '补答' : '泛化'))),
+        cell(h('div', { className: `qs-text${item.error ? ' qs-error' : ''}` }, item.error ? errorText(item.error) : item.answer || '—')),
         cell(h(TableLinks, { links: item.links })))) }));
     }
     function QuestionSetPage({ openSession }) {
@@ -149,6 +194,7 @@ window.__ModuleLoader__.load({
       const [search, setSearch] = useState(''), [page, setPage] = useState(1), [chosen, setChosen] = useState(() => new Set());
       const [loading, setLoading] = useState(true), [restoring, setRestoring] = useState(false), [busy, setBusy] = useState(''), [error, setError] = useState(null);
       const [editing, setEditing] = useState(null), [deleting, setDeleting] = useState(null), [task, setTask] = useState(null), [monitor, setMonitor] = useState(0);
+      const [dialog, setDialog] = useState(null);
       const [updateIds, setUpdateIds] = useState(() => new Set()), [candidateIds, setCandidateIds] = useState(() => new Set());
       const alive = useRef(true), action = useRef(null), taskRef = useRef(null), revision = useRef(0), seen = useRef({ taskId: null, updates: new Set(), candidates: new Set() });
       const acceptTask = (value) => {
@@ -226,7 +272,13 @@ window.__ModuleLoader__.load({
       const locked = !!busy || loading || restoring || active(task);
       const hasResults = !!task?.result;
       const updates = task?.result?.updates || [], candidates = task?.result?.candidates || [];
-      const hasFailures = [...updates, ...candidates].some((item) => item.error);
+      const results = [...updates.map((item) => ({ ...item, kind: 'updates', key: `updates:${item.id}` })), ...candidates.map((item) => ({ ...item, kind: 'candidates', key: `candidates:${item.id}` }))];
+      const resultChosen = new Set([...updateIds].map((id) => `updates:${id}`).concat([...candidateIds].map((id) => `candidates:${id}`)));
+      const chooseResults = (keys, value) => {
+        setUpdateIds((current) => withChecked(current, keys.filter((key) => key.startsWith('updates:')).map((key) => key.slice(8)), value));
+        setCandidateIds((current) => withChecked(current, keys.filter((key) => key.startsWith('candidates:')).map((key) => key.slice(11)), value));
+      };
+      const hasFailures = results.some((item) => item.error);
       const validUpdates = updates.filter((item) => savable(item) && updateIds.has(item.id)).map(({ id }) => id);
       const validCandidates = candidates.filter((item) => savable(item) && candidateIds.has(item.id)).map(({ id }) => id);
       const start = () => {
@@ -236,27 +288,34 @@ window.__ModuleLoader__.load({
         });
       };
       const retry = () => void perform('retry', 'ai-tasks', { taskId: task.taskId, retryFailed: true }, (value) => { acceptTask(value.task); setMonitor((current) => current + 1); });
-      const saveResults = () => void perform('results-save', 'results-save', { taskId: task.taskId, candidateIds: validCandidates, updateIds: validUpdates }, (value) => {
-        setItems(value.items); acceptTask(null); const ids = new Set(value.items.map(({ id }) => id)); setChosen((current) => new Set([...current].filter((id) => ids.has(id))));
+      const saveResults = (all = false) => void perform('results-save', 'results-save', { taskId: task.taskId,
+        candidateIds: all ? candidates.filter(savable).map(({ id }) => id) : validCandidates,
+        updateIds: all ? updates.filter(savable).map(({ id }) => id) : validUpdates }, (value) => {
+        setDialog(null); setItems(value.items); acceptTask(null); const ids = new Set(value.items.map(({ id }) => id)); setChosen((current) => new Set([...current].filter((id) => ids.has(id))));
       });
-      const discard = () => void perform('discard', 'results-discard', { taskId: task.taskId }, () => acceptTask(null));
+      const discard = () => void perform('discard', 'results-discard', { taskId: task.taskId }, () => { setDialog(null); acceptTask(null); });
       const rows = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize).map((item) => h('tr', { key: item.id },
         cell(check(`选择问题 ${item.text}`, chosen.has(item.id), (value) => setChosen((current) => withChecked(current, [item.id], value)), { disabled: locked })),
         cell(h('div', null, h('div', { className: 'qs-text' }, item.text), h('span', { className: 'qs-tag' }, origin(item)))),
-        cell(h('div', { className: 'qs-text' }, item.answer || '—')),
+        cell(h('div', { className: 'qs-text qs-answer-preview' }, item.answer || '—')),
         cell(h('span', { className: 'qs-assessment' }, '—')), cell(h('span', { className: 'qs-assessment' }, '—')),
         cell(h('div', { className: 'qs-row-actions' }, button('评测', undefined, { disabled: true, className: 'qs-button qs-evaluate', 'aria-label': `评测 ${item.text}`, title: '暂未开放' }), button('编辑', () => setEditing({ question: item }), { disabled: locked, 'aria-label': `编辑 ${item.text}` }),
           button('删除', () => setDeleting([item]), { disabled: locked, 'aria-label': `删除 ${item.text}`, className: 'qs-button danger' })))));
       return h('div', { className: 'dsh-qs', 'data-testid': 'question-set-page' }, h('style', null, css),
         h('header', { className: 'qs-header' }, h('h1', null, '问题集')),
         h('div', { className: 'qs-content' }, h('div', { className: 'qs-wrap' },
-        notice(error), h('div', { className: 'qs-toolbar' },
+        notice(error), task && h(TaskStatus, { task, busy: !!busy, onOpenSession: openSession,
+          resultCount: results.length, successCount: results.filter(savable).length, hasFailures,
+          onView: () => setDialog('results'), onSave: () => saveResults(true), onRetry: retry, onDiscard: discard,
+          onCancel: () => void perform('cancel', 'ai-tasks/cancel', { taskId: task.taskId }, (value) => { acceptTask(value.task); setMonitor((current) => current + 1); }) }),
+        h('div', { className: 'qs-toolbar' },
           h('div', { className: 'qs-filters' },
             h('input', { type: 'search', 'aria-label': '搜索问题或答案', placeholder: '搜索问题或答案', value: search, onChange: (event) => { setSearch(event.target.value); setPage(1); } }),
             h('select', { 'aria-label': '泛化数据源', value: sourceId, disabled: locked || hasResults, onChange: (event) => { acceptTask(null); setSourceId(event.target.value); setError(null); } },
               !sources.length && h('option', { value: '' }, '暂无数据源'), sources.map((source) => h('option', { key: source.id, value: source.id }, source.name)))),
           h('div', { className: 'qs-actions' },
             button(busy === 'start' ? '正在启动…' : '泛化问题', start, { disabled: locked || !sourceId || !selected.length || hasResults }),
+            button('泛化提示词', () => setDialog('prompt')),
             button('批量评测', undefined, { disabled: true, title: '暂未开放' }),
             button('新增问题', () => setEditing({ question: null }), { disabled: locked, className: 'qs-button primary' }))),
         h('div', { className: 'qs-row qs-selection' }, h('span', { className: 'qs-muted' }, `已选 ${selected.length} / ${items.length} 个问题`),
@@ -268,13 +327,9 @@ window.__ModuleLoader__.load({
           '问题', '答案', '最近评测准确率', '通过状态', '操作'], rows }),
         h('nav', { className: 'qs-pagination', 'aria-label': '问题分页' }, h('span', { className: 'qs-muted' }, `${filtered.length} 条 · 第 ${currentPage} / ${lastPage} 页`),
           h('div', { className: 'qs-actions' }, button('上一页', () => setPage(currentPage - 1), { disabled: currentPage === 1 }), button('下一页', () => setPage(currentPage + 1), { disabled: currentPage === lastPage }))),
-        task && h('section', { className: 'qs-result', 'data-testid': 'task-results' },
-          h(TaskStatus, { task, busy: !!busy, onOpenSession: openSession, onCancel: () => void perform('cancel', 'ai-tasks/cancel', { taskId: task.taskId }, (value) => { acceptTask(value.task); setMonitor((current) => current + 1); }) }),
-          notice(task.error), hasResults && h(React.Fragment, null,
-            h(ResultTable, { title: '已选问题补答', items: updates, chosen: updateIds, disabled: !!busy, kind: 'updates', onChoose: (ids, value) => setUpdateIds((current) => withChecked(current, ids, value)) }),
-            h(ResultTable, { title: '新增泛化问题', items: candidates, chosen: candidateIds, disabled: !!busy, kind: 'candidates', onChoose: (ids, value) => setCandidateIds((current) => withChecked(current, ids, value)) })),
-          !active(task) && h('div', { className: 'qs-actions qs-status' }, hasResults && task.status === 'succeeded' && button('保存所选结果', saveResults, { className: 'qs-button primary', disabled: !!busy || !validUpdates.length && !validCandidates.length }),
-            hasFailures && task.status === 'succeeded' && button('重新处理失败', retry, { disabled: !!busy }), button('丢弃结果', discard, { disabled: !!busy }))),
+        dialog === 'prompt' && h(PromptDialog, { onClose: () => setDialog(null) }),
+        dialog === 'results' && task && h(ResultDialog, { items: results, chosen: resultChosen, onChoose: chooseResults, onClose: () => setDialog(null),
+          onSave: () => saveResults(), disabled: !!busy, canSave: task.status === 'succeeded', error }),
         editing && h(QuestionDialog, { question: editing.question, onClose: () => setEditing(null), onSaved: async (signal) => { await refreshQuestions(signal); if (!signal.aborted) setEditing(null); } }),
         deleting && h(DeleteDialog, { items: deleting, onClose: () => setDeleting(null), onRemoved: (id) => { setItems((current) => current.filter((item) => item.id !== id)); setChosen((current) => withChecked(current, [id], false)); } }))));
     }

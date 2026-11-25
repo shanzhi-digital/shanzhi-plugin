@@ -6,11 +6,13 @@ import { DatasourceSessionBridge, injectKeys } from './host-bridge.js';
 import { AiTasks } from './ai-tasks.js';
 import { QuestionFlow } from './flow.js';
 import { createRoutes } from './routes.js';
+import { createSettings } from './settings.js';
 
 export const name = 'question-set';
 export const inject = ['connection', 'tools', 'credentials', ...injectKeys];
 
 export async function apply(ctx, config = {}) {
+  const settings = createSettings({ profileDir: config.profileDir });
   // Database setup failures stay visible on this plugin's page; no dependency on the old plugin's activation.
   let services, initializing, closed = false;
   const initialize = () => {
@@ -27,14 +29,18 @@ export async function apply(ctx, config = {}) {
         identify: input => ({ sourceId: input.sourceId, kind: 'generalize' }),
         execute: (input, signal, report, taskId) => flow.run(input, signal, report, taskId),
       });
-      services = { db, store, query, bridge, flow, tasks };
+      services = { db, store, query, bridge, flow, tasks, settings };
       return services;
     } catch (error) { await db.close(); throw error; }
   })().catch(error => { initializing = null; throw error; });
   };
   // Routes need synchronous task admission. Initialize their services before invoking the matching handler.
-  const routePaths = createRoutes({ store: {}, query: {}, flow: {}, tasks: {} });
+  const routePaths = createRoutes({ store: {}, query: {}, flow: {}, tasks: {}, settings });
   for (const definition of routePaths) {
+    if (definition.path === '/api/question-set/prompt-settings') {
+      ctx.connection.fetch.register(definition);
+      continue;
+    }
     ctx.connection.fetch.register({ ...definition, async fetch(request) {
       try {
         const value = await initialize();

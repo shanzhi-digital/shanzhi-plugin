@@ -1,15 +1,24 @@
+import { DEFAULT_PROMPT, TOOL_PROTOCOL } from './task-prompts.js';
+
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { publicMessage: message, status }); };
 const json = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
 
-export function createRoutes({ store, query, flow, tasks }) {
+export function createRoutes({ store, query, flow, tasks, settings }) {
   const cleanDrafts = () => { tasks._prune(); flow.prune(tasks.tasks.keys()); };
   const view = task => task ? { ...task, resultState: flow.drafts.get(task.taskId)?.state ?? 'ready' } : null;
   const definitions = [
+    ['prompt-settings', ['GET', 'POST'], (input, request) => {
+      if (!settings) {
+        if (request.method === 'POST') fail('泛化提示词配置服务不可用。', 503);
+        return { prompt: DEFAULT_PROMPT, defaultPrompt: DEFAULT_PROMPT, protocol: TOOL_PROTOCOL };
+      }
+      return request.method === 'GET' ? settings.get() : settings.save(input);
+    }],
     ['questions', ['GET'], () => store.list().then(items => ({ items }))],
     ['sources', ['GET'], () => query.sources().then(items => ({ items }))],
     ['save', ['POST'], input => store.save(input).then(item => ({ item }))],
     ['remove', ['POST'], async input => { await store.remove(input); return { ok: true }; }],
-    ['ai-tasks', ['GET', 'POST'], (input, request) => {
+    ['ai-tasks', ['GET', 'POST'], async (input, request) => {
       cleanDrafts();
       if (request.method === 'GET') {
         const params = new URL(request.url).searchParams;
@@ -27,7 +36,7 @@ export function createRoutes({ store, query, flow, tasks }) {
         values = flow.retry(input.taskId);
       } else {
         if (Object.keys(input).some(key => !['sourceId', 'questions'].includes(key))) fail('泛化参数无效。');
-        values = input;
+        values = { ...input, prompt: settings ? (await settings.get()).prompt : DEFAULT_PROMPT };
       }
       const task = tasks.start(values);
       if (values.previousTaskId) flow.retire(values.previousTaskId);
@@ -53,7 +62,7 @@ export function createRoutes({ store, query, flow, tasks }) {
         request.signal.throwIfAborted();
         return json(await handler(input, request), path === 'ai-tasks' && request.method === 'POST' ? 202 : 200);
       } catch (error) {
-        return json({ error: error.publicMessage || '操作失败，请检查问题集配置或重试。', ...(typeof error.taskId === 'string' ? { taskId: error.taskId } : {}) }, [400, 404, 409, 413, 503].includes(error.status) ? error.status : 400);
+        return json({ error: error.publicMessage || '操作失败，请检查问题集配置或重试。', ...(typeof error.taskId === 'string' ? { taskId: error.taskId } : {}) }, [400, 404, 409, 413, 500, 503].includes(error.status) ? error.status : 400);
       }
     },
   }));
