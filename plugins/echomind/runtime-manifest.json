@@ -1,0 +1,47 @@
+{
+  "version": "0.1.0",
+  "platforms": {
+    "darwin-arm64": {
+      "capture": {
+        "filename": "echomind-capture",
+        "artifact": "echomind-capture-aarch64-apple-darwin",
+        "bytes": 560928,
+        "sha256": "ebdeb7b3589f703cf3416a22fd5c635461681a1422ab4f9e62fe7dc5c9d93c06"
+      },
+      "transcribe": {
+        "filename": "echomind-transcribe",
+        "artifact": "echomind-transcribe-aarch64-apple-darwin",
+        "bytes": 27978048,
+        "sha256": "85da5b7898bcabcd5f311129d43c1ac10f732b36ff168bc8f0552537837f9d7d"
+      }
+    },
+    "darwin-x64": {
+      "capture": {
+        "filename": "echomind-capture",
+        "artifact": "echomind-capture-x86_64-apple-darwin",
+        "bytes": 562496,
+        "sha256": "7fec72c4cf38aae04f260779bc4e0ff66a6a0134605de1139fdaaa55bab4b948"
+      },
+      "transcribe": {
+        "filename": "echomind-transcribe",
+        "artifact": "echomind-transcribe-x86_64-apple-darwin",
+        "bytes": 0,
+        "sha256": ""
+      }
+    },
+    "win32-x64": {
+      "capture": {
+        "filename": "echomind-capture.exe",
+        "artifact": "echomind-capture-x86_64-pc-windows-msvc.exe",
+        "bytes": 0,
+        "sha256": ""
+      },
+      "transcribe": {
+        "filename": "echomind-transcribe.exe",
+        "artifact": "echomind-transcribe-x86_64-pc-windows-msvc.exe",
+        "bytes": 0,
+        "sha256": ""
+      }
+    }
+  }
+}
