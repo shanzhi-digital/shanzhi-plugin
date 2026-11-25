@@ -1,4 +1,7 @@
 - insert:
     - id: sql
       name: 'dsh-sql'
-      config: {}
+      config:
+        internalApi:
+          enabled: true
+          port: 17861

@@ -33,7 +33,7 @@ dsh plugin --profile desktop add '<dsh-data-annotation-0.1.0-local.11.tgz>'
 
 ## 供 Web 后端调用
 
-数据源插件启用 `internalApi` 后，本插件自动把相同业务处理器注册到同一个本机端口，默认示例为 `http://127.0.0.1:17861`。不另外启动监听器或配置凭据，未启用内部端口仍可正常在 DSH 使用。Web 页面经自己的后端调用；同一部署共用插件管理库和 profile，不直接读取 DataHub 的其他数据库。
+数据源插件的默认配置已开启 `internalApi`，本插件自动把相同业务处理器注册到同一个本机端口，默认地址为 `http://127.0.0.1:17861`。不另外启动监听器或配置凭据，关闭内部端口后仍可正常在 DSH 使用。Web 页面经自己的后端调用；同一部署共用插件管理库和 profile，不直接读取 DataHub 的其他数据库。
 
 所有路径以 `/api/data-annotation/` 开头，POST 使用 JSON：
 
