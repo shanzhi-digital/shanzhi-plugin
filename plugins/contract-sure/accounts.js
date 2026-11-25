@@ -35,6 +35,9 @@ const MAX_TRACKED_AUTHORIZATIONS = 10;
 const MAX_POLL_BACKOFF_MS = 30_000;
 const POLL_REQUEST_TIMEOUT_MS = 10_000;
 const REVOKE_TIMEOUT_MS = 10_000;
+// 测试连接时探测 A5 用的占位值：服务器上不存在这个授权请求，只会回「授权请求不存在」。
+const PROBE_REQUEST_ID = 'contract-sure-connection-test';
+const PROBE_POLL_SECRET = 'contract-sure-connection-test-not-a-real-poll-secret';
 const DEFAULT_POLL_INTERVAL_SECONDS = 2;
 const DEFAULT_AUTHORIZATION_TTL_SECONDS = 600;
 const SETTINGS_PATCH_KEYS = new Set(['serverUrl', 'ocrApiUrl', 'ocrApiKey', 'disconnectAccounts']);
@@ -724,7 +727,60 @@ export function createAccountManager(ctx, deps = {}) {
     });
   }
 
-  async function testConnection(signal) {
+  /**
+   * 不带令牌探测一个服务器地址：用一个不存在的授权请求去轮询 A5，不会在服务器上留下任何状态。
+   * 新版履约系统回信封 code 404「授权请求不存在」；还没升级的旧版不认这个接口，回 401/403；
+   * 地址不是履约系统的 /api/v1（例如漏了 /api/v1）时回 HTML 或别的 HTTP 错误。
+   */
+  async function probeServer(serverUrl, signal) {
+    try {
+      await apiClient.pollPluginAuthorization(
+        { serverUrl },
+        { requestId: PROBE_REQUEST_ID, pollSecret: PROBE_POLL_SECRET },
+        requestOptions({ signal, timeoutMs: POLL_REQUEST_TIMEOUT_MS }),
+      );
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof ApiError && error.businessCode === 404) return { ok: true };
+      if (error instanceof ApiError && (error.code === 'UNAUTHORIZED' || error.code === 'FORBIDDEN')) {
+        return { ok: false, message: `能连上服务器，但${NOT_UPGRADED_MESSAGE}。` };
+      }
+      if (error instanceof ApiError && (error.code === 'HTTP_ERROR' || error.code === 'INVALID_JSON')) {
+        return { ok: false, message: '这个地址不是履约系统的接口地址，请确认地址以 /api/v1 结尾，例如 http://服务器地址:7003/api/v1。' };
+      }
+      return { ok: false, message: `连接失败：${safeErrorMessage(error)}` };
+    }
+  }
+
+  /**
+   * 设置页的「测试连接」。serverUrl 是输入框里的地址（可以还没保存）：
+   * - 和已保存的地址不同：账户属于原来的服务器，只探测新地址能不能连上、是否支持插件授权；
+   * - 和已保存的相同或没传：用当前账户调 /auth/me；还没有账户时只探测服务器。
+   */
+  async function testConnection(serverUrl, signal) {
+    await ready;
+    let target = null;
+    if (serverUrl != null && serverUrl !== '') {
+      if (typeof serverUrl !== 'string') return { ok: false, message: '服务器地址必须是字符串。' };
+      try {
+        target = normalizeServerUrl(serverUrl);
+      } catch (error) {
+        return { ok: false, message: safeErrorMessage(error, '服务器地址格式无效。') };
+      }
+    }
+    const config = readConfig();
+    if (target !== null && target !== config.serverUrl) {
+      const probe = await probeServer(target, signal);
+      if (!probe.ok) return probe;
+      return {
+        ok: true,
+        message:
+          config.accounts.length > 0
+            ? '可以连接这个履约系统。保存设置后原来的账户会断开，再点「连接账户」重新授权。'
+            : '可以连接这个履约系统。保存设置后点「连接账户」完成授权。',
+      };
+    }
+
     let result;
     try {
       result = await withBackend((cfg) => apiClient.getMe(cfg, requestOptions({ signal })));
@@ -734,9 +790,13 @@ export function createAccountManager(ctx, deps = {}) {
     if (!result.ok) {
       // 设置页里调用，不用约定 C 那句「点下方卡片」。
       const { reason } = result.authRequired;
+      if (reason === 'no-account') {
+        const probe = await probeServer(config.serverUrl, signal);
+        if (!probe.ok) return probe;
+        return { ok: true, message: '可以连接这个履约系统，还没有连接账户：请点「连接账户」完成浏览器授权。' };
+      }
       let message = '当前账户的授权已失效（可能已被吊销），请重新连接账户。';
-      if (reason === 'no-account') message = '尚未连接履约系统账户，请先点「连接账户」完成浏览器授权。';
-      else if (reason === 'expired') message = '当前账户的授权已过期，请重新连接账户。';
+      if (reason === 'expired') message = '当前账户的授权已过期，请重新连接账户。';
       return { ok: false, message };
     }
     const me = isPlainObject(result.value) ? result.value : {};

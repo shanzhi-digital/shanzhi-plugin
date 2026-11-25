@@ -879,7 +879,9 @@ test('settings page reuses the account panel; changing the server asks first and
       serverUrl: patch.serverUrl || 'http://lvyue.test/api/v1',
       ocr: { apiUrl: 'https://api.deepseek.com/v1/tools/ocr', keyConfigured: patch.ocrApiKey !== '', keyMasked: patch.ocrApiKey === '' ? '' : 'sk-****9f2c' },
     }),
-    testConnection: () => ({ ok: true, message: '连接正常', account: { userId: 7, username: 'zhangsan', realName: '张三', deptName: '财务部' } }),
+    testConnection: ({ serverUrl }) => (serverUrl === 'http://lvyue.test/api/v1'
+      ? { ok: true, message: '连接正常', account: { userId: 7, username: 'zhangsan', realName: '张三', deptName: '财务部' } }
+      : { ok: true, message: '可以连接这个履约系统。保存设置后原来的账户会断开，再点「连接账户」重新授权。' }),
   });
   const store = mod.createAccountStore(() => rpc.connection);
   const services = servicesFor(rpc.connection, { navigation: { openBundle() {} } });
@@ -895,10 +897,33 @@ test('settings page reuses the account panel; changing the server asks first and
   click(findButton(renderer.tree, '测试连接'));
   await renderer.settle();
   assert.equal(rpc.count('testConnection'), 1);
+  assert.deepEqual(plain(rpc.argsOf('testConnection')[0]), { serverUrl: 'http://lvyue.test/api/v1' });
   assert.match(textContent(renderer.tree), /连接正常，当前账户：张三（zhangsan）/);
 
   const serverInput = collectNodes(renderer.tree, (n) => n.type === 'input' && n.props['aria-label'] === '服务器地址')[0];
   serverInput.props.onChange({ target: { value: 'http://new-lvyue.test/api/v1' } });
+  await renderer.settle();
+  assert.doesNotMatch(textContent(renderer.tree), /连接正常，当前账户/, 'editing the address clears the old test result');
+
+  // Testing before saving uses the address in the input, not the saved one.
+  click(findButton(renderer.tree, '测试连接'));
+  await renderer.settle();
+  assert.deepEqual(plain(rpc.argsOf('testConnection')[1]), { serverUrl: 'http://new-lvyue.test/api/v1' });
+  text = textContent(renderer.tree);
+  assert.match(text, /可以连接这个履约系统。保存设置后原来的账户会断开/);
+  assert.doesNotMatch(text, /测试用的是已保存的设置/);
+  assert.equal(rpc.count('saveSettings'), 0, 'testing does not save');
+
+  // A malformed address is rejected before calling the host.
+  serverInput.props.onChange({ target: { value: 'lvyue.test/api/v1' } });
+  await renderer.settle();
+  click(findButton(renderer.tree, '测试连接'));
+  await renderer.settle();
+  assert.equal(rpc.count('testConnection'), 2);
+  assert.match(textContent(renderer.tree), /服务器地址需要以 http:\/\/ 或 https:\/\/ 开头/);
+
+  collectNodes(renderer.tree, (n) => n.type === 'input' && n.props['aria-label'] === '服务器地址')[0]
+    .props.onChange({ target: { value: 'http://new-lvyue.test/api/v1' } });
   await renderer.settle();
   click(findButton(renderer.tree, '保存设置'));
   await renderer.settle();

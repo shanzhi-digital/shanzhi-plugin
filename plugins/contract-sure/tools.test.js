@@ -1134,7 +1134,7 @@ test('event-projection handles surfaceOp replace invalidation and TypertRemoteSe
     assert.deepEqual(plain, {
       getState: ['signal'],
       saveSettings: ['patch', 'signal'],
-      testConnection: ['signal'],
+      testConnection: ['serverUrl', 'signal'],
       startAuthorization: ['signal'],
       pollAuthorization: ['requestId', 'signal'],
       cancelAuthorization: ['requestId', 'signal'],

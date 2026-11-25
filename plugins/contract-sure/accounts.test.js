@@ -1170,3 +1170,62 @@ test('HTTP 503 (database outage) for a plugin token is an ordinary error: the ac
   assert.equal((await manager.testConnection()).ok, true);
   manager.dispose();
 });
+
+test('testConnection tests the address typed in the form, even before it is saved', async () => {
+  const credentials = memoryCredentials();
+  const backend = createBackend();
+  const { manager, configPath } = createManager({ ctx: makeCtx({ credentials }), backend });
+  await manager.saveSettings({ serverUrl: SERVER });
+  const probes = () => backend.calls.filter((call) => call.path === '/auth/plugin-authorize/poll');
+  const NOT_FOUND = { code: 404, message: '授权请求不存在或已过期' };
+
+  // 还没有账户：测已保存的地址时只探测服务器，能连上就算通过。
+  backend.state.pollQueue.push(NOT_FOUND);
+  let tested = await manager.testConnection(SERVER);
+  assert.deepEqual(tested, { ok: true, message: '可以连接这个履约系统，还没有连接账户：请点「连接账户」完成浏览器授权。' });
+
+  await connect(manager, backend, 1);
+  const configBefore = readFileSync(configPath, 'utf8');
+
+  // 输入了还没保存的新地址：探测新地址，不带令牌，不改已保存的设置。
+  backend.state.pollQueue.push(NOT_FOUND);
+  tested = await manager.testConnection('http://new-lvyue.test:7003/api/v1/');
+  assert.deepEqual(tested, { ok: true, message: '可以连接这个履约系统。保存设置后原来的账户会断开，再点「连接账户」重新授权。' });
+  const probe = probes().at(-1);
+  assert.equal(probe.origin, 'http://new-lvyue.test:7003');
+  assert.equal(probe.auth, '');
+  assert.equal(probe.redirect, 'error');
+  assert.equal(readFileSync(configPath, 'utf8'), configBefore);
+
+  // 旧版履约系统不认 A5，回 403。
+  backend.state.pollQueue.push({ httpStatus: 403 });
+  tested = await manager.testConnection('http://old-lvyue.test/api/v1');
+  assert.equal(tested.ok, false);
+  assert.equal(tested.message, `能连上服务器，但${NOT_UPGRADED_MESSAGE}。`);
+
+  // 地址不是履约系统的 /api/v1（例如漏了 /api/v1，前端 nginx 回 405）。
+  backend.state.pollQueue.push({ httpStatus: 405 });
+  tested = await manager.testConnection('http://new-lvyue.test:7003');
+  assert.equal(tested.ok, false);
+  assert.match(tested.message, /不是履约系统的接口地址.*\/api\/v1/u);
+
+  // 网络不通：只给固定文案。
+  backend.state.throwOn = { path: '/auth/plugin-authorize/poll', error: new TypeError('fetch failed: ECONNREFUSED 10.0.0.9'), times: 1 };
+  tested = await manager.testConnection('http://unreachable.test/api/v1');
+  assert.equal(tested.ok, false);
+  assert.match(tested.message, /^连接失败：无法连接履约系统/u);
+  assert.doesNotMatch(tested.message, /ECONNREFUSED|10\.0\.0\.9/u);
+
+  // 地址格式不对：不发请求。
+  const before = backend.calls.length;
+  tested = await manager.testConnection('ftp://lvyue.test/api/v1');
+  assert.deepEqual(tested, { ok: false, message: '服务器地址仅支持 HTTP/HTTPS 协议。' });
+  assert.equal(backend.calls.length, before);
+
+  // 和已保存的地址相同（多了结尾斜杠也算相同）：用当前账户测。
+  tested = await manager.testConnection(`${SERVER}/`);
+  assert.equal(tested.ok, true);
+  assert.equal(tested.account.userId, 1);
+  assert.equal(backend.calls.at(-1).path, '/auth/me');
+  manager.dispose();
+});

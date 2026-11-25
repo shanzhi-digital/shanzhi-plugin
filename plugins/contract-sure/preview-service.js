@@ -106,8 +106,8 @@ export function createContractSureRemoteHandlers(ctx, deps = {}) {
       return guard(() => accounts.saveSettings(patch));
     },
 
-    testConnection(signal) {
-      return guard(() => accounts.testConnection(signal));
+    testConnection(serverUrl, signal) {
+      return guard(() => accounts.testConnection(serverUrl, signal));
     },
 
     startAuthorization(signal) {
@@ -301,9 +301,9 @@ export function registerContractSureRemote(ctx, deps = {}) {
       }
     }
 
-    async testConnection(signal) {
+    async testConnection(serverUrl, signal) {
       try {
-        return await handlers.testConnection(signal);
+        return await handlers.testConnection(serverUrl, signal);
       } catch (error) {
         throw toRemoteError(error);
       }

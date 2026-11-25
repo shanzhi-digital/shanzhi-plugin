@@ -1397,18 +1397,22 @@ window.__ModuleLoader__.load({
         });
       }
 
+      // 测试输入框里的地址（可以还没保存）；输入框为空时测已保存的地址。
       function handleTest() {
         if (busy) return;
+        if (nextServer && !isHttpUrl(nextServer)) {
+          setResult({ tone: "err", text: "服务器地址需要以 http:// 或 https:// 开头。" });
+          return;
+        }
         setBusy("test");
         setResult(null);
-        callRpc(connection(), "testConnection", {}).then(function (res) {
+        callRpc(connection(), "testConnection", { serverUrl: nextServer || state.serverUrl || "" }).then(function (res) {
           setBusy("");
-          var suffix = dirty ? "（测试用的是已保存的设置）" : "";
           if (res && res.ok) {
             var who = res.account ? fullName(res.account) : "";
-            setResult({ tone: "ok", text: (who ? "连接正常，当前账户：" + who : res.message || "连接正常。") + suffix });
+            setResult({ tone: "ok", text: who ? "连接正常，当前账户：" + who : res.message || "连接正常。" });
           } else {
-            setResult({ tone: "err", text: ((res && res.message) || "连接失败，请检查服务器地址和账户。") + suffix });
+            setResult({ tone: "err", text: (res && res.message) || "连接失败，请检查服务器地址和账户。" });
           }
         }, function (err) {
           setBusy("");
@@ -1465,7 +1469,7 @@ window.__ModuleLoader__.load({
             placeholder: "http://履约系统地址/api/v1",
             value: serverUrl,
             disabled: !!busy,
-            onChange: function (e) { setServerUrl(e.target.value); },
+            onChange: function (e) { setServerUrl(e.target.value); setResult(null); },
           }),
           accounts.length > 0 && patch.serverUrl != null
             ? h("span", { className: "csu-label" }, "更换服务器地址会断开全部账户。")
