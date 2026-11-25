@@ -26,6 +26,7 @@ window.__ModuleLoader__.load({
 .dsh-qs input[type=checkbox]{width:16px;height:16px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:0}
 .dsh-qs .qs-header,.dsh-qs .qs-row,.dsh-qs .qs-actions,.dsh-qs .qs-filters,.dsh-qs .qs-pagination{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .dsh-qs .qs-header,.dsh-qs .qs-row,.dsh-qs .qs-toolbar,.dsh-qs .qs-pagination{justify-content:space-between}.dsh-qs .qs-header{padding:22px 24px;border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base)}.dsh-qs .qs-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}.dsh-qs .qs-filters{gap:10px}.dsh-qs .qs-filters input{width:min(260px,100%)}.dsh-qs .qs-filters select{width:auto;max-width:260px}.dsh-qs .qs-selection{margin-bottom:10px;min-height:30px}
+.dsh-qs .qs-selection-search{display:flex;align-items:center;gap:20px;flex:1;min-width:0;flex-wrap:wrap}.dsh-qs .qs-selection-search input{width: min(376px,100%);height:36px}.dsh-qs .qs-selection>.qs-actions{margin-left:auto}
 .dsh-qs .qs-source-row{margin-bottom:12px}.dsh-qs .qs-source-row select{width:auto;max-width:100%;height:36px}.dsh-qs .qs-toolbar input,.dsh-qs .qs-toolbar-actions>.qs-button{height:36px}.dsh-qs .qs-toolbar-actions{flex-wrap:nowrap;margin-left:auto}.dsh-qs .qs-filters{flex-shrink:0}
 .dsh-qs .qs-origin-filter{display:inline-flex;align-items:stretch;height:36px;flex-shrink:0;gap:2px;padding:3px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:var(--dsw-alias-bg-base)}.dsh-qs .qs-origin-filter button{border:1px solid transparent;border-radius:5px;padding:4px 12px;background:transparent;color:var(--dsw-alias-label-secondary);white-space:nowrap;line-height:1.5}.dsh-qs .qs-origin-filter button:hover{background:var(--dsw-alias-interactive-bg-hover)}.dsh-qs .qs-origin-filter button[aria-pressed=true]{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-border-l4);color:var(--dsw-alias-label-primary);font-weight:500}
 .dsh-qs .qs-muted{color:var(--dsw-alias-label-secondary);font-size:12px}.dsh-qs .qs-button{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--dsw-alias-border-l4);border-radius:7px;padding:6px 12px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);white-space:nowrap;line-height:1.5}
@@ -315,7 +316,6 @@ window.__ModuleLoader__.load({
             !sources.length && h('option', { value: '' }, '暂无数据源'), sources.map((source) => h('option', { key: source.id, value: source.id }, source.name)))),
         h('div', { className: 'qs-toolbar' },
           h('div', { className: 'qs-filters' },
-            h('input', { type: 'search', 'aria-label': '搜索问题或答案', placeholder: '搜索问题或答案', value: search, onChange: (event) => { setSearch(event.target.value); setPage(1); } }),
             h('div', { className: 'qs-origin-filter', role: 'group', 'aria-label': '问题来源' },
               [['all', '全部'], ['original', '用户'], ['generated', 'AI']].map(([value, label]) => button(label, () => { setOriginFilter(value); setPage(1); }, { key: value, 'aria-pressed': originFilter === value })))),
           h('div', { className: 'qs-actions qs-toolbar-actions' },
@@ -323,7 +323,10 @@ window.__ModuleLoader__.load({
             button('泛化提示词', () => setDialog('prompt')),
             button('批量评测', undefined, { disabled: true, title: '暂未开放' }),
             button('新增问题', () => setEditing({ question: null }), { disabled: locked, className: 'qs-button primary' }))),
-        h('div', { className: 'qs-row qs-selection' }, h('span', { className: 'qs-muted' }, `已选 ${selected.length} / ${items.length} 个问题`),
+        h('div', { className: 'qs-row qs-selection' },
+          h('div', { className: 'qs-selection-search' },
+            h('span', { className: 'qs-muted' }, `已选 ${selected.length} / ${items.length} 个问题`),
+            h('input', { type: 'search', 'aria-label': '搜索问题或答案', placeholder: '搜索问题或答案', value: search, onChange: (event) => { setSearch(event.target.value); setPage(1); } })),
           h('div', { className: 'qs-actions' },
             button('清除所有勾选', () => setChosen(new Set()), { disabled: locked || !selected.length }),
             button('批量删除', () => setDeleting(selected), { disabled: locked || !selected.length, className: 'qs-button danger' }))),

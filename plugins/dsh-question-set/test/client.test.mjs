@@ -153,7 +153,7 @@ test('registers an isolated question-set page and loads only the new API', async
   assert.equal(ui.nodes().some((node) => node.type === 'dialog'), false);
 });
 
-test('source occupies its own first row while search and origin filters align with toolbar actions', async (t) => {
+test('source stays above the toolbar and search follows the selection count beside bulk actions', async (t) => {
   const ui = await mountClient(); t.after(ui.unmount);
   const sourceRow = ui.nodes().find(node => node.props.className === 'qs-source-row');
   const toolbar = ui.nodes().find(node => node.props.className === 'qs-toolbar');
@@ -161,8 +161,13 @@ test('source occupies its own first row while search and origin filters align wi
   assert.equal(sourceRow.props.children[0].props['aria-label'], '泛化数据源');
   assert.ok(ui.nodes().indexOf(sourceRow) < ui.nodes().indexOf(toolbar));
   assert.equal(filters.props.className, 'qs-filters');
-  assert.equal(filters.props.children[0].props['aria-label'], '搜索问题或答案');
-  assert.equal(filters.props.children[1].props['aria-label'], '问题来源');
+  assert.equal(filters.props.children[0].props['aria-label'], '问题来源');
+  const selection = ui.nodes().find(node => node.props.className === 'qs-row qs-selection');
+  const searchGroup = selection.props.children[0];
+  assert.equal(searchGroup.props.className, 'qs-selection-search');
+  assert.match(ui.text(searchGroup.props.children[0]), /已选 0 \/ 13 个问题/);
+  assert.equal(searchGroup.props.children[1].props['aria-label'], '搜索问题或答案');
+  assert.equal(ui.text(selection.props.children[1]), '清除所有勾选批量删除');
   assert.equal(actions.props.className, 'qs-actions qs-toolbar-actions');
   assert.equal(ui.text(actions), '泛化问题泛化提示词批量评测新增问题');
 });
