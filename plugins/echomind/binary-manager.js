@@ -13,6 +13,7 @@ import {
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { dirname, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { ApiError } from './api-client.js';
 
@@ -170,6 +171,7 @@ export function createBinaryManager({
     const dirs = [];
     if (platform === 'darwin') {
       dirs.push('/Applications/EchoMind.app/Contents/MacOS');
+      dirs.push(join(homedir(), 'Applications', 'EchoMind.app', 'Contents', 'MacOS'));
     } else if (platform === 'win32' && process.env.LOCALAPPDATA) {
       dirs.push(join(process.env.LOCALAPPDATA, 'EchoMind'));
     }

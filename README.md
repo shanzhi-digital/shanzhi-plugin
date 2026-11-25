@@ -11,7 +11,7 @@
 | [问数增强](plugins/datahub-query-enhance/README.md) | `@local/datahub-query-enhance` | 0.1.2 | 引导读取公共查询规范、设置中文结果列名、输出数据洞察，并自动显示指标可信状态 |
 | [公文全流程处理专家](plugins/gongwen/README.md) | `gongwen-skill` | 2.15.0-local.3 | 上游公文工具的本地适配版本，提供生成、检查、修复、模板与版式处理及 DSH 集成 |
 | [履约无忧](plugins/contract-sure/README.md) | `@local/contract-sure` | 0.2.1 | 浏览器授权连接履约系统账户（多账户、可吊销），合同 PDF/扫描件识别核对卡、三流流水批量对账、履约看板趋势分析及原件右侧预览 |
-| [EchoMind 会议纪要](plugins/echomind/README.md) | `@local/echomind` | 0.1.0 | 双轨实时录音、本机离线转写与声纹识别、带出处结构化纪要、待办确认推飞书、时间轴双轨音频回放与 DataHub 知识库同步 |
+| [EchoMind 会议纪要](plugins/echomind/README.md) | `@local/echomind` | 0.1.1 | 双轨实时录音、本机离线转写与声纹识别、带出处结构化纪要、待办确认推飞书、时间轴双轨音频回放与 DataHub 知识库同步 |
 
 ## 安装与升级
 

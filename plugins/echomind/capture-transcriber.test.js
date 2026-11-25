@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createWorkspacePaths } from './workspace-paths.js';
@@ -150,6 +150,79 @@ test('transcriberManager enforces single concurrency, reports stages, and maps m
   writeFileSync(join(recDir, 'transcript.json'), JSON.stringify(transcript));
   const voices = await tr.extractVoices(recDir);
   assert.equal(voices[0].vector.length, 192);
+});
+
+test('transcriberManager reuses bundled EchoMind.app models without downloading when local DSH models dir is incomplete or mismatched', async () => {
+  const fakeAppRoot = join(dir, 'FakeEchoMind.app', 'Contents');
+  const fakeMacOS = join(fakeAppRoot, 'MacOS');
+  const fakeBundledModels = join(fakeAppRoot, 'Resources', 'models');
+  mkdirSync(fakeMacOS, { recursive: true });
+  for (const id of ['asr', 'vad', 'segmentation', 'embedding']) {
+    mkdirSync(join(fakeBundledModels, id), { recursive: true });
+    writeFileSync(join(fakeBundledModels, id, '.ready'), 'legacy-pin\n', 'utf8');
+  }
+
+  let downloadCalled = false;
+  const stubBin = join(fakeMacOS, 'echomind-transcribe');
+  writeFileSync(
+    stubBin,
+    `#!/usr/bin/env node
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const args = process.argv.slice(2);
+    const mdIdx = args.indexOf('--models-dir');
+    const modelsDir = mdIdx >= 0 ? args[mdIdx + 1] : '';
+    if (args[0] === 'models') {
+      const ok = ['asr', 'vad', 'segmentation', 'embedding'].every((id) => {
+        try { return fs.readFileSync(path.join(modelsDir, id, '.ready'), 'utf8').startsWith('legacy-pin'); }
+        catch { return false; }
+      });
+      console.log(JSON.stringify({ ready: ok, downloadBytes: ok ? 0 : 28281138, models: [] }));
+      process.exit(0);
+    }
+    if (args[0] === 'download') {
+      console.log(JSON.stringify({ type: 'error', kind: 'download', message: 'should not download when bundled models exist' }));
+      process.exit(1);
+    }
+    if (args[0] === 'run') {
+      console.log(JSON.stringify({ type: 'done', transcript: { meetingId: 'm-reuse', language: 'zh', scene: 'online', speakers: [], segments: [{ id: 'seg-0001', speakerId: 'S1', track: 'mic', start: 0, end: 1000, text: modelsDir }] } }));
+      process.exit(0);
+    }
+    `,
+    'utf8',
+  );
+  chmodSync(stubBin, 0o755);
+
+  const paths = createWorkspacePaths({ dataRoot: join(dir, 'data-reuse') });
+  // Simulate colleague's machine: 3/4 models downloaded in DSH modelsDir + mismatched embedding stamp
+  for (const id of ['asr', 'vad', 'segmentation']) {
+    mkdirSync(join(paths.modelsDir, id), { recursive: true });
+    writeFileSync(join(paths.modelsDir, id, '.ready'), 'legacy-pin\n', 'utf8');
+  }
+  mkdirSync(join(paths.modelsDir, 'embedding'), { recursive: true });
+  writeFileSync(join(paths.modelsDir, 'embedding', '.ready'), 'wrong-pin\n', 'utf8');
+
+  const tr = createTranscriberManager({
+    paths,
+    platform: 'darwin',
+    binaryManager: { resolveBinary: () => ({ ready: true, supported: true, path: stubBin, source: 'echomind-app' }) },
+  });
+
+  const status = await tr.checkModels();
+  assert.equal(status.ready, true);
+  assert.equal(status.downloadBytes, 0);
+
+  // Calling downloadModels must return immediately without invoking binary download
+  const dl = await tr.downloadModels();
+  assert.equal(dl.ready, true);
+  assert.equal(downloadCalled, false);
+
+  // Transcribe must pass the bundled EchoMind.app Resources/models directory
+  const recDir = join(dir, 'rec-reuse');
+  paths.ensureDir(recDir, 0o755);
+  writeFileSync(join(recDir, 'manifest.json'), JSON.stringify({ version: 1, segments: [] }));
+  const transcript = await tr.transcribe('rec-reuse', recDir);
+  assert.equal(transcript.segments[0].text, fakeBundledModels);
 });
 
 test('audioImporter slices standard 16kHz PCM WAV into manifest + 60s segments and rejects bad extensions', async () => {
