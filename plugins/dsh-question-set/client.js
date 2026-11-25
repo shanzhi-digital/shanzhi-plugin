@@ -16,25 +16,25 @@ window.__ModuleLoader__.load({
       return next;
     };
     const css = `
-.dsh-qs{height:100%;overflow:auto;padding:26px clamp(12px,3vw,44px) 40px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif}
-.dsh-qs,.dsh-qs *{box-sizing:border-box}.dsh-qs .qs-wrap{max-width:1240px;margin:auto;min-width:0}
-.dsh-qs h1,.dsh-qs h2,.dsh-qs p{margin:0}.dsh-qs h1{font-size:22px;font-weight:600}.dsh-qs h2{font-size:17px;font-weight:600}
+.dsh-qs{height:100%;overflow:auto;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif}
+.dsh-qs,.dsh-qs *{box-sizing:border-box}.dsh-qs .qs-wrap{width:100%;min-width:0}.dsh-qs .qs-content{padding:22px 24px 32px;background:var(--dsw-alias-bg-module-platform);min-height:calc(100% - 78px)}
+.dsh-qs h1,.dsh-qs h2,.dsh-qs h3,.dsh-qs p{margin:0}.dsh-qs h1{font-size:22px;font-weight:600}.dsh-qs h2{font-size:17px;font-weight:600}.dsh-qs .qs-related-title{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);margin-bottom:8px}
 .dsh-qs button,.dsh-qs input,.dsh-qs select,.dsh-qs textarea{font:inherit;color-scheme:inherit}.dsh-qs button{cursor:pointer}.dsh-qs button:disabled{cursor:default;opacity:.5}
 .dsh-qs :is(button,input,select,textarea):focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
 .dsh-qs input:not([type=checkbox]),.dsh-qs select,.dsh-qs textarea{width:100%;min-width:0;border:1px solid var(--dsw-alias-border-l4);border-radius:7px;padding:7px 10px;background:var(--dsw-specific-input-major);color:var(--dsw-alias-label-primary)}
 .dsh-qs select option{background:var(--dsw-specific-input-major);color:var(--dsw-alias-label-primary)}.dsh-qs textarea{resize:vertical}
 .dsh-qs input[type=checkbox]{width:16px;height:16px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:0}
 .dsh-qs .qs-header,.dsh-qs .qs-row,.dsh-qs .qs-actions,.dsh-qs .qs-filters,.dsh-qs .qs-pagination{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.dsh-qs .qs-header,.dsh-qs .qs-row,.dsh-qs .qs-pagination{justify-content:space-between}.dsh-qs .qs-header{gap:16px;margin:0 0 16px}.dsh-qs .qs-filters{margin:12px 0}.dsh-qs .qs-filters input{width:min(260px,100%)}.dsh-qs .qs-actions select{width:auto;max-width:260px}
+.dsh-qs .qs-header,.dsh-qs .qs-row,.dsh-qs .qs-toolbar,.dsh-qs .qs-pagination{justify-content:space-between}.dsh-qs .qs-header{padding:22px 24px;border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base)}.dsh-qs .qs-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}.dsh-qs .qs-filters{gap:10px}.dsh-qs .qs-filters input{width:min(260px,100%)}.dsh-qs .qs-filters select{width:auto;max-width:260px}.dsh-qs .qs-selection{margin-bottom:10px;min-height:30px}
 .dsh-qs .qs-muted{color:var(--dsw-alias-label-secondary);font-size:12px}.dsh-qs .qs-button{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--dsw-alias-border-l4);border-radius:7px;padding:6px 12px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);white-space:nowrap;line-height:1.5}
 .dsh-qs .qs-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.dsh-qs .qs-button.primary{background:var(--dsw-alias-button-primary-fill);border-color:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}.dsh-qs .qs-button.danger{color:var(--dsw-alias-state-error-primary)}
 .dsh-qs .qs-table-wrap{overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:var(--dsw-alias-bg-layer-1)}.dsh-qs table{border-collapse:collapse;width:100%;min-width:780px;text-align:left;font-size:13px;table-layout:fixed;color:var(--dsw-alias-label-primary)}
-.dsh-qs th{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform);white-space:nowrap}.dsh-qs th,.dsh-qs td{padding:10px 12px;border-bottom:1px solid var(--dsw-alias-border-l2);vertical-align:top;overflow-wrap:anywhere}.dsh-qs tbody tr:last-child td{border-bottom:0}.dsh-qs th:first-child{width:44px}.dsh-qs th:last-child{width:126px}.dsh-qs .qs-results th:last-child{width:28%}
+.dsh-qs th{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform);white-space:nowrap}.dsh-qs th,.dsh-qs td{padding:12px 14px;border-bottom:1px solid var(--dsw-alias-border-l2);vertical-align:middle;overflow-wrap:anywhere}.dsh-qs tbody tr:last-child td{border-bottom:0}.dsh-qs tbody tr:nth-child(even){background:var(--dsw-alias-bg-base)}.dsh-qs th:first-child{width:44px}.dsh-qs th:last-child{width:160px}.dsh-qs .qs-main-table th:nth-child(4){width:140px}.dsh-qs .qs-main-table th:nth-child(5){width:100px}.dsh-qs .qs-results th:last-child{width:28%}.dsh-qs .qs-assessment{color:var(--dsw-alias-label-secondary)}.dsh-qs .qs-row-actions .qs-evaluate{border:0;background:transparent;padding:3px 0}
 .dsh-qs .qs-empty{padding:32px 12px;text-align:center;color:var(--dsw-alias-label-secondary)}.dsh-qs .qs-text{white-space:pre-wrap;overflow-wrap:anywhere}.dsh-qs .qs-tag{display:inline-block;border:1px solid var(--dsw-alias-border-l2);border-radius:5px;padding:1px 6px;font-size:11px;color:var(--dsw-alias-label-secondary);margin:4px 5px 0 0}
 .dsh-qs .qs-pagination{margin-top:10px}.dsh-qs .qs-notice{padding:9px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:7px;background:var(--dsw-alias-interactive-bg-hover-danger);margin:8px 0 12px;overflow-wrap:anywhere}.dsh-qs .qs-error{color:var(--dsw-alias-state-error-primary)}
 .dsh-qs .qs-result{margin-top:24px}.dsh-qs .qs-result h2{margin:16px 0 10px}.dsh-qs .qs-status{margin:16px 0}.dsh-qs .qs-links{display:grid;gap:7px}.dsh-qs .qs-links strong{font-weight:500}.dsh-qs .qs-row-actions{display:flex;gap:6px}.dsh-qs .qs-row-actions button{padding:3px 8px;font-size:12px}
 .dsh-qs .qs-modal{width:min(620px,calc(100% - 24px));max-height:calc(100dvh - 24px);border:1px solid var(--dsw-alias-border-l4);border-radius:12px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);padding:0;box-shadow:0 20px 80px rgb(0 0 0 / .24)}.dsh-qs .qs-modal::backdrop{background:rgb(0 0 0 / .43)}.dsh-qs .qs-modal[open]{display:flex;flex-direction:column}.dsh-qs .qs-modal-head,.dsh-qs .qs-modal-body,.dsh-qs .qs-modal-footer{padding:16px 20px}.dsh-qs .qs-modal-head{border-bottom:1px solid var(--dsw-alias-border-l2)}.dsh-qs .qs-modal-body{overflow:auto}.dsh-qs .qs-modal-footer{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end}.dsh-qs .qs-field{display:block;margin-bottom:14px}.dsh-qs .qs-field>span{display:block;font-size:12px;color:var(--dsw-alias-label-secondary);margin-bottom:5px}.dsh-qs .qs-delete-list{padding-left:22px;max-height:240px;overflow:auto}
-@media(max-width:650px){.dsh-qs th,.dsh-qs td{padding:8px 10px}.dsh-qs .qs-modal-head,.dsh-qs .qs-modal-body,.dsh-qs .qs-modal-footer{padding:12px}}
+@media(max-width:650px){.dsh-qs .qs-header{padding:16px}.dsh-qs .qs-content{padding:16px 12px 24px}.dsh-qs .qs-toolbar>div{width:100%}.dsh-qs th,.dsh-qs td{padding:8px 10px}.dsh-qs .qs-modal-head,.dsh-qs .qs-modal-body,.dsh-qs .qs-modal-footer{padding:12px}}
     `;
     async function api(operation, input, signal) {
       const options = input === undefined ? { method: 'GET' } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) };
@@ -55,15 +55,14 @@ window.__ModuleLoader__.load({
         ref: (input) => { if (input) input.indeterminate = count > 0 && count < rows.length; } });
     }
     function DataTable({ labels, rows, testId, results }) {
-      return h('div', { className: 'qs-table-wrap' }, h('table', { 'data-testid': testId, className: results ? 'qs-results' : undefined },
+      return h('div', { className: 'qs-table-wrap' }, h('table', { 'data-testid': testId, className: results ? 'qs-results' : 'qs-main-table' },
         h('thead', null, h('tr', null, labels.map((label, index) => h('th', { key: index, scope: 'col' }, label)))),
         h('tbody', null, rows.length ? rows : h('tr', null, cell('暂无问题', { colSpan: labels.length, className: 'qs-empty' })))));
     }
     function TableLinks({ links = [] }) {
       return links.length ? h('div', { className: 'qs-links' }, links.map((entry, index) => h('div', { key: `${entry.sourceId || ''}:${entry.schema || ''}:${entry.tableName}:${index}` },
-        h('strong', null, [entry.schema, entry.tableName].filter(Boolean).join('.') || '—'),
+        h('strong', null, entry.tableName || '—'),
         entry.sourceComment && h('div', { className: 'qs-muted' }, entry.sourceComment),
-        entry.sourceName && h('div', { className: 'qs-muted' }, entry.sourceName),
         entry.valid === false && h('span', { className: 'qs-tag' }, '关联待重新查询')))) : h('span', { className: 'qs-muted' }, '—');
     }
     function Dialog({ title, onClose, busy, children, footer, formProps, testId }) {
@@ -99,7 +98,7 @@ window.__ModuleLoader__.load({
       const changeText = value => { setText(value); if (question && value !== question.text) setAnswer(''); };
       return h(Dialog, { title: question ? '编辑问题' : '新增问题', onClose, busy, testId: 'question-dialog', formProps: { onSubmit: (event) => void save(event) },
         footer: h(React.Fragment, null, button('取消', onClose, { disabled: busy }), h('button', { type: 'submit', className: 'qs-button primary', disabled: busy }, busy ? '正在保存…' : '保存')) },
-      notice(error), field('问题', text, changeText, { required: true, autoFocus: true }), field('答案（选填）', answer, setAnswer), question && h(TableLinks, { links: question.links }));
+      notice(error), field('问题', text, changeText, { required: true, autoFocus: true }), field('答案（选填）', answer, setAnswer), question && h('section', { 'aria-label': '关联表' }, h('h3', { className: 'qs-related-title' }, '关联表'), h(TableLinks, { links: question.links })));
     }
     function DeleteDialog({ items, onClose, onRemoved }) {
       const [pending, setPending] = useState(items), [busy, setBusy] = useState(false), [error, setError] = useState(null);
@@ -244,22 +243,29 @@ window.__ModuleLoader__.load({
       const rows = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize).map((item) => h('tr', { key: item.id },
         cell(check(`选择问题 ${item.text}`, chosen.has(item.id), (value) => setChosen((current) => withChecked(current, [item.id], value)), { disabled: locked })),
         cell(h('div', null, h('div', { className: 'qs-text' }, item.text), h('span', { className: 'qs-tag' }, origin(item)))),
-        cell(h('div', { className: 'qs-text' }, item.answer || '—')), cell(h(TableLinks, { links: item.links })),
-        cell(h('div', { className: 'qs-row-actions' }, button('编辑', () => setEditing({ question: item }), { disabled: locked, 'aria-label': `编辑 ${item.text}` }),
+        cell(h('div', { className: 'qs-text' }, item.answer || '—')),
+        cell(h('span', { className: 'qs-assessment' }, '—')), cell(h('span', { className: 'qs-assessment' }, '—')),
+        cell(h('div', { className: 'qs-row-actions' }, button('评测', undefined, { disabled: true, className: 'qs-button qs-evaluate', 'aria-label': `评测 ${item.text}`, title: '暂未开放' }), button('编辑', () => setEditing({ question: item }), { disabled: locked, 'aria-label': `编辑 ${item.text}` }),
           button('删除', () => setDeleting([item]), { disabled: locked, 'aria-label': `删除 ${item.text}`, className: 'qs-button danger' })))));
-      return h('div', { className: 'dsh-qs', 'data-testid': 'question-set-page' }, h('style', null, css), h('div', { className: 'qs-wrap' },
-        h('header', { className: 'qs-header' }, h('h1', null, '问题集'), h('div', { className: 'qs-actions' },
-          h('select', { 'aria-label': '泛化数据源', value: sourceId, disabled: locked || hasResults, onChange: (event) => { acceptTask(null); setSourceId(event.target.value); setError(null); } },
-            !sources.length && h('option', { value: '' }, '暂无数据源'), sources.map((source) => h('option', { key: source.id, value: source.id }, source.name))),
-          button(busy === 'start' ? '正在启动…' : '泛化问题', start, { className: 'qs-button primary', disabled: locked || !sourceId || !selected.length || hasResults }),
-          button('新增问题', () => setEditing({ question: null }), { disabled: locked }))),
-        notice(error), h('div', { className: 'qs-row' }, h('div', { className: 'qs-filters' }, h('input', { type: 'search', 'aria-label': '搜索问题或答案', placeholder: '搜索问题或答案', value: search, onChange: (event) => { setSearch(event.target.value); setPage(1); } })),
-          h('div', { className: 'qs-actions' }, h('span', { className: 'qs-muted' }, `已选 ${selected.length} / ${items.length} 个问题`),
+      return h('div', { className: 'dsh-qs', 'data-testid': 'question-set-page' }, h('style', null, css),
+        h('header', { className: 'qs-header' }, h('h1', null, '问题集')),
+        h('div', { className: 'qs-content' }, h('div', { className: 'qs-wrap' },
+        notice(error), h('div', { className: 'qs-toolbar' },
+          h('div', { className: 'qs-filters' },
+            h('input', { type: 'search', 'aria-label': '搜索问题或答案', placeholder: '搜索问题或答案', value: search, onChange: (event) => { setSearch(event.target.value); setPage(1); } }),
+            h('select', { 'aria-label': '泛化数据源', value: sourceId, disabled: locked || hasResults, onChange: (event) => { acceptTask(null); setSourceId(event.target.value); setError(null); } },
+              !sources.length && h('option', { value: '' }, '暂无数据源'), sources.map((source) => h('option', { key: source.id, value: source.id }, source.name)))),
+          h('div', { className: 'qs-actions' },
+            button(busy === 'start' ? '正在启动…' : '泛化问题', start, { disabled: locked || !sourceId || !selected.length || hasResults }),
+            button('批量评测', undefined, { disabled: true, title: '暂未开放' }),
+            button('新增问题', () => setEditing({ question: null }), { disabled: locked, className: 'qs-button primary' }))),
+        h('div', { className: 'qs-row qs-selection' }, h('span', { className: 'qs-muted' }, `已选 ${selected.length} / ${items.length} 个问题`),
+          h('div', { className: 'qs-actions' },
             button('清除所有勾选', () => setChosen(new Set()), { disabled: locked || !selected.length }),
             button('批量删除', () => setDeleting(selected), { disabled: locked || !selected.length, className: 'qs-button danger' }))),
         loading ? h('p', { role: 'status' }, '正在加载…') : h(DataTable, { testId: 'questions-table', labels: [
           h(SelectAll, { label: '全选当前筛选问题', rows: filtered, chosen, disabled: locked, onChange: (value) => setChosen((current) => withChecked(current, filtered.map(({ id }) => id), value)) }),
-          '问题', '答案', '关联表', '操作'], rows }),
+          '问题', '答案', '最近评测准确率', '通过状态', '操作'], rows }),
         h('nav', { className: 'qs-pagination', 'aria-label': '问题分页' }, h('span', { className: 'qs-muted' }, `${filtered.length} 条 · 第 ${currentPage} / ${lastPage} 页`),
           h('div', { className: 'qs-actions' }, button('上一页', () => setPage(currentPage - 1), { disabled: currentPage === 1 }), button('下一页', () => setPage(currentPage + 1), { disabled: currentPage === lastPage }))),
         task && h('section', { className: 'qs-result', 'data-testid': 'task-results' },
@@ -270,7 +276,7 @@ window.__ModuleLoader__.load({
           !active(task) && h('div', { className: 'qs-actions qs-status' }, hasResults && task.status === 'succeeded' && button('保存所选结果', saveResults, { className: 'qs-button primary', disabled: !!busy || !validUpdates.length && !validCandidates.length }),
             hasFailures && task.status === 'succeeded' && button('重新处理失败', retry, { disabled: !!busy }), button('丢弃结果', discard, { disabled: !!busy }))),
         editing && h(QuestionDialog, { question: editing.question, onClose: () => setEditing(null), onSaved: async (signal) => { await refreshQuestions(signal); if (!signal.aborted) setEditing(null); } }),
-        deleting && h(DeleteDialog, { items: deleting, onClose: () => setDeleting(null), onRemoved: (id) => { setItems((current) => current.filter((item) => item.id !== id)); setChosen((current) => withChecked(current, [id], false)); } })));
+        deleting && h(DeleteDialog, { items: deleting, onClose: () => setDeleting(null), onRemoved: (id) => { setItems((current) => current.filter((item) => item.id !== id)); setChosen((current) => withChecked(current, [id], false)); } }))));
     }
     function apply(ctx) {
       const openSession = (id) => ctx.get?.('uiWorkspace')?.openSession?.(id);

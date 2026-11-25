@@ -8,7 +8,7 @@ const question = (index) => ({ id: `q${index}`, version: 1, text: `问题 ${inde
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 const task = (status = 'running', result = null, id = 'task-1') => ({ taskId: id, sourceId: 's1', status, startedAt: '2026-05-01T00:00:00Z', finishedAt: status === 'running' || status === 'cancelling' ? null : '2026-05-01T00:00:03Z', sessionId: 'session-1', result, error: null });
 const result = () => ({ updates: [{ id: 'q1', text: '问题 1', answer: '补答结果', links: [{ tableName: 'orders', schema: 'sales', sourceName: '业务库' }] }], candidates: [
-  { id: 'c1', text: '新增问题 A', answer: '查询结果 A', links: [{ tableName: 'customers', schema: 'crm', sourceName: '客户库' }] },
+  { id: 'c1', text: '新增问题 A', answer: '查询结果 A', links: [{ tableName: 'customers', schema: 'crm', sourceName: '客户库', sourceComment: '客户基础信息' }] },
   { id: 'c2', text: '新增问题 B', answer: '', links: [], error: 'SQL 查询失败' },
 ] });
 
@@ -135,9 +135,18 @@ test('registers an isolated question-set page and loads only the new API', async
   assert.equal(calls(ui, 'questions')[0].request.method, 'GET'); assert.equal(calls(ui, 'sources').length, 1);
   assert.equal(ui.control('选择问题 问题 1').props.checked, false);
   assert.equal(ui.namedButton('泛化问题').props.disabled, true);
-  assert.match(ui.text(table(ui, 'questions-table')), /问题.*答案.*关联表.*操作/);
-  assert.match(ui.text(table(ui, 'questions-table')), /sales.orders业务库/);
+  assert.match(ui.text(table(ui, 'questions-table')), /问题.*答案.*最近评测准确率.*通过状态.*操作/);
+  assert.doesNotMatch(ui.text(table(ui, 'questions-table')), /关联表|orders|业务库/);
+  assert.equal(ui.namedButton('批量评测').props.disabled, true);
+  assert.ok(ui.nodes().filter(node => node.type === 'button' && /^评测 /.test(node.props['aria-label'] || '')).every(node => node.props.disabled));
+  assert.ok(ui.namedButton('新增问题').props.className.includes('primary'));
   assert.equal(ui.nodes().some((node) => node.type === 'dialog'), false);
+});
+
+test('editing a table without a comment displays only its table name', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  await ui.click('编辑 问题 1', true);
+  assert.equal(ui.text(ui.control('关联表')), '关联表orders');
 });
 
 test('selection persists across pages and filtered select-all preserves other choices', async (t) => {
@@ -177,7 +186,8 @@ test('any question origin can start generalization and partial results stay inli
   assert.equal(calls(ui, 'ai-tasks')[0].payload.sourceId, 's2');
   ui.fixture.task = { ...task('running', result()), sourceId: 's2' }; await ui.advance();
   assert.ok(table(ui, 'updates-results')); assert.ok(table(ui, 'candidates-results'));
-  assert.match(ui.text(table(ui, 'candidates-results')), /新增问题 A查询结果 Acrm.customers客户库/);
+  assert.match(ui.text(table(ui, 'candidates-results')), /新增问题 A查询结果 Acustomers客户基础信息/);
+  assert.doesNotMatch(ui.text(table(ui, 'candidates-results')), /crm\.|客户库/);
   assert.match(ui.text(table(ui, 'candidates-results')), /SQL 查询失败/);
   assert.equal(ui.control('选择新增泛化问题 新增问题 B').props.disabled, true);
   assert.equal(ui.namedButton('保存所选结果'), undefined);
@@ -230,7 +240,11 @@ test('stale table links and unknown origins retain their explicit status', async
   const item = question(1); item.origin = 'unknown'; item.links[0].valid = false; item.links[0].sourceComment = '订单明细';
   const ui = await mountClient({ fixture: { items: [item] } }); t.after(ui.unmount);
   assert.match(ui.text(table(ui, 'questions-table')), /来源待确认/);
-  assert.match(ui.text(table(ui, 'questions-table')), /sales.orders订单明细业务库关联待重新查询/);
+  assert.doesNotMatch(ui.text(table(ui, 'questions-table')), /orders|关联待重新查询/);
+  await ui.click('编辑 问题 1', true);
+  const related = ui.control('关联表');
+  assert.match(ui.text(related), /关联表orders订单明细关联待重新查询/);
+  assert.doesNotMatch(ui.text(related), /sales\.|业务库/);
 });
 
 test('lost start response restores by source without repeating the task POST', async (t) => {

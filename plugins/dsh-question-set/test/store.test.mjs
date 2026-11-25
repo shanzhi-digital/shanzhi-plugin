@@ -9,9 +9,9 @@ function fixture() {
     CREATE TABLE dsh_questions(profile_id TEXT, question_id TEXT, question_text TEXT, answer TEXT, version INTEGER, created_at INTEGER, updated_at INTEGER, origin TEXT, source_question_id TEXT, PRIMARY KEY(profile_id,question_id));
     CREATE TABLE dsh_question_links(profile_id TEXT,question_id TEXT,source_id TEXT,table_id TEXT,fields TEXT,reason TEXT,question_version INTEGER,structure_hash TEXT,analyzed_at INTEGER, PRIMARY KEY(profile_id,question_id,source_id,table_id));
     CREATE TABLE dsh_sources(profile_id TEXT,source_id TEXT,metadata TEXT,enabled INTEGER,connection_version INTEGER);
-    CREATE TABLE dsh_source_tables(profile_id TEXT,source_id TEXT,table_id TEXT,table_name TEXT,schema_name TEXT,table_kind TEXT,enabled INTEGER,fields TEXT,structure_hash TEXT);
+    CREATE TABLE dsh_source_tables(profile_id TEXT,source_id TEXT,table_id TEXT,table_name TEXT,source_comment TEXT,schema_name TEXT,table_kind TEXT,enabled INTEGER,fields TEXT,structure_hash TEXT);
     INSERT INTO dsh_sources VALUES ('p','s','{"name":"业务库"}',1,1);
-    INSERT INTO dsh_source_tables VALUES ('p','s','t','sales','main','table',1,'[{"name":"amount"}]','hash');`);
+    INSERT INTO dsh_source_tables VALUES ('p','s','t','sales','销售流水','main','table',1,'[{"name":"amount"}]','hash');`);
   const connection = {
     async execute(input, params = []) {
       const sql = input.replace(/ FOR UPDATE/g, '').replace('INSERT INTO dsh_management_profiles (profile_id) VALUES (?) ON DUPLICATE KEY UPDATE profile_id = VALUES(profile_id)', 'INSERT OR IGNORE INTO dsh_management_profiles (profile_id) VALUES (?)');
@@ -36,6 +36,9 @@ test('CRUD preserves provenance, checks versions and normalized duplicates, and 
   assert.equal(result.updates[0].links[0].valid, true);
   assert.equal(result.updates[0].links[0].sourceName, '业务库');
   assert.equal(result.updates[0].links[0].tableName, 'sales');
+  assert.equal(result.updates[0].links[0].sourceComment, '销售流水');
+  sqlite.exec('UPDATE dsh_source_tables SET source_comment = NULL');
+  assert.equal((await store.list())[0].links[0].sourceComment, '');
   const edited = await store.save({ ...generated, text: '每周销售' });
   assert.equal(edited.answer, ''); assert.deepEqual(edited.links, []); assert.equal(edited.origin, 'generated');
   const answered = await store.save({ ...result.updates[0], text: '季度销售', answer: '用户新填的答案' });
