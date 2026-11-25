@@ -515,10 +515,15 @@ export function setupEchoMind(ctx, deps = {}) {
     if (!failed) {
       draft.status = 'pushed';
       draft.pushed = pushed;
-      const { session } = resolveSessionContext(ctx, draft.sessionId, draft.callId);
+      const { session, turn, callSeq } = resolveSessionContext(ctx, draft.sessionId, draft.callId);
       emitPluginRecord(appendPluginRecord, session, TODO_PUSHED_RECORD_TYPE, {
+        version: 1,
+        turn: turn ?? draft.turn ?? null,
+        callId: draft.callId || null,
+        callSeq,
         draftId,
         meetingId: meeting.id,
+        status: 'pushed',
         pushedCount: pushed.length,
         pushed,
       });
@@ -680,7 +685,7 @@ export function setupEchoMind(ctx, deps = {}) {
     output: { schema: { type: 'object', additionalProperties: true }, render: textRender },
     async execute(args, exec) {
       const sessionId = exec.agent?.id || null;
-      const { session, workspaceDir } = resolveSessionContext(ctx, sessionId, exec.callId);
+      const { session, turn, callSeq, workspaceDir } = resolveSessionContext(ctx, sessionId, exec.callId);
       const action = args.action;
 
       if (action === 'check_env') {
@@ -715,7 +720,13 @@ export function setupEchoMind(ctx, deps = {}) {
           warnings: snap.warnings,
           message: '已开始双轨会议录音，小智办公窗口底部已显示实时电平与控制条。录音结束后将自动转写并生成纪要。',
         };
-        emitPluginRecord(appendPluginRecord, session, RECORDING_EVENT_RECORD_TYPE, card);
+        emitPluginRecord(appendPluginRecord, session, RECORDING_EVENT_RECORD_TYPE, {
+          version: 1,
+          turn,
+          callId: exec.callId || null,
+          callSeq,
+          ...card,
+        });
         return card;
       }
 
@@ -745,7 +756,13 @@ export function setupEchoMind(ctx, deps = {}) {
           elapsedMs: before.elapsedMs,
           message: `已结束会议「${before.meetingId}」的录音，正在后台排队进行本机离线转写、声纹识别与 DeepSeek 纪要生成。`,
         };
-        emitPluginRecord(appendPluginRecord, session, RECORDING_EVENT_RECORD_TYPE, card);
+        emitPluginRecord(appendPluginRecord, session, RECORDING_EVENT_RECORD_TYPE, {
+          version: 1,
+          turn,
+          callId: exec.callId || null,
+          callSeq,
+          ...card,
+        });
         return card;
       }
 
@@ -786,7 +803,7 @@ export function setupEchoMind(ctx, deps = {}) {
     output: { schema: { type: 'object', additionalProperties: true }, render: textRender },
     async execute(args, exec) {
       const sessionId = exec.agent?.id || null;
-      const { session, workspaceDir } = resolveSessionContext(ctx, sessionId, exec.callId);
+      const { session, turn, callSeq, workspaceDir } = resolveSessionContext(ctx, sessionId, exec.callId);
       const imported = await audioImporter.importAudio({
         filePath: args.filePath,
         title: args.title || '',
@@ -817,7 +834,13 @@ export function setupEchoMind(ctx, deps = {}) {
         segments: imported.segments,
         message: `已导入音频并创建会议「${imported.title}」（${imported.meetingId}），正在后台本机离线转写并生成纪要。`,
       };
-      emitPluginRecord(appendPluginRecord, session, RECORDING_EVENT_RECORD_TYPE, card);
+      emitPluginRecord(appendPluginRecord, session, RECORDING_EVENT_RECORD_TYPE, {
+        version: 1,
+        turn,
+        callId: exec.callId || null,
+        callSeq,
+        ...card,
+      });
       return card;
     },
   });
@@ -887,7 +910,7 @@ export function setupEchoMind(ctx, deps = {}) {
     output: { schema: { type: 'object', additionalProperties: true }, render: textRender },
     async execute(args, exec) {
       const sessionId = exec.agent?.id || null;
-      const { session, workspaceDir } = resolveSessionContext(ctx, sessionId, exec.callId);
+      const { session, turn, callSeq, workspaceDir } = resolveSessionContext(ctx, sessionId, exec.callId);
       const meeting = meetingStore.getMeeting(args.meetingId, { workspaceDir, includeTranscript: true });
       if (!meeting) {
         throw new ApiError(`找不到会议「${args.meetingId}」。请先调用 echomind_list_meetings 确认会议编号。`, {
@@ -948,6 +971,10 @@ export function setupEchoMind(ctx, deps = {}) {
       };
 
       emitPluginRecord(appendPluginRecord, session, MINUTES_PRESENTED_RECORD_TYPE, {
+        version: 1,
+        turn,
+        callId: exec.callId || null,
+        callSeq,
         meetingId: meeting.id,
         title: meeting.title,
       });
@@ -1102,7 +1129,7 @@ export function setupEchoMind(ctx, deps = {}) {
       if (!active.ok) return active.authRequired;
 
       const sessionId = exec.agent?.id || null;
-      const { session, workspaceDir } = resolveSessionContext(ctx, sessionId, exec.callId);
+      const { session, turn, callSeq, workspaceDir } = resolveSessionContext(ctx, sessionId, exec.callId);
       const meeting = meetingStore.getMeeting(args.meetingId, { workspaceDir, includeTranscript: true });
       if (!meeting) {
         throw new ApiError(`找不到会议「${args.meetingId}」。`, { code: 'NOT_FOUND' });
@@ -1149,6 +1176,7 @@ export function setupEchoMind(ctx, deps = {}) {
         meetingId: meeting.id,
         accountId: active.account.id,
         sessionId,
+        turn,
         callId: exec.callId || null,
         status: 'pending',
         todos: stagedTodos,
@@ -1161,11 +1189,22 @@ export function setupEchoMind(ctx, deps = {}) {
         meetingId: meeting.id,
         meetingTitle: meeting.title,
         todos: stagedTodos,
+        knowledge: {
+          off: Boolean(meeting.knowledge?.off),
+          synced: Boolean(meeting.knowledge?.sentHash),
+        },
         message: `已整理 ${stagedTodos.length} 条待推送待办，请在下方确认卡片核对负责人和截止日期后点击「确认并推送到飞书」。`,
       };
       emitPluginRecord(appendPluginRecord, session, TODO_DRAFT_RECORD_TYPE, {
+        version: 1,
+        turn,
+        callId: exec.callId || null,
+        callSeq,
         draftId,
         meetingId: meeting.id,
+        meetingTitle: meeting.title,
+        todos: stagedTodos,
+        knowledge: payload.knowledge,
         count: stagedTodos.length,
       });
       return payload;

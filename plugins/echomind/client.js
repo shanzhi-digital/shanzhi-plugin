@@ -470,20 +470,62 @@ window.__ModuleLoader__.load({
     }
 
     // ---- Conversation Event Projection (for conversation.chat.turnTail) ----
-    function extractToolPayload(data) {
-      if (!data) return null;
-      if (data.value && typeof data.value === "object") return data.value;
-      var content = data.content || data.output;
-      if (Array.isArray(content)) {
-        for (var i = 0; i < content.length; i++) {
-          var part = content[i];
+    var KNOWN_CARD_KINDS = [AUTH_REQUIRED_KIND, RECORDING_CARD_KIND, MINUTES_CARD_KIND, TODO_DRAFT_KIND];
+
+    function withinRanges(seq, ranges) {
+      if (typeof seq !== "number") return false;
+      for (var i = 0; i < ranges.length; i++) {
+        if (seq >= ranges[i].startSeq && seq <= ranges[i].endSeq) return true;
+      }
+      return false;
+    }
+
+    function callIdentity(event) {
+      var d = event && event.data;
+      if (!d) return undefined;
+      if (d.message && d.message.source && d.message.source.callId) return d.message.source.callId;
+      if (d.message && d.message.toolCallId) return d.message.toolCallId;
+      return d.callId;
+    }
+
+    function isFailedValue(value) {
+      if (!value || typeof value !== "object") return false;
+      if (value.error != null && value.error !== false) return true;
+      if (value.isError) return true;
+      if (value.message && isFailedValue(value.message)) return true;
+      if (value.result && isFailedValue(value.result)) return true;
+      return false;
+    }
+
+    function extractToolPayload(value) {
+      if (typeof value === "string") {
+        if (value.indexOf("echomind-") === -1) return null;
+        try {
+          return extractToolPayload(JSON.parse(value));
+        } catch (_) {
+          return null;
+        }
+      }
+      if (!value || typeof value !== "object" || isFailedValue(value)) return null;
+      if (typeof value.kind === "string" && KNOWN_CARD_KINDS.indexOf(value.kind) !== -1) return value;
+      var keys = ["structuredContent", "value", "result", "message", "output"];
+      for (var i = 0; i < keys.length; i++) {
+        if (value[keys[i]] != null) {
+          var found = extractToolPayload(value[keys[i]]);
+          if (found) return found;
+        }
+      }
+      if (Array.isArray(value.content)) {
+        for (var j = 0; j < value.content.length; j++) {
+          var part = value.content[j];
           if (part && part.type === "text" && typeof part.text === "string") {
-            try { return JSON.parse(part.text); } catch (_) {}
+            var foundText = extractToolPayload(part.text);
+            if (foundText) return foundText;
           }
         }
       }
-      if (typeof data.text === "string") {
-        try { return JSON.parse(data.text); } catch (_) {}
+      if (typeof value.text === "string") {
+        return extractToolPayload(value.text);
       }
       return null;
     }
@@ -493,77 +535,150 @@ window.__ModuleLoader__.load({
         turn: turn,
         calls: new Map(),
         results: new Map(),
-        pushedByDraft: {},
-        value: { authRequired: null, recordingCards: [], minutesCards: [], todoDrafts: [], pushedByDraft: {} },
+        pluginRecords: [],
+        invalidated: new Set(),
+        replacedRanges: [],
+        value: { turn: turn, authRequired: null, recordingCards: [], minutesCards: [], todoDrafts: [], pushedByDraft: {} },
       };
     }
 
     function rebuildProjectionValue(state) {
       var authRequired = null;
       var recordingCards = [];
-      var minutesCards = [];
-      var todoDrafts = [];
-      var seenMeeting = {};
-      var seenDraft = {};
+      var minutesMap = new Map();
+      var draftMap = new Map();
+      var pushedByDraft = {};
+
+      for (var r = 0; r < state.pluginRecords.length; r++) {
+        var rec = state.pluginRecords[r];
+        if (rec.type === TODO_PUSHED_RECORD_TYPE && rec.data && rec.data.draftId) {
+          pushedByDraft[rec.data.draftId] = Object.assign({ status: "pushed" }, rec.data);
+        } else if (rec.type === TODO_DRAFT_RECORD_TYPE && rec.data && rec.data.draftId && Array.isArray(rec.data.todos)) {
+          draftMap.set(rec.data.draftId, Object.assign({ seq: rec.seq }, rec.data));
+        }
+      }
 
       state.calls.forEach(function (call, callId) {
         var res = state.results.get(callId);
         if (!res || res.failed || !res.payload || typeof res.payload !== "object") return;
         var p = res.payload;
         if (p.kind === AUTH_REQUIRED_KIND) {
-          authRequired = Object.assign({ callId: callId }, p);
+          if (!authRequired || (res.seq || 0) >= (authRequired.seq || 0)) {
+            authRequired = Object.assign({ seq: res.seq, callId: callId, toolName: call.name }, p);
+          }
         } else if (p.kind === RECORDING_CARD_KIND) {
-          recordingCards.push(Object.assign({ callId: callId }, p));
-        } else if (p.kind === MINUTES_CARD_KIND && p.meetingId && !seenMeeting[p.meetingId]) {
-          seenMeeting[p.meetingId] = true;
-          minutesCards.push(Object.assign({ callId: callId }, p));
-        } else if (p.kind === TODO_DRAFT_KIND && p.draftId && !seenDraft[p.draftId]) {
-          seenDraft[p.draftId] = true;
-          todoDrafts.push(Object.assign({ callId: callId }, p));
+          recordingCards.push(Object.assign({ seq: res.seq, callId: callId }, p));
+        } else if (p.kind === MINUTES_CARD_KIND && p.meetingId && !minutesMap.has(p.meetingId)) {
+          minutesMap.set(p.meetingId, Object.assign({ seq: res.seq, callId: callId }, p));
+        } else if (p.kind === TODO_DRAFT_KIND && p.draftId && !draftMap.has(p.draftId)) {
+          draftMap.set(p.draftId, Object.assign({ seq: res.seq, callId: callId }, p));
         }
       });
 
+      var bySeq = function (a, b) { return (a.seq || 0) - (b.seq || 0); };
+      recordingCards.sort(bySeq);
+      var minutesCards = Array.from(minutesMap.values()).sort(bySeq);
+      var todoDrafts = Array.from(draftMap.values()).sort(bySeq);
+
       return Object.assign({}, state, {
         value: {
+          turn: state.turn,
           authRequired: authRequired,
           recordingCards: recordingCards,
           minutesCards: minutesCards,
           todoDrafts: todoDrafts,
-          pushedByDraft: state.pushedByDraft,
+          pushedByDraft: pushedByDraft,
         },
       });
     }
 
     function updateProjection(state, event) {
-      if (!event || !event.data) return state;
-      if (event.type === TODO_PUSHED_RECORD_TYPE && event.data.draftId) {
-        var nextPushed = Object.assign({}, state.pushedByDraft);
-        nextPushed[event.data.draftId] = event.data;
-        return rebuildProjectionValue(Object.assign({}, state, { pushedByDraft: nextPushed }));
+      if (!state || !event || !event.data) return state;
+      if (event.data.turn != null && event.data.turn !== state.turn) return state;
+
+      if (event.surfaceOp && event.surfaceOp.op === "replace") {
+        var startSeq = event.surfaceOp.startSeq;
+        var endSeq = event.surfaceOp.endSeq;
+        if (typeof startSeq !== "number" || typeof endSeq !== "number" || startSeq > endSeq) return state;
+        var range = { startSeq: startSeq, endSeq: endSeq };
+        var invalidated = new Set(state.invalidated);
+        state.calls.forEach(function (call, id) {
+          var res = state.results.get(id);
+          if (withinRanges(call.callSeq, [range]) || (res && withinRanges(res.seq, [range]))) {
+            invalidated.add(id);
+          }
+        });
+        var nextCalls = new Map();
+        state.calls.forEach(function (v, k) { if (!invalidated.has(k)) nextCalls.set(k, v); });
+        var nextResults = new Map();
+        state.results.forEach(function (v, k) { if (!invalidated.has(k)) nextResults.set(k, v); });
+        var nextRecords = state.pluginRecords.filter(function (rec) {
+          return !withinRanges(rec.seq, [range]) && !withinRanges(rec.data && rec.data.callSeq, [range]);
+        });
+        return rebuildProjectionValue(Object.assign({}, state, {
+          calls: nextCalls,
+          results: nextResults,
+          pluginRecords: nextRecords,
+          invalidated: invalidated,
+          replacedRanges: state.replacedRanges.concat([range]),
+        }));
       }
-      if (event.type === "tool/call" && event.data.callId && typeof event.data.name === "string" && event.data.name.indexOf("echomind_") === 0) {
+
+      if (isRecordType(event.type)) {
+        if (withinRanges(event.seq, state.replacedRanges) || withinRanges(event.data && event.data.callSeq, state.replacedRanges)) {
+          return state;
+        }
+        for (var r = 0; r < state.pluginRecords.length; r++) {
+          if (state.pluginRecords[r].seq === event.seq && state.pluginRecords[r].type === event.type) return state;
+        }
+        return rebuildProjectionValue(Object.assign({}, state, {
+          pluginRecords: state.pluginRecords.concat([{ type: event.type, seq: event.seq, data: event.data }]),
+        }));
+      }
+
+      if (event.type === "tool/call") {
+        var callData = event.data || {};
+        var name = callData.name;
+        var cid = callData.callId;
+        if (
+          typeof name !== "string" || !name ||
+          typeof cid !== "string" || !cid ||
+          state.calls.has(cid) || state.invalidated.has(cid) ||
+          withinRanges(event.seq, state.replacedRanges)
+        ) {
+          return state;
+        }
         var calls = new Map(state.calls);
-        calls.set(event.data.callId, { name: event.data.name, seq: event.seq });
+        calls.set(cid, { name: name, callSeq: event.seq });
         return rebuildProjectionValue(Object.assign({}, state, { calls: calls }));
       }
-      if (event.type === "tool/result" && event.data.callId && state.calls.has(event.data.callId)) {
-        var failed = !!(event.data.isError || event.data.error);
-        var payload = failed ? null : extractToolPayload(event.data);
-        var results = new Map(state.results);
-        results.set(event.data.callId, { failed: failed, payload: payload });
-        return rebuildProjectionValue(Object.assign({}, state, { results: results }));
-      }
-      return state;
+
+      if (event.type !== "tool/result" || (event.surfaceOp != null && event.surfaceOp !== "append")) return state;
+      var resCallId = callIdentity(event);
+      var callItem = resCallId ? state.calls.get(resCallId) : null;
+      if (!callItem || state.results.has(resCallId) || state.invalidated.has(resCallId)) return state;
+      if (withinRanges(event.seq, state.replacedRanges) || withinRanges(callItem.callSeq, state.replacedRanges)) return state;
+      if (typeof event.seq === "number" && typeof callItem.callSeq === "number" && event.seq <= callItem.callSeq) return state;
+
+      var failed = isFailedValue(event.data);
+      var payload = failed ? null : extractToolPayload(event.data);
+      var results = new Map(state.results);
+      results.set(resCallId, { seq: event.seq, failed: failed, payload: payload });
+      return rebuildProjectionValue(Object.assign({}, state, { results: results }));
     }
 
     var eventDefinition = {
       kind: KEY,
       match: function (event) {
         if (!event || !event.data || event.data.turn == null) return null;
-        if (event.type === "tool/call" && typeof event.data.name === "string" && event.data.name.indexOf("echomind_") === 0) {
+        if (event.type === "tool/call" && typeof event.data.name === "string" && event.data.name) {
           return { id: String(event.data.turn), role: "start" };
         }
-        if (event.type === "tool/result" || isRecordType(event.type)) {
+        if (
+          event.type === "tool/result" ||
+          isRecordType(event.type) ||
+          (event.surfaceOp && event.surfaceOp.op === "replace")
+        ) {
           return { id: String(event.data.turn), role: "start" };
         }
         return null;
@@ -1993,6 +2108,12 @@ window.__ModuleLoader__.load({
       var [error, setError] = useState("");
 
       useEffect(function () {
+        if (props.outcome && (!outcome || outcome.status !== "pushed")) {
+          setOutcome(props.outcome);
+        }
+      }, [props.outcome]);
+
+      useEffect(function () {
         callRpc(conn, "listDirectory", { refresh: false })
           .then(function (res) { setDirectory(Array.isArray(res && res.people) ? res.people : []); })
           .catch(noop);
@@ -2069,9 +2190,23 @@ window.__ModuleLoader__.load({
                   : h("input", { className: "emu-input", value: r.ownerName || r.ownerMention || "待定", disabled: true }),
                 h("input", { className: "emu-input", type: "text", placeholder: "YYYY-MM-DD", value: r.due || "", disabled: locked, onChange: function (e) { patchRow(idx, { due: e.target.value || null }); } }),
               ),
+              h("input", {
+                className: "emu-input",
+                type: "text",
+                placeholder: "补充说明（可选）",
+                value: r.detail || "",
+                disabled: locked,
+                onChange: function (e) { patchRow(idx, { detail: e.target.value }); },
+              }),
             );
           }),
         ),
+        item.knowledge
+          ? h("div", { className: "emu-sub" },
+              item.knowledge.off
+                ? "知识库同步：已关闭"
+                : (item.knowledge.synced ? "知识库同步：纪要已同步至 DataHub「会议纪要」" : "知识库同步：待同步（推送确认后自动更新）"))
+          : null,
         pushedDone || cancelled
           ? null
           : h("div", { className: "emu-row emu-row-end" },
@@ -2082,7 +2217,10 @@ window.__ModuleLoader__.load({
     }
 
     function TurnTail(props) {
-      var data = props && props.turn && props.turn.plugins && props.turn.plugins[KEY];
+      var turn = props && props.turn;
+      var data = turn && turn.data && typeof turn.data.get === "function"
+        ? turn.data.get(KEY)
+        : (turn && turn.plugins ? turn.plugins[KEY] : null);
       if (!data) return null;
       var cards = [];
       (data.recordingCards || []).forEach(function (item) {

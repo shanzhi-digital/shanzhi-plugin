@@ -150,31 +150,72 @@ test('seam test 2: apply(ctx) works under strict Cordis Proxy and registers all 
   assert.ok(actionsEntry({ subject: { kind: 'bundle', pkg: { name: '@local/echomind' } } }));
 });
 
-test('eventDefinition projects auth-required, recording, minutes, and todo-draft cards and updates pushed state', () => {
+test('eventDefinition projects real DSH tool/result events into TurnTail via turn.data.get("echomind")', () => {
   const mod = loadClientModule();
   const evDef = mod.eventDefinition;
 
-  const callEv = { type: 'tool/call', seq: 1, data: { turn: 3, callId: 'c1', name: 'echomind_stage_todo_push' } };
+  // Simulate exact DSH 0.2.2-rc.5 event shape: callId nested under message.source.callId,
+  // JSON payload nested inside message.content[].text, surfaceOp: "append".
+  const callEv = { type: 'tool/call', seq: 10, data: { turn: 3, callId: 'c1', name: 'echomind_stage_todo_push' } };
   assert.ok(evDef.match(callEv));
   let state = evDef.start({}, { event: callEv });
 
+  const todoPayload = {
+    kind: 'echomind-todo-draft',
+    draftId: 'd1',
+    meetingId: 'm1',
+    meetingTitle: '开发任务安排',
+    todos: [{ id: 't1', title: '完成接口联调', detail: '', ownerPersonId: 'ou_1', due: '2026-11-25' }],
+    knowledge: { off: false, synced: true },
+  };
   const resEv = {
     type: 'tool/result',
-    seq: 2,
+    seq: 11,
+    surfaceOp: 'append',
     data: {
       turn: 3,
-      callId: 'c1',
-      value: { kind: 'echomind-todo-draft', draftId: 'd1', meetingId: 'm1', meetingTitle: '周会', todos: [] },
+      message: {
+        source: { callId: 'c1' },
+        content: [{ type: 'text', text: JSON.stringify(todoPayload) }],
+      },
     },
   };
   state = evDef.update({ state }, { event: resEv });
   assert.equal(state.value.todoDrafts.length, 1);
+  assert.equal(state.value.todoDrafts[0].draftId, 'd1');
 
+  const loc = evDef.buildLocationData({ state }, 'turn', null);
+  assert.equal(loc.kind, 'turn');
+  assert.equal(loc.key, 'echomind');
+  assert.equal(loc.turn, 3);
+
+  // Verify TurnTail reads turn.data.get("echomind") (DSH host contract) and renders non-null card!
+  const turnData = new Map([[loc.key, loc.value]]);
+  const rendered = mod.TurnTail({
+    turn: { data: turnData },
+    services: { connection: () => ({ rpc: { call: async () => ({ ok: true, value: {} }) } }) },
+    store: { getSnapshot: () => ({ status: 'idle', state: null, error: '' }), subscribe: () => () => {} },
+    liveStore: { getSnapshot: () => ({ recording: null, jobs: [] }), subscribe: () => () => {} },
+  });
+  assert.ok(rendered, 'TurnTail must render card when turn.data.get("echomind") has todoDrafts');
+
+  // Persisted pushed record marks draft as pushed
   const pushedEv = {
     type: 'plugin:echomind/todos-pushed',
-    seq: 3,
-    data: { turn: 3, draftId: 'd1', meetingId: 'm1', pushedCount: 2 },
+    seq: 12,
+    data: { turn: 3, callSeq: 10, draftId: 'd1', meetingId: 'm1', status: 'pushed', pushedCount: 1 },
   };
   state = evDef.update({ state }, { event: pushedEv });
-  assert.equal(state.value.pushedByDraft.d1.pushedCount, 2);
+  assert.equal(state.value.pushedByDraft.d1.pushedCount, 1);
+
+  // surfaceOp replace invalidates replaced seq range cleanly
+  const replaceEv = {
+    type: 'turn/replace',
+    seq: 13,
+    surfaceOp: { op: 'replace', startSeq: 10, endSeq: 12 },
+    data: { turn: 3 },
+  };
+  const replaced = evDef.update({ state }, { event: replaceEv });
+  assert.equal(replaced.value.todoDrafts.length, 0);
+  assert.equal(replaced.value.pushedByDraft.d1, undefined);
 });

@@ -1,36 +1,21 @@
-# @local/echomind（EchoMind 会议纪要助手）
+# EchoMind 会议纪要（`@local/echomind`）
 
-面向小智办公（DeepSeek Harness）的全链路会议纪要插件：在本机完成双轨实时录音（麦克风 = 我，系统声音 = 其他参会人）与离线语音转写、说话人分离及声纹识别，通过 EchoMind 服务端接入飞书与 DeepSeek 生成带出处的结构化纪要和待办草稿，由用户核对确认后推送为飞书任务，并自动同步纪要至 DataHub「会议纪要」知识库。
+面向小智办公的全链路会议纪要插件：在本机完成双轨实时录音（麦克风 = 我，系统声音 = 其他参会人）与离线语音转写、说话人分离及声纹识别，通过 EchoMind 服务端接入飞书与 DeepSeek 生成带出处的结构化纪要和待办草稿，由用户核对确认后推送为飞书任务，并自动同步纪要至 DataHub「会议纪要」知识库。
 
-## 核心特性
+## 核心能力
 
-- **双轨实时录音与全局浮条**：复用 `echomind-capture`（macOS Core Audio Process Tap / Windows WASAPI Loopback），支持暂停、恢复、重点打标与退出前优雅封盘；录音/转写期间在窗口右下角显示双轨实时电平条，空闲零占用。
-- **本机离线转写与声纹隐私保护**：复用 `echomind-transcribe`（Rust + sherpa-onnx：SenseVoice-Small、Silero VAD、pyannote 3.0、3D-Speaker CAM++），音频不出电脑、声纹向量不进前端和模型上下文、同事声纹须本人在飞书同意卡片点击同意。
-- **确定性纪要引擎与证据回放**：内置零依赖打包版 `@echomind/minutes-engine`，保留章节覆盖校验、证据引用修复（`seg-xxxx`）、负责人置信度解析与相对截止日期解析；点击任意出处可在会议详情中按时间轴双轨混音播放原声。
-- **安全物理隔离**：模型工具只能只读查状态、控录音、导入音频、查纪要、局部检索原话与暂存待办草稿；**推送飞书任务、修改服务器配置、声纹管理与公司管理**仅通过前端卡片与设置页 RPC 经人工点击执行。
-- **DSH 工作区与多账户管理**：与 `@local/contract-sure`、`@local/salesforge` 保持一致的多账户飞书浏览器授权交互，会话令牌仅存小智办公凭据库（`0600`）；二进制与模型缓存于 `~/.dsh/storages/echomind/`，录音优先写入当前 DSH 工作区。
+- **双轨实时录音与全局浮条**：采集本机麦克风与系统声音，支持暂停、恢复、重点打标与退出前优雅封盘；录音或转写期间在窗口右下角显示双轨实时电平条，空闲零占用。
+- **本机离线转写与声纹隐私保护**：全部音频与离线语音模型（SenseVoice-Small、Silero VAD、pyannote 3.0、3D-Speaker CAM++）仅在本机运行，音频不出电脑；声纹特征向量不暴露给前端或对话模型，同事声纹须本人在飞书同意卡片点击同意。
+- **带出处结构化纪要与原声回放**：内置确定性纪要引擎，保留章节覆盖校验、证据引用（`seg-xxxx`）、负责人置信度与截止日期解析；点击任意出处可在会议详情中按时间轴双轨混音播放原声。
+- **高危操作物理隔离**：对话模型工具仅负责查状态、控录音、导入音频、查纪要、局部检索原话与暂存待办草稿；**推送飞书任务、修改服务器配置、声纹管理与公司管理**仅通过确认卡片或设置页人工点击执行。
+- **内置 5 个业务技能（Skill）**：实时会议录音、纪要审阅与待办推飞书、历史原话检索与回放溯源、外部音频导入、跨系统会议跟进。
 
-## 开发与测试
+## 首次使用
 
-```bash
-# 从 erji 仓库重新打包 minutes-engine + shared
-node build/sync-engine.mjs
-
-# 语法校验与全量单元测试（零三方运行时依赖）
-node --check client.js && npm test
-
-# 开发联调指定本地原生二进制目录（指向 erji 编译产物）
-export ECHOMIND_BIN_DIR=/Users/zhuanzmima0000/Developer/work/erji/apps/desktop/src-tauri/binaries
-```
-
-## 本机桌面端安装
-
-```bash
-npm pack --ignore-scripts --pack-destination /Users/zhuanzmima0000/Developer/work/plugins
-"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop remove @local/echomind
-"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add /Users/zhuanzmima0000/Developer/work/plugins/local-echomind-0.1.0.tgz
-# 按 Cmd + Q 完全退出并重开小智办公客户端生效
-```
+1. 打开小智办公 **「设置 → EchoMind 会议配置」**（或在本插件详情页点 **「管理」**）。
+2. 点击 **「+ 连接飞书账户」**，在浏览器完成飞书授权后自动回传（会话令牌仅保存在小智办公本机凭据库，支持多公司切换与随时吊销）。
+3. 在 **「本机录音与离线转写环境」** 中确认原生录音/转写组件已就绪，并一键下载约 200 MB 的离线语音模型（仅首次需要）。
+4. 回到对话直接说「开始会议录音」，或点击左下角 **「会议记录」** 按钮发起双轨录音。
 
 ## 开源与模型许可声明
 
