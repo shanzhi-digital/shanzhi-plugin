@@ -62,10 +62,10 @@ function frontmatterOf(raw) {
   );
 }
 
-test('skills 目录里正好是登记的 5 个 skill', () => {
+test('skills 目录里正好是登记的 6 个 skill', () => {
   const dirs = readdirSync(SKILLS_DIR).filter((entry) => statSync(join(SKILLS_DIR, entry)).isDirectory());
   assert.deepEqual(dirs.sort(), [...BUNDLED_SKILL_NAMES].sort());
-  assert.equal(BUNDLED_SKILL_NAMES.length, 5);
+  assert.equal(BUNDLED_SKILL_NAMES.length, 6);
 });
 
 test('每个 SKILL.md 的 frontmatter 合法', () => {
@@ -87,7 +87,7 @@ test('每个 SKILL.md 的 frontmatter 合法', () => {
 
 test('正文点名的工具都存在：本插件的工具，或宿主的看图、加载工具', () => {
   const tools = registeredToolNames();
-  assert.equal(tools.size, 9);
+  assert.equal(tools.size, 16);
   const seen = new Set();
   for (const skillName of BUNDLED_SKILL_NAMES) {
     for (const file of listFiles(join(SKILLS_DIR, skillName)).filter((f) => f.endsWith('.md'))) {
@@ -118,7 +118,7 @@ test('references、templates 里的文件都在 SKILL.md 里写了文件名，�
   }
 });
 
-test('提供方 list 返回 5 个候选，字段符合宿主 skills 服务的要求', async () => {
+test('提供方 list 返回 6 个候选，字段符合宿主 skills 服务的要求', async () => {
   const provider = createSkillProvider();
   assert.equal(provider.name, SKILL_PROVIDER_NAME);
   const { candidates, complete } = await provider.list({});
@@ -192,7 +192,7 @@ test('skills 服务在时：注册提供方，插件卸载时注销', async () =
   const instance = setupSalesforge(ctx, { configPath });
   assert.equal(providers.length, 1);
   assert.equal(providers[0].name, SKILL_PROVIDER_NAME);
-  assert.equal((await providers[0].list({})).candidates.length, 5);
+  assert.equal((await providers[0].list({})).candidates.length, 6);
   instance.dispose();
   assert.equal(disposed, 1);
 });
@@ -203,13 +203,13 @@ test('skills 服务不在时插件照常启动；服务后来出现再注册', (
 
   const bare = fakeCtx();
   const first = setupSalesforge(bare.ctx, { configPath });
-  assert.equal(bare.tools.length, 9);
+  assert.equal(bare.tools.length, 16);
   first.dispose();
 
   const injected = [];
   const withInject = fakeCtx({ inject(deps, callback) { injected.push({ deps, callback }); } });
   const second = setupSalesforge(withInject.ctx, { configPath });
-  assert.equal(withInject.tools.length, 9);
+  assert.equal(withInject.tools.length, 16);
   const pending = injected.find((item) => item.deps.includes('skills'));
   assert.deepEqual(pending.deps, ['skills']);
   let registered = 0;

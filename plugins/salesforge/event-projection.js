@@ -1,10 +1,14 @@
 // 会话事件投影（与 client.js 里浏览器端的投影保持一致，单测用它核对）。
 // 关心两件事：本回合有没有工具返回「需要连接账户」（kind = salesforge-auth-required），有就在回合末尾显示授权卡片；
-// 有没有生成日报草稿（kind = salesforge-report-draft），有就显示草稿卡片，并按会话里的「已提交」记录标出已提交的草稿。
+// 有没有生成日报草稿（kind = salesforge-report-draft），有就显示草稿卡片，并按会话里的「已提交」记录标出已提交的草稿；
+// 有没有发起删除或移交（kind = salesforge-action-pending），有就显示确认卡片，并按会话里的执行记录标出结果。
 export const KEY = 'salesforge';
 export const AUTH_REQUIRED_KIND = 'salesforge-auth-required';
 export const REPORT_DRAFT_KIND = 'salesforge-report-draft';
 export const REPORT_SUBMITTED_RECORD_TYPE = 'plugin:salesforge/report-submitted';
+export const ACTION_PENDING_KIND = 'salesforge-action-pending';
+export const ACTION_RECORD_TYPE = 'plugin:salesforge/action-done';
+const RECORD_TYPES = [REPORT_SUBMITTED_RECORD_TYPE, ACTION_RECORD_TYPE];
 
 const within = (seq, ranges) =>
   typeof seq === 'number' && ranges.some((range) => seq >= range.startSeq && seq <= range.endSeq);
@@ -19,7 +23,7 @@ const failed = (value) =>
       ((value.error != null && value.error !== false) || value.isError || failed(value.message) || failed(value.result)),
   );
 
-const CARD_KINDS = [AUTH_REQUIRED_KIND, REPORT_DRAFT_KIND];
+const CARD_KINDS = [AUTH_REQUIRED_KIND, REPORT_DRAFT_KIND, ACTION_PENDING_KIND];
 
 function extractPayload(value) {
   if (typeof value === 'string') {
@@ -55,11 +59,14 @@ const valueOf = (state) => ({
   authRequired: state.authRequired,
   reportDrafts: state.reportDrafts,
   submittedByDraftId: state.submittedByDraftId,
+  pendingActions: state.pendingActions,
+  actionStatusById: state.actionStatusById,
 });
 
 function refresh(state) {
   let authRequired = null;
   const reportDrafts = [];
+  const pendingActions = [];
   for (const [callId, call] of state.calls) {
     const result = state.results.get(callId);
     if (!result || result.failed || !result.payload) continue;
@@ -77,6 +84,23 @@ function refresh(state) {
       }
       continue;
     }
+    if (payload.kind === ACTION_PENDING_KIND) {
+      if (typeof payload.actionId === 'string' && Array.isArray(payload.items) && payload.items.length) {
+        pendingActions.push({
+          seq: result.seq,
+          callId,
+          actionId: payload.actionId,
+          action: payload.action === 'transfer' ? 'transfer' : 'delete',
+          title: typeof payload.title === 'string' ? payload.title : '',
+          typeLabel: typeof payload.typeLabel === 'string' ? payload.typeLabel : '',
+          items: payload.items.filter((item) => item && typeof item === 'object'),
+          toUser: payload.toUser && typeof payload.toUser === 'object' ? payload.toUser : null,
+          includeProjects: payload.includeProjects === true,
+          skipped: Array.isArray(payload.skipped) ? payload.skipped.filter((item) => item && typeof item === 'object') : [],
+        });
+      }
+      continue;
+    }
     // 一个回合只显示一张授权卡片，取最后一次。
     if (!authRequired || (result.seq ?? 0) >= (authRequired.seq ?? 0)) {
       authRequired = {
@@ -90,8 +114,21 @@ function refresh(state) {
     }
   }
   reportDrafts.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+  pendingActions.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
   const submittedByDraftId = {};
+  const actionStatusById = {};
   for (const record of state.records) {
+    if (record.type === ACTION_RECORD_TYPE) {
+      if (typeof record.data?.actionId === 'string' && typeof record.data.status === 'string') {
+        actionStatusById[record.data.actionId] = {
+          status: record.data.status,
+          results: Array.isArray(record.data.results) ? record.data.results : [],
+          transferredCount: record.data.transferredCount ?? null,
+          projectCount: record.data.projectCount ?? null,
+        };
+      }
+      continue;
+    }
     if (typeof record.data?.draftId === 'string') {
       const report = record.data.report;
       submittedByDraftId[record.data.draftId] = {
@@ -100,7 +137,7 @@ function refresh(state) {
       };
     }
   }
-  const next = { ...state, authRequired, reportDrafts, submittedByDraftId };
+  const next = { ...state, authRequired, reportDrafts, submittedByDraftId, pendingActions, actionStatusById };
   return { ...next, value: valueOf(next) };
 }
 
@@ -115,6 +152,8 @@ function initial(turn) {
     authRequired: null,
     reportDrafts: [],
     submittedByDraftId: {},
+    pendingActions: [],
+    actionStatusById: {},
   };
   return { ...state, value: valueOf(state) };
 }
@@ -141,9 +180,9 @@ function updateState(state, event) {
     });
   }
 
-  if (event.type === REPORT_SUBMITTED_RECORD_TYPE) {
+  if (RECORD_TYPES.includes(event.type)) {
     if (within(event.seq, state.replacedRanges) || state.records.some((record) => record.seq === event.seq)) return state;
-    return refresh({ ...state, records: [...state.records, { seq: event.seq, data: event.data }] });
+    return refresh({ ...state, records: [...state.records, { seq: event.seq, type: event.type, data: event.data }] });
   }
 
   if (event.type === 'tool/call') {
@@ -185,7 +224,7 @@ export const definition = {
     if (event.type === 'tool/call' && typeof event.data.name === 'string' && event.data.name) {
       return { id: String(event.data.turn), role: 'start' };
     }
-    if (event.type === 'tool/result' || event.type === REPORT_SUBMITTED_RECORD_TYPE || event.surfaceOp?.op === 'replace') {
+    if (event.type === 'tool/result' || RECORD_TYPES.includes(event.type) || event.surfaceOp?.op === 'replace') {
       return { id: String(event.data.turn), role: 'start' };
     }
     return null;
@@ -210,5 +249,5 @@ export function projectEvents(events) {
     if (event.type === 'turn/start') state = initial(event.data?.turn);
     else if (state) state = updateState(state, event);
   }
-  return state?.value ?? { turn: null, authRequired: null, reportDrafts: [], submittedByDraftId: {} };
+  return state?.value ?? { turn: null, authRequired: null, reportDrafts: [], submittedByDraftId: {}, pendingActions: [], actionStatusById: {} };
 }

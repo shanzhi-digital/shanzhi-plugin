@@ -1,6 +1,6 @@
 import { ApiError, safeErrorMessage } from './api-client.js';
 
-// 宿主 RPC 服务「salesforge」：设置页、插件页、对话里的授权卡片和日报草稿卡片通过
+// 宿主 RPC 服务「salesforge」：设置页、插件页、对话里的授权卡片、日报草稿卡片和删除/移交确认卡片通过
 // connection.rpc.call("/api", "salesforge/<方法>", { args }, signal) 调用这里的方法。
 export const REMOTE_SERVICE_NAME = 'salesforge';
 
@@ -31,6 +31,11 @@ export function createSalesforgeRemoteHandlers(deps = {}) {
     throw new TypeError('createSalesforgeRemoteHandlers 需要 deps.accounts（账户管理器）。');
   }
   const submitReportDraft = deps.submitReportDraft;
+  const confirmAction = deps.confirmAction;
+  const cancelAction = deps.cancelAction;
+  const needActionId = (actionId) => {
+    if (typeof actionId !== 'string' || !actionId) throw new SalesforgeRemoteError('INVALID_REQUEST', '缺少操作标识。');
+  };
   const guard = async (fn) => {
     try {
       return await fn();
@@ -75,6 +80,21 @@ export function createSalesforgeRemoteHandlers(deps = {}) {
           throw new SalesforgeRemoteError('NOT_CONFIGURED', '日报提交服务未初始化。');
         }
         return submitReportDraft({ draftId, edited, signal });
+      });
+    },
+    // 删除/移交确认卡片的「确认」和「取消」：只认插件暂存过的操作，所以按 global 资源处理。
+    confirmAction(actionId, signal) {
+      return guard(() => {
+        needActionId(actionId);
+        if (typeof confirmAction !== 'function') throw new SalesforgeRemoteError('NOT_CONFIGURED', '确认服务未初始化。');
+        return confirmAction({ actionId, signal });
+      });
+    },
+    cancelAction(actionId) {
+      return guard(() => {
+        needActionId(actionId);
+        if (typeof cancelAction !== 'function') throw new SalesforgeRemoteError('NOT_CONFIGURED', '确认服务未初始化。');
+        return cancelAction({ actionId });
       });
     },
   };
@@ -175,6 +195,22 @@ export function registerSalesforgeRemote(ctx, deps = {}) {
         throw toRemoteError(error);
       }
     }
+
+    async confirmAction(actionId, signal) {
+      try {
+        return await handlers.confirmAction(actionId, signal);
+      } catch (error) {
+        throw toRemoteError(error);
+      }
+    }
+
+    async cancelAction(actionId, signal) {
+      try {
+        return await handlers.cancelAction(actionId);
+      } catch (error) {
+        throw toRemoteError(error);
+      }
+    }
   }
 
   // 没有 name / mode / resources 选项的方法直接用二元调用 Remote(method, context)，不能传 Remote({})。
@@ -188,6 +224,8 @@ export function registerSalesforgeRemote(ctx, deps = {}) {
     'setActiveAccount',
     'disconnectAccount',
     'submitReportDraft',
+    'confirmAction',
+    'cancelAction',
   ]) {
     Remote(SalesforgeService.prototype[methodName], {
       kind: 'method',

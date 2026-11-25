@@ -4,6 +4,8 @@
 //      - the same account panel the plugin page's "管理" opens
 //   2. conversation.chat.turnTail (id="salesforge-cards", order=26)
 //      - "需要连接账户" card for any tool result of kind salesforge-auth-required
+//      - "工作日报草稿" card (salesforge-report-draft) and the "确认删除 / 确认移交" card
+//        (salesforge-action-pending): nothing is deleted or transferred until the user confirms there
 //   3. Plugin page contributions, rendered only for this bundle's own page:
 //      - plugins.detail.actions: "管理" (account panel) and "试用" (new session with a prompt)
 //      - plugins.detail.badge: connection status beside the title
@@ -32,7 +34,10 @@ window.__ModuleLoader__.load({
     var AUTH_REQUIRED_KIND = "salesforge-auth-required";
     var REPORT_DRAFT_KIND = "salesforge-report-draft";
     var REPORT_SUBMITTED_RECORD_TYPE = "plugin:salesforge/report-submitted";
+    var ACTION_PENDING_KIND = "salesforge-action-pending";
+    var ACTION_RECORD_TYPE = "plugin:salesforge/action-done";
     var REPORT_TEXT_MAX = 2000;
+    function isRecordType(type) { return type === REPORT_SUBMITTED_RECORD_TYPE || type === ACTION_RECORD_TYPE; }
 
     var TRY_PROMPT = "帮我盘一下本季度的销售情况：目标完成了多少、还差多少，接下来该重点跟进哪些项目";
     var EXAMPLE_PROMPTS = [
@@ -181,6 +186,15 @@ window.__ModuleLoader__.load({
       ".sfu-report-error{padding:8px 10px;border-radius:var(--sfu-r-md);background:color-mix(in srgb,var(--sfu-err) 10%,transparent);color:var(--sfu-err);font-size:12px;line-height:18px}",
       ".sfu-report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}",
       ".sfu-report-text{height:auto;min-height:64px;padding:8px 10px;line-height:20px;resize:vertical}",
+      ".sfu-report-pill-warn{background:color-mix(in srgb,var(--sfu-warn) 12%,transparent);box-shadow:none;color:var(--sfu-warn)}",
+      ".sfu-report-pill-err{background:color-mix(in srgb,var(--sfu-err) 12%,transparent);box-shadow:none;color:var(--sfu-err)}",
+      ".sfu-action-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;border-radius:var(--sfu-r-md);background:var(--sfu-raised);box-shadow:inset 0 0 0 var(--sfu-hair) var(--sfu-line)}",
+      ".sfu-action-item{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:8px 12px;border-top:var(--sfu-hair) solid var(--sfu-line)}",
+      ".sfu-action-item:first-child{border-top:0}",
+      ".sfu-action-label{min-width:0;overflow-wrap:anywhere}",
+      ".sfu-action-state{flex:none;font-size:12px;color:var(--sfu-muted)}",
+      ".sfu-action-state-ok{color:var(--sfu-ok)}",
+      ".sfu-action-state-err{color:var(--sfu-err)}",
       ".sfu-settings{max-width:640px;padding:4px 0 12px;color:var(--sfu-text);font-size:13px;line-height:20px}",
       ".sfu-settings-hint{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;margin:0 0 16px;font-size:12px;line-height:18px;color:var(--sfu-muted)}",
     ].join("\n");
@@ -248,11 +262,13 @@ window.__ModuleLoader__.load({
       return false;
     }
 
-    // The tool-result payloads this plugin draws a card for: the auth prompt and the daily-report draft.
+    // The tool-result payloads this plugin draws a card for: the auth prompt, the daily-report draft
+    // and a pending delete or transfer.
+    function isCardKind(kind) { return kind === AUTH_REQUIRED_KIND || kind === REPORT_DRAFT_KIND || kind === ACTION_PENDING_KIND; }
     function extractPayload(value) {
       if (typeof value === "string") {
         // Every tool result is checked, so skip parsing text that cannot carry this plugin's payload.
-        if (value.indexOf(AUTH_REQUIRED_KIND) === -1 && value.indexOf(REPORT_DRAFT_KIND) === -1) return null;
+        if (value.indexOf(AUTH_REQUIRED_KIND) === -1 && value.indexOf(REPORT_DRAFT_KIND) === -1 && value.indexOf(ACTION_PENDING_KIND) === -1) return null;
         try {
           return extractPayload(JSON.parse(value));
         } catch (_) {
@@ -260,7 +276,7 @@ window.__ModuleLoader__.load({
         }
       }
       if (!value || typeof value !== "object" || isFailedValue(value)) return null;
-      if (value.kind === AUTH_REQUIRED_KIND || value.kind === REPORT_DRAFT_KIND) return value;
+      if (isCardKind(value.kind)) return value;
       var keys = ["structuredContent", "value", "result", "message"];
       for (var i = 0; i < keys.length; i++) {
         if (value[keys[i]] != null) {
@@ -286,12 +302,15 @@ window.__ModuleLoader__.load({
         authRequired: state.authRequired,
         reportDrafts: state.reportDrafts,
         submittedByDraftId: state.submittedByDraftId,
+        pendingActions: state.pendingActions,
+        actionStatusById: state.actionStatusById,
       };
     }
 
     function refreshProjection(state) {
       var authRequired = null;
       var reportDrafts = [];
+      var pendingActions = [];
       state.calls.forEach(function (call, callId) {
         var result = state.results.get(callId);
         if (!result || result.failed || !result.payload) return;
@@ -309,6 +328,23 @@ window.__ModuleLoader__.load({
           }
           return;
         }
+        if (p.kind === ACTION_PENDING_KIND) {
+          if (typeof p.actionId === "string" && Array.isArray(p.items) && p.items.length) {
+            pendingActions.push({
+              seq: result.seq,
+              callId: callId,
+              actionId: p.actionId,
+              action: p.action === "transfer" ? "transfer" : "delete",
+              title: typeof p.title === "string" ? p.title : "",
+              typeLabel: typeof p.typeLabel === "string" ? p.typeLabel : "",
+              items: p.items.filter(function (it) { return it && typeof it === "object"; }),
+              toUser: p.toUser && typeof p.toUser === "object" ? p.toUser : null,
+              includeProjects: p.includeProjects === true,
+              skipped: Array.isArray(p.skipped) ? p.skipped.filter(function (it) { return it && typeof it === "object"; }) : [],
+            });
+          }
+          return;
+        }
         // One auth card per turn: the latest.
         if (!authRequired || (result.seq || 0) >= (authRequired.seq || 0)) {
           authRequired = {
@@ -322,8 +358,21 @@ window.__ModuleLoader__.load({
         }
       });
       reportDrafts.sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
+      pendingActions.sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
       var submittedByDraftId = {};
+      var actionStatusById = {};
       state.records.forEach(function (rec) {
+        if (rec.type === ACTION_RECORD_TYPE) {
+          if (rec.data && typeof rec.data.actionId === "string" && typeof rec.data.status === "string") {
+            actionStatusById[rec.data.actionId] = {
+              status: rec.data.status,
+              results: Array.isArray(rec.data.results) ? rec.data.results : [],
+              transferredCount: rec.data.transferredCount == null ? null : rec.data.transferredCount,
+              projectCount: rec.data.projectCount == null ? null : rec.data.projectCount,
+            };
+          }
+          return;
+        }
         if (rec.data && typeof rec.data.draftId === "string") {
           var report = rec.data.report;
           submittedByDraftId[rec.data.draftId] = {
@@ -336,6 +385,8 @@ window.__ModuleLoader__.load({
         authRequired: authRequired,
         reportDrafts: reportDrafts,
         submittedByDraftId: submittedByDraftId,
+        pendingActions: pendingActions,
+        actionStatusById: actionStatusById,
       });
       next.value = projectionValueOf(next);
       return next;
@@ -352,6 +403,8 @@ window.__ModuleLoader__.load({
         authRequired: null,
         reportDrafts: [],
         submittedByDraftId: {},
+        pendingActions: [],
+        actionStatusById: {},
       };
       st.value = projectionValueOf(st);
       return st;
@@ -382,13 +435,13 @@ window.__ModuleLoader__.load({
         }));
       }
 
-      if (event.type === REPORT_SUBMITTED_RECORD_TYPE) {
+      if (isRecordType(event.type)) {
         if (withinRanges(event.seq, state.replacedRanges)) return state;
         for (var r = 0; r < state.records.length; r++) {
           if (state.records[r].seq === event.seq) return state;
         }
         return refreshProjection(Object.assign({}, state, {
-          records: state.records.concat([{ seq: event.seq, data: event.data }]),
+          records: state.records.concat([{ seq: event.seq, type: event.type, data: event.data }]),
         }));
       }
 
@@ -433,7 +486,7 @@ window.__ModuleLoader__.load({
         }
         if (
           event.type === "tool/result" ||
-          event.type === REPORT_SUBMITTED_RECORD_TYPE ||
+          isRecordType(event.type) ||
           (event.surfaceOp && event.surfaceOp.op === "replace")
         ) {
           return { id: String(event.data.turn), role: "start" };
@@ -1705,7 +1758,6 @@ window.__ModuleLoader__.load({
       );
     }
 
-    // ---- TurnTail: the auth card, when this turn needs one ----
     // ---- Daily report draft card ("工作日报草稿") ----
     function ReportDraftCard(props) {
       var item = props.item || {};
@@ -1857,6 +1909,129 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // ---- Confirmation card for a delete or transfer ("确认删除" / "确认移交") ----
+    // The tool only staged the action; it runs when the user presses the confirm button here.
+    function PendingActionCard(props) {
+      var item = props.item || {};
+      var items = Array.isArray(item.items) ? item.items : [];
+      var skipped = Array.isArray(item.skipped) ? item.skipped : [];
+      var isTransfer = item.action === "transfer";
+      var verb = isTransfer ? "移交" : "删除";
+      var services = props.services;
+      function connection() { return serviceOf(services, "connection"); }
+      var [outcome, setOutcome] = useState(props.outcome || null);
+      var [busy, setBusy] = useState("");
+      var [error, setError] = useState("");
+
+      useEffect(function () {
+        if (props.outcome && !outcome) setOutcome(props.outcome);
+      }, [props.outcome]);
+
+      var status = outcome ? outcome.status : "pending";
+      var settled = status === "done" || status === "partial" || status === "cancelled";
+      var resultById = {};
+      (outcome && Array.isArray(outcome.results) ? outcome.results : []).forEach(function (r) {
+        if (r && r.id != null) resultById[String(r.id)] = r;
+      });
+
+      function confirm() {
+        if (busy || settled) return;
+        setBusy("confirm");
+        setError("");
+        callRpc(connection(), "confirmAction", { actionId: item.actionId }).then(function (value) {
+          setBusy("");
+          var next = value && typeof value === "object" ? value : { status: "done", results: [] };
+          setOutcome(next);
+          if (next.status === "failed") setError("没有" + verb + "成功，请看每一条的原因。");
+        }, function (err) {
+          setBusy("");
+          setError(errorText(err, verb + "失败，请重试。"));
+        });
+      }
+
+      function cancel() {
+        if (busy || settled) return;
+        setBusy("cancel");
+        setError("");
+        callRpc(connection(), "cancelAction", { actionId: item.actionId }).then(function () {
+          setBusy("");
+          setOutcome({ status: "cancelled", results: [] });
+        }, function (err) {
+          setBusy("");
+          setError(errorText(err, "取消失败，请重试。"));
+        });
+      }
+
+      var pill;
+      if (status === "done") pill = h("span", { className: "sfu-report-pill sfu-report-pill-ok" }, "已" + verb);
+      else if (status === "partial") pill = h("span", { className: "sfu-report-pill sfu-report-pill-warn" }, "部分完成");
+      else if (status === "cancelled") pill = h("span", { className: "sfu-report-pill" }, "已取消");
+      else if (status === "failed") pill = h("span", { className: "sfu-report-pill sfu-report-pill-err" }, "未" + verb);
+      else pill = h("span", { className: "sfu-report-pill" }, "待确认");
+
+      var note;
+      if (status === "done" && isTransfer) {
+        note = "已移交给" + ((item.toUser && item.toUser.realName) || "接收人") +
+          (outcome && outcome.projectCount ? "，一并移交了 " + outcome.projectCount + " 个项目" : "") + "。";
+      } else if (status === "done") {
+        note = "已从销售管理系统里删除。";
+      } else if (status === "partial") {
+        note = "有几条没有" + verb + "成功，原因写在每一条后面。";
+      } else if (status === "cancelled") {
+        note = "已取消，没有" + verb + "任何数据。";
+      } else if (isTransfer) {
+        note = "下面的" + (item.typeLabel || "数据") + "将移交给「" + ((item.toUser && item.toUser.realName) || "") + "」" +
+          (item.includeProjects ? "，并一并移交原负责人在其下跟进中的项目" : "") + "。移交后你可能看不到它们。点「确认移交」后才会执行。";
+      } else {
+        note = "下面的" + (item.typeLabel || "数据") + "将以你的名义删除，删除后不能在系统里恢复。点「确认删除」后才会执行。";
+      }
+
+      function stateOf(entry) {
+        var r = resultById[String(entry.id)];
+        if (!r) return null;
+        return r.ok
+          ? h("span", { className: "sfu-action-state sfu-action-state-ok" }, "已" + verb)
+          : h("span", { className: "sfu-action-state sfu-action-state-err" }, r.error || (verb + "失败"));
+      }
+
+      return h("section", { className: "sfu sfu-report", "data-pending-action": item.actionId, "aria-label": isTransfer ? "确认移交" : "确认删除" },
+        h("style", null, UI_CSS),
+        h("div", { className: "sfu-report-head" },
+          h("h3", { className: "sfu-card-title" }, item.title || (isTransfer ? "确认移交" : "确认删除")),
+          pill,
+        ),
+        h("p", { className: "sfu-report-note", role: settled ? "status" : null }, note),
+        error ? h("div", { className: "sfu-report-error", role: "alert" }, error) : null,
+        h("ul", { className: "sfu-action-list" }, items.map(function (entry) {
+          return h("li", { key: String(entry.id), className: "sfu-action-item" },
+            h("span", { className: "sfu-action-label" }, entry.label || String(entry.id)),
+            stateOf(entry),
+          );
+        })),
+        !settled && skipped.length
+          ? h("ul", { className: "sfu-report-notes" }, skipped.map(function (entry, i) {
+            return h("li", { key: "skip-" + i }, "ID " + entry.id + "：" + (entry.reason || "没有放进这张卡片"));
+          }))
+          : null,
+        settled ? null : h("div", { className: "sfu-row sfu-row-end" },
+          h("button", {
+            type: "button",
+            className: "sfu-btn sfu-btn-sm sfu-btn-ghost",
+            disabled: !!busy,
+            onClick: cancel,
+          }, busy === "cancel" ? "正在取消" : "取消"),
+          h("button", {
+            type: "button",
+            className: "sfu-btn sfu-btn-sm sfu-btn-primary sfu-btn-danger",
+            disabled: !!busy,
+            onClick: confirm,
+          }, busy === "confirm"
+            ? [h("span", { key: "s", className: "sfu-spinner", "aria-hidden": "true" }), "正在" + verb]
+            : (status === "failed" ? "重试" : "确认" + verb)),
+        ),
+      );
+    }
+
     function TurnTail(props) {
       var turn = props.turn;
       var data = turn && turn.data && typeof turn.data.get === "function" ? turn.data.get(KEY) : null;
@@ -1864,7 +2039,9 @@ window.__ModuleLoader__.load({
       var authRequired = data.authRequired || null;
       var drafts = Array.isArray(data.reportDrafts) ? data.reportDrafts : [];
       var submittedMap = data.submittedByDraftId || {};
-      if (!authRequired && !drafts.length) return null;
+      var actions = Array.isArray(data.pendingActions) ? data.pendingActions : [];
+      var actionStatus = data.actionStatusById || {};
+      if (!authRequired && !drafts.length && !actions.length) return null;
       var cards = drafts.map(function (item) {
         return h(ReportDraftCard, {
           key: "report-" + item.draftId,
@@ -1872,6 +2049,14 @@ window.__ModuleLoader__.load({
           submitted: submittedMap[item.draftId] || null,
           services: props.services,
         });
+      });
+      actions.forEach(function (item) {
+        cards.push(h(PendingActionCard, {
+          key: "action-" + item.actionId,
+          item: item,
+          outcome: actionStatus[item.actionId] || null,
+          services: props.services,
+        }));
       });
       if (authRequired) {
         cards.push(h(AuthRequiredCard, {
@@ -1892,6 +2077,7 @@ window.__ModuleLoader__.load({
     exports.AuthorizeDialog = AuthorizeDialog;
     exports.AuthRequiredCard = AuthRequiredCard;
     exports.ReportDraftCard = ReportDraftCard;
+    exports.PendingActionCard = PendingActionCard;
     exports.DetailActions = DetailActions;
     exports.DetailBadge = DetailBadge;
     exports.ExamplesSection = ExamplesSection;

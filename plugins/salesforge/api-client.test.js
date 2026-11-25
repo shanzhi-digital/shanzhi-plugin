@@ -214,10 +214,73 @@ test('createWorkReport posts the report as JSON with the plugin token; detail an
   }
 });
 
-test('the default client writes only through the three authorization calls and createWorkReport', () => {
-  const posts = ['startPluginAuthorization', 'pollPluginAuthorization', 'revokePluginToken', 'createWorkReport'];
+test('the default client writes only business data: authorization calls, reports, customers, channels, projects, targets', () => {
+  const writes = [
+    'startPluginAuthorization', 'pollPluginAuthorization', 'revokePluginToken', 'createWorkReport',
+    'createOrg', 'updateOrg', 'deleteOrg', 'addOrgContact', 'updateOrgContact', 'deleteOrgContact', 'addOrgDept', 'deleteOrgDept',
+    'createProject', 'updateProject', 'deleteProject', 'addProjectReview', 'updateProjectReview', 'saveProjectAnalysis',
+    'updateWorkReport', 'deleteWorkReport', 'saveWeeklyPlan', 'saveWeeklyReport', 'deleteWeeklyReport',
+    'saveSalesTarget', 'deleteSalesTarget', 'transferOwner',
+  ];
   for (const name of Object.keys(defaultApiClient)) {
-    assert.ok(posts.includes(name) || /^(get|list|search)/u.test(name), name);
+    assert.ok(writes.includes(name) || /^(get|list|search)/u.test(name), name);
   }
   assert.ok(Object.isFrozen(defaultApiClient));
+});
+
+test('write endpoints use the expected method and path; business errors pass on the server hint, 5xx never', async () => {
+  const cases = [
+    ['createOrg', ['customers', { customerName: 'A' }], 'POST', '/api/v1/customers'],
+    ['updateOrg', ['channels', 9, { companyName: 'B' }], 'PUT', '/api/v1/channels/9'],
+    ['deleteOrg', ['customers', 1001], 'DELETE', '/api/v1/customers/1001'],
+    ['addOrgContact', ['customers', 1001, { contactName: 'C' }], 'POST', '/api/v1/customers/1001/contacts'],
+    ['updateOrgContact', ['channels', 41, { contactName: 'D' }], 'PUT', '/api/v1/channels/contacts/41'],
+    ['deleteOrgContact', ['customers', 31], 'DELETE', '/api/v1/customers/contacts/31'],
+    ['addOrgDept', ['customers', 1001, { deptName: 'E' }], 'POST', '/api/v1/customers/1001/depts'],
+    ['deleteOrgDept', ['channels', 5], 'DELETE', '/api/v1/channels/depts/5'],
+    ['createProject', [{ projectName: 'P' }], 'POST', '/api/v1/projects'],
+    ['updateProject', [3, { id: 3 }], 'PUT', '/api/v1/projects/3'],
+    ['deleteProject', [3], 'DELETE', '/api/v1/projects/3'],
+    ['addProjectReview', [3, { content: 'x' }], 'POST', '/api/v1/projects/3/reviews'],
+    ['updateProjectReview', [8, { content: 'y' }], 'PUT', '/api/v1/projects/reviews/8'],
+    ['saveProjectAnalysis', [3, { demand: 'z' }], 'PUT', '/api/v1/projects/3/analysis'],
+    ['updateWorkReport', [596, { workSummary: 's' }], 'PUT', '/api/v1/work-reports/596'],
+    ['deleteWorkReport', [596], 'DELETE', '/api/v1/work-reports/596'],
+    ['saveWeeklyPlan', [{ planItems: [] }], 'PUT', '/api/v1/work-reports/weekly-plans'],
+    ['saveWeeklyReport', [{ workSummary: '' }], 'PUT', '/api/v1/work-reports/weekly-reports'],
+    ['deleteWeeklyReport', [12], 'DELETE', '/api/v1/work-reports/weekly-reports/12'],
+    ['saveSalesTarget', [{ targetId: 7 }], 'POST', '/api/v1/sales-targets'],
+    ['deleteSalesTarget', [4], 'DELETE', '/api/v1/sales-targets/4'],
+    ['transferOwner', ['projects', { ids: [1] }], 'POST', '/api/v1/projects/transfer'],
+  ];
+  for (const [name, args, method, path] of cases) {
+    const call = respond(200, { code: 200, data: null });
+    await defaultApiClient[name](CFG, ...args, { fetchImpl: call.fetchImpl });
+    assert.equal(call.calls[0].init.method, method, name);
+    assert.equal(new URL(call.calls[0].url).pathname, path, name);
+    assert.equal(call.calls[0].init.headers.Authorization, `Bearer ${CFG.apiToken}`, name);
+  }
+  assert.throws(() => defaultApiClient.createOrg(CFG, 'users', {}), (error) => error.code === 'INVALID_ARGUMENT');
+  assert.throws(() => defaultApiClient.transferOwner(CFG, 'users', {}), (error) => error.code === 'INVALID_ARGUMENT');
+
+  const duplicate = respond(200, { code: 400, message: '客户名称已存在，请勿重复创建', data: null });
+  await assert.rejects(
+    () => defaultApiClient.createOrg(CFG, 'customers', { customerName: 'A' }, { fetchImpl: duplicate.fetchImpl }),
+    (error) => error.code === 'BAD_REQUEST' && error.message === '销售管理系统没有接受这次操作：客户名称已存在，请勿重复创建。',
+  );
+  const notOwner = respond(200, { code: 403, message: '只有报告人本人或管理员可以修改、删除这份工作报告', data: null });
+  await assert.rejects(
+    () => defaultApiClient.deleteWorkReport(CFG, 596, { fetchImpl: notOwner.fetchImpl }),
+    (error) => error.code === 'FORBIDDEN' && error.message === '没有权限做这项操作：只有报告人本人或管理员可以修改、删除这份工作报告。',
+  );
+  const boundary = respond(403, { code: 403, message: '无操作权限', data: null });
+  await assert.rejects(
+    () => defaultApiClient.deleteWorkReport(CFG, 596, { fetchImpl: boundary.fetchImpl }),
+    (error) => error.code === 'FORBIDDEN' && /还没升级到允许插件修改数据的版本/u.test(error.message),
+  );
+  const crash = respond(200, { code: 500, message: 'NullPointerException at com.sales…', data: null });
+  await assert.rejects(
+    () => defaultApiClient.updateProject(CFG, 3, {}, { fetchImpl: crash.fetchImpl }),
+    (error) => error.code === 'SERVER_ERROR' && !/NullPointer/u.test(error.message),
+  );
 });

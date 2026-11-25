@@ -5,8 +5,26 @@ import { fileURLToPath } from 'node:url';
 import { ApiError, defaultApiClient } from './api-client.js';
 import { createAccountManager } from './accounts.js';
 import { toToolOutput } from './tool-output.js';
+import {
+  checkRange,
+  dateText,
+  invalid,
+  isRealDate,
+  optAmount,
+  optBool,
+  optDate,
+  optEnum,
+  optInt,
+  optText,
+  rejectPresent,
+  rejectUnknown,
+  round,
+  text,
+  toNumber,
+} from './args.js';
 import { PROMPT_SECTION_NAME, PROMPT_SECTION_ORDER, SALESFORGE_PROMPT } from './prompts.js';
 import { registerSalesforgeRemote } from './remote-service.js';
+import { registerWriteTools } from './write-tools.js';
 
 // 宿主包动态加载：独立跑 Node 单测时不需要任何 npm 依赖。
 let hostTypert = null;
@@ -31,7 +49,7 @@ try {
 }
 
 export const name = '@local/salesforge';
-export const description = '销售管理（SalesForge）：查询客户、渠道、项目商机、看板、日报周报和销售目标，并可在你确认后新建工作日报';
+export const description = '销售管理（SalesForge）：查询和维护客户、渠道、项目商机、日报周报和销售目标，删除和移交前先让你确认';
 export const inject = ['tools'];
 
 export const PERSON_UNRESOLVED_KIND = 'salesforge-person-unresolved';
@@ -53,7 +71,6 @@ const REPORT_PAGE_SIZE_MAX = 50;
 // 本地过滤或排序时，按每页 100 条往后翻，最多看 500 条。
 const SCAN_PAGE_SIZE = 100;
 const SCAN_MAX_RECORDS = 500;
-const MAX_TEXT_LENGTH = 100;
 const MAX_PERSON_CANDIDATES = 20;
 const MAX_PEOPLE_ROWS = 200;
 
@@ -84,114 +101,6 @@ const TARGET_TYPE_CODES = Object.freeze({ customer: 1, channel: 2 });
 const TARGET_TYPE_LABELS = Object.freeze({ 1: '客户', 2: '渠道' });
 
 const textRender = (_args, value) => [{ type: 'text', text: JSON.stringify(value) }];
-
-// ---------- 参数校验：报错文案写给模型看，说清楚哪个参数、怎么改 ----------
-
-function invalid(message) {
-  return new ApiError(message, { code: 'INVALID_ARGUMENT' });
-}
-
-function rejectUnknown(args, allowed, toolName) {
-  const unknown = Object.keys(args).filter((key) => args[key] !== undefined && !allowed.includes(key));
-  if (unknown.length) {
-    throw invalid(`${toolName} 不认识参数 ${unknown.join('、')}。可用参数：${allowed.join('、')}。`);
-  }
-}
-
-function rejectPresent(args, keys, reason) {
-  const present = keys.filter((key) => args[key] !== undefined && args[key] !== null);
-  if (present.length) throw invalid(`${present.join('、')} ${reason}`);
-}
-
-function optText(args, key) {
-  const value = args[key];
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string') throw invalid(`${key} 必须是字符串。`);
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  if (trimmed.length > MAX_TEXT_LENGTH) throw invalid(`${key} 太长了，最多 ${MAX_TEXT_LENGTH} 个字。`);
-  return trimmed;
-}
-
-function optInt(args, key, min, max) {
-  const value = args[key];
-  if (value === undefined || value === null) return undefined;
-  if (!Number.isInteger(value) || value < min || value > max) {
-    throw invalid(`${key} 必须是 ${min} 到 ${max} 之间的整数。`);
-  }
-  return value;
-}
-
-function optAmount(args, key) {
-  const value = args[key];
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw invalid(`${key} 必须是不小于 0 的数字（单位：万元）。`);
-  }
-  return value;
-}
-
-function optEnum(args, key, values) {
-  const value = args[key];
-  if (value === undefined || value === null) return undefined;
-  if (!values.includes(value)) throw invalid(`${key} 只能是 ${values.join('、')} 之一。`);
-  return value;
-}
-
-function optBool(args, key) {
-  const value = args[key];
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'boolean') throw invalid(`${key} 必须是 true 或 false。`);
-  return value;
-}
-
-function isRealDate(text) {
-  if (!/^\d{4}-\d{2}-\d{2}$/u.test(text)) return false;
-  const [y, m, d] = text.split('-').map(Number);
-  const date = new Date(Date.UTC(y, m - 1, d));
-  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
-}
-
-function optDate(args, key) {
-  const value = args[key];
-  if (value === undefined || value === null || value === '') return undefined;
-  if (typeof value !== 'string' || !isRealDate(value.trim())) throw invalid(`${key} 必须是 YYYY-MM-DD 格式的日期，例如 2026-11-24。`);
-  return value.trim();
-}
-
-function checkRange(from, to, fromKey, toKey, relation = '晚于') {
-  if (from !== undefined && to !== undefined && from > to) throw invalid(`${fromKey} 不能${relation} ${toKey}。`);
-}
-
-// ---------- 结果整理 ----------
-
-function toNumber(value) {
-  if (value === null || value === undefined || value === '') return null;
-  const num = Number(value);
-  return Number.isFinite(num) ? num : null;
-}
-
-function round(value, digits) {
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
-}
-
-function text(value) {
-  if (value === null || value === undefined) return '';
-  return typeof value === 'string' ? value : String(value);
-}
-
-// 后端的 LocalDate / LocalDateTime 一般是 ISO 字符串；万一是 [年, 月, 日, …] 数组也能读。
-function dateText(value, withTime) {
-  if (Array.isArray(value) && value.length >= 3) {
-    const pad = (n) => String(n).padStart(2, '0');
-    const day = `${value[0]}-${pad(value[1])}-${pad(value[2])}`;
-    return withTime && value.length >= 5 ? `${day} ${pad(value[3])}:${pad(value[4])}` : day;
-  }
-  if (typeof value !== 'string' || !value) return '';
-  const normalized = value.replace('T', ' ');
-  return withTime ? normalized.slice(0, 16) : normalized.slice(0, 10);
-}
 
 function recordsOf(page) {
   if (Array.isArray(page)) return page;
@@ -267,6 +176,7 @@ const DAILY_REPORT_COLUMNS = [
 const planItemsOf = (record) => (Array.isArray(record.planItems) ? record.planItems.map(text).filter(Boolean) : []);
 
 const WEEKLY_REPORT_COLUMNS = [
+  ['周报ID', (r) => toNumber(r.id)],
   ['汇报人', (r) => text(r.reporterName)],
   ['周开始', (r) => dateText(r.weekStartDate, false)],
   ['周结束', (r) => dateText(r.weekEndDate, false)],
@@ -331,6 +241,7 @@ export const BUNDLED_SKILL_NAMES = Object.freeze([
   'salesforge-target-tracking',
   'salesforge-customer-followup',
   'salesforge-weekly-review',
+  'salesforge-edit-data',
 ]);
 export const SKILLS_DIR = fileURLToPath(new URL('./skills/', import.meta.url));
 // 与宿主随包 skill 相同的优先级（@deepseek-ai/dsh-skill 的 BUNDLED_SKILL_RANK）。
@@ -1305,6 +1216,7 @@ export function setupSalesforge(ctx, deps = {}) {
         }
         const list = await apiClient.getTeamTargets(cfg, { year }, callOpts(exec.signal));
         const { columns, rows } = table(Array.isArray(list) ? list : [], [
+          ['部门ID', (r) => toNumber(r.targetId)],
           ['部门', (r) => text(r.deptName)],
           ['年度目标（万元）', (r) => toNumber(r.annualTarget) ?? 0],
           ['已完成（万元）', (r) => toNumber(r.completedAmount) ?? 0],
@@ -1329,8 +1241,8 @@ export function setupSalesforge(ctx, deps = {}) {
         targetId: { type: 'integer', minimum: 1, description: '客户ID或渠道ID（用 sales_search 查）' },
         contactId: { type: 'integer', minimum: 1, description: '可选：拜访人（联系人）ID' },
         contactName: { type: 'string', description: '可选：拜访人姓名，和该客户或渠道的联系人精确匹配' },
-        workPlan: { type: 'string', description: `工作计划：下一步打算做什么，最多 ${MAX_REPORT_TEXT_LENGTH} 字` },
-        workSummary: { type: 'string', description: `工作总结：这次拜访做了什么、谈到了哪一步，最多 ${MAX_REPORT_TEXT_LENGTH} 字` },
+        workPlan: { type: 'string', description: `工作计划：用户说的下一步打算，照原话写、只改错别字，最多 ${MAX_REPORT_TEXT_LENGTH} 字` },
+        workSummary: { type: 'string', description: `工作总结：用户说的这次拜访做了什么，照原话写、只改错别字，不扩写，最多 ${MAX_REPORT_TEXT_LENGTH} 字` },
       },
       required: ['targetType', 'targetId', 'workPlan', 'workSummary'],
     },
@@ -1408,12 +1320,27 @@ export function setupSalesforge(ctx, deps = {}) {
     },
   });
 
-  // ---------- 3. 宿主 RPC（设置页、插件页、授权卡片和日报卡片用） ----------
+  // 工具 10～16：查看详情、新建和修改、删除和移交（删除和移交要用户在卡片上确认）
+  const writes = registerWriteTools({
+    registerTool,
+    apiClient,
+    accounts,
+    viaBackend,
+    callOpts,
+    resolvePerson,
+    sessionTurnOf,
+    appendPluginRecord,
+    now,
+  });
+
+  // ---------- 3. 宿主 RPC（设置页、插件页、授权卡片、日报卡片和确认卡片用） ----------
   const remote = registerSalesforgeRemote(ctx, {
     ...(hostTypert || {}),
     ...(deps.typert || {}),
     accounts,
     submitReportDraft,
+    confirmAction: writes.confirmAction,
+    cancelAction: writes.cancelAction,
   });
 
   if (typeof ctx.effect === 'function') {
@@ -1433,6 +1360,9 @@ export function setupSalesforge(ctx, deps = {}) {
     remoteHandlers: remote.handlers,
     stagedReports,
     submitReportDraft,
+    pendingActions: writes.pendingActions,
+    confirmAction: writes.confirmAction,
+    cancelAction: writes.cancelAction,
     dispose() {
       for (const dispose of disposers) {
         try {

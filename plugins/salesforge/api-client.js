@@ -1,6 +1,7 @@
 // 销售管理系统（SalesForge）REST 接口客户端。
 // 后端返回 Result{code,message,data}：成功 code=200；业务错误是 HTTP 200 + 信封 code；分页是 PageResult{records,total,pageNum,pageSize,pages}。
-// 插件令牌只放行 GET 和两个 POST：浏览器授权的三个接口用 POST（其中两个不带令牌），写数据只有「新建工作日报」一个接口。
+// 插件令牌能读业务数据，也能增改删客户、渠道、项目、工作报告和销售目标（和用户在网页上的权限一样）；
+// 浏览器授权的三个接口用 POST（其中两个不带令牌）。删除和移交由插件先让用户在卡片上确认，再调这里的接口。
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -132,11 +133,32 @@ function businessError(rawCode, status) {
   });
 }
 
+// 写数据时销售系统拒绝的原因：业务校验的提示（例如「客户名称已存在」「拜访人不是所选拜访对象的联系人」）是写给用户看的，
+// 原样转告；只取一行、最多 120 字。5xx 的提示不转告。
+const WRITE_FORBIDDEN_MESSAGE = '销售管理系统拒绝了这次操作：可能是你的账号没有这项权限，或者服务器还没升级到允许插件修改数据的版本，请联系管理员。';
+
+function serverHint(body) {
+  const message = body && typeof body.message === 'string' ? body.message.replace(/\s+/gu, ' ').trim() : '';
+  return message.length > 120 ? `${message.slice(0, 120)}…` : message;
+}
+
+function writeBusinessError(body, status) {
+  const businessCode = Number.isSafeInteger(Number(body.code)) ? Number(body.code) : null;
+  if (businessCode === null || businessCode >= 500) return businessError(body.code, status);
+  const hint = serverHint(body);
+  const code = BUSINESS_ERRORS[businessCode]?.[0] ?? (businessCode === 403 ? 'FORBIDDEN' : 'BUSINESS_ERROR');
+  const message =
+    businessCode === 403
+      ? `没有权限做这项操作：${hint || '当前账户没有这项权限'}。`
+      : `销售管理系统没有接受这次操作：${hint || '请核对内容后重试'}。`;
+  return new ApiError(message.replace(/。。$/u, '。'), { status, code, businessCode });
+}
+
 // 先看 HTTP 状态；HTTP 成功时才看信封里的 code（销售系统的业务 400/403/500 都是 HTTP 200 + code）。
-function assertEnvelope(response, body) {
+function assertEnvelope(response, body, writing = false) {
   const status = response.status;
   if (status === 401) throw new ApiError(UNAUTHORIZED_MESSAGE, { status, code: 'UNAUTHORIZED' });
-  if (status === 403) throw new ApiError(FORBIDDEN_MESSAGE, { status, code: 'FORBIDDEN' });
+  if (status === 403) throw new ApiError(writing ? WRITE_FORBIDDEN_MESSAGE : FORBIDDEN_MESSAGE, { status, code: 'FORBIDDEN' });
   if (!response.ok) {
     if (status === 404) {
       throw new ApiError('销售管理系统没有这个接口（HTTP 404）：请确认服务器地址以 /api/v1 结尾，或请管理员升级销售管理系统。', {
@@ -154,6 +176,7 @@ function assertEnvelope(response, body) {
     const code = Number(body.code);
     if (code === 200) return body.data;
     if (code === 401) throw new ApiError(UNAUTHORIZED_MESSAGE, { status, code: 'UNAUTHORIZED', businessCode: 401 });
+    if (writing) throw writeBusinessError(body, status);
     if (code === 403) throw new ApiError(FORBIDDEN_MESSAGE, { status, code: 'FORBIDDEN', businessCode: 403 });
     throw businessError(body.code, status);
   }
@@ -172,6 +195,7 @@ export async function requestJson(cfg, path, options = {}) {
     body,
     query,
     requireAuth = true,
+    writing = false,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     signal,
     fetchImpl = globalThis.fetch,
@@ -208,7 +232,7 @@ export async function requestJson(cfg, path, options = {}) {
       redirect: 'error',
     });
     const parsed = await parseJsonSafe(response);
-    return assertEnvelope(response, parsed);
+    return assertEnvelope(response, parsed, writing);
   } catch (error) {
     if (error instanceof ApiError) throw error;
     if (timed.isTimedOut()) {
@@ -273,16 +297,65 @@ export const getTeamTargets = (cfg, query, opts) => get(cfg, '/sales-targets/tea
 export const searchAll = (cfg, query, opts) => get(cfg, '/search/all', query, opts);
 export const listScopeUsers = (cfg, opts) => get(cfg, '/users/scope', undefined, opts);
 
-// 写日报前核对拜访对象和拜访人：id 是调用方校验过的正整数。
+// 详情和下属数据：id 是调用方校验过的正整数；kind 是 customers 或 channels。
 const idPath = (id) => String(Math.trunc(Number(id)));
+const ORG_KINDS = new Set(['customers', 'channels']);
+const TRANSFER_KINDS = new Set(['customers', 'channels', 'projects']);
+function orgPath(kind) {
+  if (!ORG_KINDS.has(kind)) throw new ApiError('内部错误：未知的数据类型。', { code: 'INVALID_ARGUMENT' });
+  return `/${kind}`;
+}
 export const getCustomer = (cfg, id, opts) => get(cfg, `/customers/${idPath(id)}`, undefined, opts);
 export const getChannel = (cfg, id, opts) => get(cfg, `/channels/${idPath(id)}`, undefined, opts);
 export const listCustomerContacts = (cfg, id, opts) => get(cfg, `/customers/${idPath(id)}/contacts`, undefined, opts);
 export const listChannelContacts = (cfg, id, opts) => get(cfg, `/channels/${idPath(id)}/contacts`, undefined, opts);
+export const listOrgDepts = (cfg, kind, id, opts) => get(cfg, `${orgPath(kind)}/${idPath(id)}/depts`, undefined, opts);
+export const getProject = (cfg, id, opts) => get(cfg, `/projects/${idPath(id)}`, undefined, opts);
+export const listProjectReviews = (cfg, id, opts) => get(cfg, `/projects/${idPath(id)}/reviews`, undefined, opts);
+export const getProjectAnalysis = (cfg, id, opts) => get(cfg, `/projects/${idPath(id)}/analysis`, undefined, opts);
+export const listProducts = (cfg, query, opts) => get(cfg, '/products', query, opts);
+export const getWorkReport = (cfg, id, opts) => get(cfg, `/work-reports/${idPath(id)}`, undefined, opts);
+export const getWeeklyReport = (cfg, query, opts) => get(cfg, '/work-reports/weekly-reports', query, opts);
+export const listSalesTargets = (cfg, query, opts) => get(cfg, '/sales-targets', query, opts);
 
-// 唯一的写接口：新建工作日报（一次拜访记录）。后端返回新日报的 id；报告人固定是令牌对应的用户。
+// 新建工作日报（一次拜访记录）。后端返回新日报的 id；报告人固定是令牌对应的用户。
 export async function createWorkReport(cfg, report, opts = {}) {
   return requestJson(cfg, '/work-reports', { method: 'POST', body: report, ...opts });
+}
+
+// 其余写接口：报错时转告销售系统的业务提示（writing）。删除和移交只在用户点了确认卡片后调用。
+const send = (cfg, method, path, body, opts = {}) => requestJson(cfg, path, { method, body, writing: true, ...opts });
+
+export const createOrg = (cfg, kind, body, opts) => send(cfg, 'POST', orgPath(kind), body, opts);
+export const updateOrg = (cfg, kind, id, body, opts) => send(cfg, 'PUT', `${orgPath(kind)}/${idPath(id)}`, body, opts);
+export const deleteOrg = (cfg, kind, id, opts) => send(cfg, 'DELETE', `${orgPath(kind)}/${idPath(id)}`, undefined, opts);
+export const addOrgContact = (cfg, kind, id, body, opts) => send(cfg, 'POST', `${orgPath(kind)}/${idPath(id)}/contacts`, body, opts);
+export const updateOrgContact = (cfg, kind, contactId, body, opts) =>
+  send(cfg, 'PUT', `${orgPath(kind)}/contacts/${idPath(contactId)}`, body, opts);
+export const deleteOrgContact = (cfg, kind, contactId, opts) =>
+  send(cfg, 'DELETE', `${orgPath(kind)}/contacts/${idPath(contactId)}`, undefined, opts);
+export const addOrgDept = (cfg, kind, id, body, opts) => send(cfg, 'POST', `${orgPath(kind)}/${idPath(id)}/depts`, body, opts);
+export const deleteOrgDept = (cfg, kind, deptId, opts) => send(cfg, 'DELETE', `${orgPath(kind)}/depts/${idPath(deptId)}`, undefined, opts);
+
+export const createProject = (cfg, body, opts) => send(cfg, 'POST', '/projects', body, opts);
+export const updateProject = (cfg, id, body, opts) => send(cfg, 'PUT', `/projects/${idPath(id)}`, body, opts);
+export const deleteProject = (cfg, id, opts) => send(cfg, 'DELETE', `/projects/${idPath(id)}`, undefined, opts);
+export const addProjectReview = (cfg, id, body, opts) => send(cfg, 'POST', `/projects/${idPath(id)}/reviews`, body, opts);
+export const updateProjectReview = (cfg, reviewId, body, opts) => send(cfg, 'PUT', `/projects/reviews/${idPath(reviewId)}`, body, opts);
+export const saveProjectAnalysis = (cfg, id, body, opts) => send(cfg, 'PUT', `/projects/${idPath(id)}/analysis`, body, opts);
+
+export const updateWorkReport = (cfg, id, body, opts) => send(cfg, 'PUT', `/work-reports/${idPath(id)}`, body, opts);
+export const deleteWorkReport = (cfg, id, opts) => send(cfg, 'DELETE', `/work-reports/${idPath(id)}`, undefined, opts);
+export const saveWeeklyPlan = (cfg, body, opts) => send(cfg, 'PUT', '/work-reports/weekly-plans', body, opts);
+export const saveWeeklyReport = (cfg, body, opts) => send(cfg, 'PUT', '/work-reports/weekly-reports', body, opts);
+export const deleteWeeklyReport = (cfg, id, opts) => send(cfg, 'DELETE', `/work-reports/weekly-reports/${idPath(id)}`, undefined, opts);
+
+export const saveSalesTarget = (cfg, body, opts) => send(cfg, 'POST', '/sales-targets', body, opts);
+export const deleteSalesTarget = (cfg, id, opts) => send(cfg, 'DELETE', `/sales-targets/${idPath(id)}`, undefined, opts);
+
+export function transferOwner(cfg, kind, body, opts) {
+  if (!TRANSFER_KINDS.has(kind)) throw new ApiError('内部错误：未知的数据类型。', { code: 'INVALID_ARGUMENT' });
+  return send(cfg, 'POST', `/${kind}/transfer`, body, opts);
 }
 
 export const defaultApiClient = Object.freeze({
@@ -309,5 +382,35 @@ export const defaultApiClient = Object.freeze({
   getChannel,
   listCustomerContacts,
   listChannelContacts,
+  listOrgDepts,
+  getProject,
+  listProjectReviews,
+  getProjectAnalysis,
+  listProducts,
+  getWorkReport,
+  getWeeklyReport,
+  listSalesTargets,
   createWorkReport,
+  createOrg,
+  updateOrg,
+  deleteOrg,
+  addOrgContact,
+  updateOrgContact,
+  deleteOrgContact,
+  addOrgDept,
+  deleteOrgDept,
+  createProject,
+  updateProject,
+  deleteProject,
+  addProjectReview,
+  updateProjectReview,
+  saveProjectAnalysis,
+  updateWorkReport,
+  deleteWorkReport,
+  saveWeeklyPlan,
+  saveWeeklyReport,
+  deleteWeeklyReport,
+  saveSalesTarget,
+  deleteSalesTarget,
+  transferOwner,
 });

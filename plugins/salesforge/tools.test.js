@@ -285,7 +285,7 @@ const server = http.createServer(async (req, res) => {
     case '/sales-targets/personal-completion':
       return ok({ annualTarget: 1200, q1Amount: 300, q2Amount: 300, q3Amount: 300, q4Amount: null });
     case '/sales-targets/team-completion':
-      return ok([{ deptName: '销售一部', annualTarget: 800, completedAmount: 500, completionRate: 62.5 }]);
+      return ok([{ targetId: 4, deptName: '销售一部', annualTarget: 800, completedAmount: 500, completionRate: 62.5 }]);
     default:
       return sendJson(404, { code: 404, message: `Not found: ${path}`, data: null });
   }
@@ -388,26 +388,36 @@ test.after(async () => {
   rmSync(workDir, { recursive: true, force: true });
 });
 
-test('registers all 9 tools and systemPrompt section plugin:salesforge (order 941)', () => {
+// 改数据的 7 个工具在 write-tools.test.js 里测。
+const WRITE_TOOLS = ['sales_delete', 'sales_get_record', 'sales_save_customer', 'sales_save_project', 'sales_save_target', 'sales_save_work_report', 'sales_transfer'];
+
+test('registers all 16 tools and systemPrompt section plugin:salesforge (order 941)', () => {
   assert.deepEqual(
     [...registeredTools.keys()].sort(),
     [
       'sales_config',
       'sales_dashboard',
+      'sales_delete',
       'sales_draft_work_report',
+      'sales_get_record',
       'sales_query_channels',
       'sales_query_customers',
       'sales_query_projects',
       'sales_query_work_reports',
+      'sales_save_customer',
+      'sales_save_project',
+      'sales_save_target',
+      'sales_save_work_report',
       'sales_search',
       'sales_targets',
+      'sales_transfer',
     ],
   );
   assert.equal(promptSections.length, 1);
   assert.equal(promptSections[0].name, 'plugin:salesforge');
   assert.equal(promptSections[0].order, 941);
   const prompt = promptSections[0].text;
-  for (const pattern of [/万元/u, /includeArchived/u, /salesforge-person-unresolved/u, /salesforge-auth-required/u, /query_result_chart/u, /不要自己用 curl/u, /设置 → 销售管理配置/u, /点「提交日报」/u, /不要说已经提交/u]) {
+  for (const pattern of [/万元/u, /includeArchived/u, /salesforge-person-unresolved/u, /salesforge-auth-required/u, /query_result_chart/u, /不要自己用 curl/u, /设置 → 销售管理配置/u, /点「提交日报」/u, /不要说已经提交/u, /只改正明显的错别字/u, /不扩写/u, /确认删除/u, /不要说已经删除/u]) {
     assert.match(prompt, pattern);
   }
   for (const toolName of registeredTools.keys()) assert.match(prompt, new RegExp(toolName, 'u'));
@@ -853,6 +863,7 @@ test('sales_query_work_reports reads daily reports, weekly reports and weekly pl
   assert.deepEqual(lastRequest('/work-reports/weekly-reports/list').query, { weekStartDate: '2026-11-23', pageNum: '1', pageSize: '20' });
   assert.deepEqual(weekly.rows, [
     {
+      周报ID: null,
       汇报人: '张三',
       周开始: '2026-11-23',
       周结束: '2026-11-29',
@@ -902,7 +913,7 @@ test('sales_targets reads personal quarterly targets and team completion', async
   });
   const team = await runTool('sales_targets', { scope: 'team', year: 2025 });
   assert.deepEqual(lastRequest('/sales-targets/team-completion').query, { year: '2025' });
-  assert.deepEqual(team.rows, [{ 部门: '销售一部', '年度目标（万元）': 800, '已完成（万元）': 500, '完成率（%）': 62.5 }]);
+  assert.deepEqual(team.rows, [{ 部门ID: 4, 部门: '销售一部', '年度目标（万元）': 800, '已完成（万元）': 500, '完成率（%）': 62.5 }]);
   await rejectsArg('sales_targets', { year: 1999 }, /year 必须是 2000 到 2100 之间的整数/u);
   await rejectsArg('sales_targets', { scope: 'company' }, /scope 只能是 personal、team 之一/u);
 });
@@ -1106,8 +1117,8 @@ test('a backend 401 returns the auth-required output and marks the account; re-a
   assert.equal((await waitForAuthorization(remote, again.requestId)).status, 'approved');
 });
 
-test('every one of the 9 tools produced lossless output', () => {
-  assert.deepEqual([...toolsWithLosslessOutput].sort(), [...registeredTools.keys()].sort());
+test('every one of the 9 query and draft tools produced lossless output', () => {
+  assert.deepEqual([...toolsWithLosslessOutput].sort(), [...registeredTools.keys()].filter((name) => !WRITE_TOOLS.includes(name)).sort());
   assert.equal(isLosslessJson({ broken: undefined }), false);
 });
 
@@ -1150,7 +1161,7 @@ test('event projection shows the auth card for the last auth-required result in 
     { type: 'system/message', seq: 6, surfaceOp: { op: 'replace', startSeq: 4, endSeq: 5 }, data: { turn: 4 } },
   ]);
   assert.equal(none.authRequired, null);
-  assert.deepEqual(projectEvents([]), { turn: null, authRequired: null, reportDrafts: [], submittedByDraftId: {} });
+  assert.deepEqual(projectEvents([]), { turn: null, authRequired: null, reportDrafts: [], submittedByDraftId: {}, pendingActions: [], actionStatusById: {} });
 
   // 日报草稿：每份草稿一张卡片；会话里的「已提交」记录标出已提交的草稿，被 replace 掉的记录不算。
   const draftResult = (draftId) =>
@@ -1227,6 +1238,8 @@ test('TypertRemoteService "salesforge" is registered with the binary Remote form
       setActiveAccount: ['accountId', 'signal'],
       disconnectAccount: ['accountId', 'signal'],
       submitReportDraft: ['draftId', 'edited', 'signal'],
+      confirmAction: ['actionId', 'signal'],
+      cancelAction: ['actionId', 'signal'],
     });
     const instance = new pluginsRegistered[0](mockCtx);
     assert.equal(instance.serviceName, 'salesforge');

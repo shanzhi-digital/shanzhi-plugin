@@ -1215,6 +1215,135 @@ test('a submitted record keeps the card submitted after reload; drafts without c
   renderer.unmount();
 });
 
+const DELETE_PAYLOAD = {
+  kind: 'salesforge-action-pending',
+  actionId: 'act_0123456789abcdef',
+  action: 'delete',
+  type: 'work_report',
+  typeLabel: '日报',
+  title: '删除 2 条日报',
+  items: [
+    { id: 596, label: '2026-11-20 华光科技 · 刘老师（张三）：演示了数据平台' },
+    { id: 597, label: '2026-11-21 华光渠道 · 周总（张三）：沟通合作' },
+  ],
+  skipped: [{ id: 598, reason: '不存在或不在你的数据范围内' }],
+  status: 'pending',
+  hint: '已在对话里显示「确认删除」卡片，还没有删除。',
+};
+
+function actionEvents(payload, extra = []) {
+  return [
+    { type: 'turn/start', seq: 1, data: { turn: 4 } },
+    { type: 'tool/call', seq: 5, data: { turn: 4, callId: 'd1', name: 'sales_delete' } },
+    { type: 'tool/result', seq: 6, surfaceOp: 'append', data: { turn: 4, callId: 'd1', result: { content: [{ type: 'text', text: JSON.stringify(payload) }] } } },
+    ...extra,
+  ];
+}
+
+test('a pending delete projects into a confirmation card that deletes only when 确认删除 is clicked, matching the Node projection', async () => {
+  const renderer = createRenderer();
+  const mod = loadClientModule(renderer.React);
+  const def = mod.eventDefinition;
+  const events = actionEvents(DELETE_PAYLOAD);
+  const location = runDefinition(def, events);
+  assert.deepEqual(plain(location.value.pendingActions), projectEvents(events).pendingActions);
+  assert.equal(location.value.pendingActions.length, 1);
+  assert.equal(location.value.pendingActions[0].actionId, 'act_0123456789abcdef');
+
+  let confirms = 0;
+  const rpc = createRpc({
+    confirmAction: (args) => {
+      confirms += 1;
+      if (confirms === 1) throw new Error('销售管理系统账户未连接或授权已失效，请先在「设置 → 销售管理配置」重新连接，再点确认。');
+      return {
+        kind: 'salesforge-action-done',
+        actionId: args.actionId,
+        action: 'delete',
+        status: 'partial',
+        results: [{ id: 596, ok: true }, { id: 597, ok: false, error: '没有权限做这项操作：只有报告人本人或管理员可以修改、删除这份工作报告。' }],
+      };
+    },
+  });
+  renderer.mount(renderer.h(mod.TurnTail, { turn: { turn: 4, data: new Map([[location.key, location.value]]) }, services: servicesFor(rpc.connection) }));
+  await renderer.settle();
+  let text = textContent(renderer.tree);
+  assert.match(text, /删除 2 条日报/);
+  assert.match(text, /待确认/);
+  assert.match(text, /删除后不能在系统里恢复。点「确认删除」后才会执行/);
+  assert.match(text, /2026-11-20 华光科技 · 刘老师/);
+  assert.match(text, /ID 598：不存在或不在你的数据范围内/);
+  assert.ok(findAll(renderer.tree, 'style').some((n) => textContent(n).includes('.sfu-action-list{')));
+  assert.equal(rpc.count('confirmAction'), 0, '显示卡片不删除');
+
+  // 宿主拒绝时显示原因，按钮还在。
+  click(findButton(renderer.tree, '确认删除'));
+  await renderer.settle();
+  assert.match(textContent(renderer.tree), /授权已失效/);
+  assert.ok(findButton(renderer.tree, '确认删除'));
+
+  click(findButton(renderer.tree, '确认删除'));
+  await renderer.settle();
+  assert.deepEqual(plain(rpc.argsOf('confirmAction')[1]), { actionId: 'act_0123456789abcdef' });
+  text = textContent(renderer.tree);
+  assert.match(text, /部分完成/);
+  assert.match(text, /已删除/);
+  assert.match(text, /只有报告人本人或管理员/);
+  assert.equal(findButton(renderer.tree, '确认删除'), undefined);
+  assert.equal(findButton(renderer.tree, '取消'), undefined);
+  renderer.unmount();
+});
+
+test('the action record keeps the card settled after reload; 取消 cancels a pending transfer', async () => {
+  const renderer = createRenderer();
+  const mod = loadClientModule(renderer.React);
+  const def = mod.eventDefinition;
+  const record = { type: 'plugin:salesforge/action-done', seq: 9, data: { version: 1, turn: 4, actionId: 'act_0123456789abcdef', status: 'done', results: [{ id: 596, ok: true }, { id: 597, ok: true }] } };
+  const events = actionEvents(DELETE_PAYLOAD, [record]);
+  assert.deepEqual(plain(def.match(record)), { id: '4', role: 'start' });
+  const location = runDefinition(def, events);
+  assert.deepEqual(plain(location.value.actionStatusById), projectEvents(events).actionStatusById);
+  assert.equal(location.value.actionStatusById.act_0123456789abcdef.status, 'done');
+  const replaced = [...events, { type: 'system/message', seq: 10, surfaceOp: { op: 'replace', startSeq: 9, endSeq: 9 }, data: { turn: 4 } }];
+  assert.deepEqual(plain(runDefinition(def, replaced).value.actionStatusById), {});
+
+  const rpc = createRpc({ cancelAction: (args) => ({ actionId: args.actionId, status: 'cancelled' }) });
+  renderer.mount(renderer.h(mod.TurnTail, { turn: { turn: 4, data: new Map([[location.key, location.value]]) }, services: servicesFor(rpc.connection) }));
+  await renderer.settle();
+  let text = textContent(renderer.tree);
+  assert.match(text, /已删除/);
+  assert.match(text, /已从销售管理系统里删除/);
+  assert.doesNotMatch(text, /ID 598/, '已执行的卡片不再显示跳过的条目');
+  assert.equal(findButton(renderer.tree, '确认删除'), undefined);
+  renderer.unmount();
+
+  const transfer = {
+    ...DELETE_PAYLOAD,
+    actionId: 'act_fedcba9876543210',
+    action: 'transfer',
+    type: 'customer',
+    typeLabel: '客户',
+    title: '把 1 个客户移交给李四',
+    items: [{ id: 1001, label: '客户「华光科技」 · 负责人 张三' }],
+    toUser: { userId: 23, realName: '李四' },
+    includeProjects: true,
+    skipped: [],
+  };
+  const transferLocation = runDefinition(def, actionEvents(transfer));
+  renderer.mount(renderer.h(mod.TurnTail, { turn: { turn: 4, data: new Map([[transferLocation.key, transferLocation.value]]) }, services: servicesFor(rpc.connection) }));
+  await renderer.settle();
+  text = textContent(renderer.tree);
+  assert.match(text, /把 1 个客户移交给李四/);
+  assert.match(text, /将移交给「李四」，并一并移交原负责人在其下跟进中的项目/);
+  assert.ok(findButton(renderer.tree, '确认移交'));
+  click(findButton(renderer.tree, '取消'));
+  await renderer.settle();
+  assert.deepEqual(plain(rpc.argsOf('cancelAction')[0]), { actionId: 'act_fedcba9876543210' });
+  assert.match(textContent(renderer.tree), /已取消，没有移交任何数据/);
+  assert.equal(findButton(renderer.tree, '确认移交'), undefined);
+  assert.equal(rpc.count('confirmAction'), 0);
+  renderer.unmount();
+});
+
 test('settings page reuses the account panel; changing the server asks first and disconnects accounts', async () => {
   const renderer = createRenderer();
   const mod = loadClientModule(renderer.React);
@@ -1305,7 +1434,7 @@ test('every RPC the client calls exists on the host service, with the same argum
       params.split(',').map((p) => p.trim()).filter((p) => p && p !== 'signal'),
     ]),
   );
-  assert.equal(Object.keys(hostMethods).length, 9);
+  assert.equal(Object.keys(hostMethods).length, 11);
 
   const clientCalls = [...clientSource.matchAll(/callRpc\([^,]+, "(\w+)", \{([^}]*)\}/gu)].map(([, name, body]) => ({
     name,
@@ -1316,10 +1445,10 @@ test('every RPC the client calls exists on the host service, with the same argum
     assert.ok(hostMethods[name], `host has ${name}`);
     assert.deepEqual(keys, hostMethods[name], `${name} args`);
   }
-  // 插件页、设置页、授权卡片和日报卡片用到的方法都覆盖到了（getState 走 store，单独调用）。
+  // 插件页、设置页、授权卡片、日报卡片和确认卡片用到的方法都覆盖到了（getState 走 store，单独调用）。
   assert.deepEqual(
     [...new Set(clientCalls.map((c) => c.name))].sort(),
-    ['cancelAuthorization', 'disconnectAccount', 'getState', 'pollAuthorization', 'saveSettings', 'setActiveAccount', 'startAuthorization', 'submitReportDraft', 'testConnection'],
+    ['cancelAction', 'cancelAuthorization', 'confirmAction', 'disconnectAccount', 'getState', 'pollAuthorization', 'saveSettings', 'setActiveAccount', 'startAuthorization', 'submitReportDraft', 'testConnection'],
   );
 });
 
