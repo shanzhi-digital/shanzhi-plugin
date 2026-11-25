@@ -1,6 +1,6 @@
 // 销售管理系统（SalesForge）REST 接口客户端。
 // 后端返回 Result{code,message,data}：成功 code=200；业务错误是 HTTP 200 + 信封 code；分页是 PageResult{records,total,pageNum,pageSize,pages}。
-// 插件令牌只读：这里只有浏览器授权的三个接口用 POST，其余全是 GET。
+// 插件令牌只放行 GET 和两个 POST：浏览器授权的三个接口用 POST（其中两个不带令牌），写数据只有「新建工作日报」一个接口。
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -273,6 +273,18 @@ export const getTeamTargets = (cfg, query, opts) => get(cfg, '/sales-targets/tea
 export const searchAll = (cfg, query, opts) => get(cfg, '/search/all', query, opts);
 export const listScopeUsers = (cfg, opts) => get(cfg, '/users/scope', undefined, opts);
 
+// 写日报前核对拜访对象和拜访人：id 是调用方校验过的正整数。
+const idPath = (id) => String(Math.trunc(Number(id)));
+export const getCustomer = (cfg, id, opts) => get(cfg, `/customers/${idPath(id)}`, undefined, opts);
+export const getChannel = (cfg, id, opts) => get(cfg, `/channels/${idPath(id)}`, undefined, opts);
+export const listCustomerContacts = (cfg, id, opts) => get(cfg, `/customers/${idPath(id)}/contacts`, undefined, opts);
+export const listChannelContacts = (cfg, id, opts) => get(cfg, `/channels/${idPath(id)}/contacts`, undefined, opts);
+
+// 唯一的写接口：新建工作日报（一次拜访记录）。后端返回新日报的 id；报告人固定是令牌对应的用户。
+export async function createWorkReport(cfg, report, opts = {}) {
+  return requestJson(cfg, '/work-reports', { method: 'POST', body: report, ...opts });
+}
+
 export const defaultApiClient = Object.freeze({
   startPluginAuthorization,
   pollPluginAuthorization,
@@ -293,4 +305,9 @@ export const defaultApiClient = Object.freeze({
   getTeamTargets,
   searchAll,
   listScopeUsers,
+  getCustomer,
+  getChannel,
+  listCustomerContacts,
+  listChannelContacts,
+  createWorkReport,
 });

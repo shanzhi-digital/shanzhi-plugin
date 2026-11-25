@@ -59,7 +59,7 @@ description: 导入并分析合同：读取用户给的合同文件（电子 PDF
 
 ## 第 4 步：生成核对卡
 
-调用 `contract_stage_draft`，把提取的字段传进去：`contractNo`、`contractName`、`contractType`、`totalAmount`，以及能确定的 `taxRate`、`signDate`、`startDate`、`endDate`、`partyAName`、`partyBName`、`nodes`。`sourceFilePath` 填用户给的原件路径，确认入库时会自动归档原件。
+调用 `contract_stage_draft`，把提取的字段传进去：`contractNo`、`contractName`、`contractType`、`totalAmount`，以及能确定的 `taxRate`、`signDate`、`startDate`、`endDate`、`partyAName`、`partyBName`、`nodes`。`sourceFilePath` 填用户给的原件路径，确认入库时会自动归档原件。签订日期没能确定时 `signDate` 填 null，并用 `signDateNote` 写明签字页识别到了什么，回复里也要请用户对照原件补上。
 
 看返回的 `validation`：编号重复、节点金额合计和总额对不上等提示，要在回复里点出来；`hint` 里提到原件格式不能归档的，也要转告。
 

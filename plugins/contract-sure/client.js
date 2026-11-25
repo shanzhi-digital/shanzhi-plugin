@@ -70,7 +70,7 @@ window.__ModuleLoader__.load({
       revoked: "履约系统授权已失效",
     };
     var CREDENTIAL_NOTES = {
-      "dsh-credentials": "令牌保存在 DeepSeek Harness 凭据存储中，界面不会显示令牌。",
+      "dsh-credentials": "令牌保存在小智办公凭据存储中，界面不会显示令牌。",
       file: "令牌保存在本机插件配置文件中（仅本人可读），界面不会显示令牌。",
     };
 
@@ -109,6 +109,8 @@ window.__ModuleLoader__.load({
       ".cs-field label{font-size:11px;color:var(--cs-muted);font-weight:500}",
       ".cs-input,.cs-select{width:100%;height:32px;padding:0 10px;font-size:13px;border:1px solid var(--cs-border-strong);border-radius:6px;background:var(--cs-bg-input);color:var(--cs-text)}",
       ".cs-input:disabled,.cs-select:disabled{opacity:.7;cursor:not-allowed}",
+      ".cs-field-warn .cs-input{border-color:var(--dsw-alias-label-warning,#d97706);box-shadow:0 0 0 2px rgba(217,119,6,.15)}",
+      ".cs-field-hint{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-warning,#b45309)}",
       ".cs-table-wrap{overflow-x:auto;border:1px solid var(--cs-border);border-radius:8px;margin-bottom:10px;background:var(--cs-bg-input)}",
       ".cs-table{width:100%;border-collapse:collapse;font-size:12px}",
       ".cs-table th,.cs-table td{padding:7px 9px;border-bottom:1px solid var(--cs-border);text-align:left;vertical-align:top}",
@@ -131,7 +133,7 @@ window.__ModuleLoader__.load({
 
     // Account panel, plugin page contributions, dialogs and the auth card. The values mirror the
     // host primitives (Button sm/md, Tag tones, Modal) through the same --dsw-* theme tokens, so
-    // light and dark themes follow DeepSeek Harness without a stylesheet of their own.
+    // light and dark themes follow the host app without a stylesheet of their own.
     var UI_CSS = [
       ".csu{--csu-text:var(--dsw-alias-label-primary,#1f1f1f);--csu-muted:var(--dsw-alias-label-secondary,#5c5c5c);--csu-subtle:var(--dsw-alias-label-tertiary,#8a8a8a);--csu-line:var(--dsw-alias-border-l2,rgba(0,0,0,.08));--csu-line-strong:var(--dsw-alias-border-l3,rgba(0,0,0,.16));--csu-surface:var(--dsw-alias-bg-layer-2,#f7f7f7);--csu-raised:var(--dsw-alias-bg-layer-3,#fff);--csu-hover:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05));--csu-ok:var(--dsw-alias-state-success-primary,#1a7f37);--csu-warn:var(--dsw-alias-state-warn-primary,#b45309);--csu-err:var(--dsw-alias-state-error-primary,#d1242f);--csu-info:var(--dsw-alias-state-business-primary,#2563eb);--csu-r-sm:var(--dsw-radius-sm,6px);--csu-r-md:var(--dsw-radius-md,8px);--csu-r-lg:var(--dsw-radius-lg,12px);--csu-hair:var(--dsh-hairline-width,.5px)}",
       ".csu,.csu *{box-sizing:border-box}",
@@ -237,7 +239,7 @@ window.__ModuleLoader__.load({
     // "试试这样问" panel: a rounded panel over the plugin's background artwork, glass cards that open a new
     // session with the question, a soft light that follows the pointer and a slow drift of the artwork.
     // Plugin colors and images arrive as --csx-*-l / --csx-*-d custom properties (examplesStyle), and
-    // body[data-ds-dark-theme] (set by DeepSeek Harness) picks the dark half. Only the active theme's image loads.
+    // body[data-ds-dark-theme] (set by the host app) picks the dark half. Only the active theme's image loads.
     var EXAMPLES_CSS = [
       ".csx{--csx-brand:var(--csx-brand-l);--csx-on-brand:var(--csx-on-brand-l);--csx-glow:var(--csx-glow-l);--csx-glow-core:rgba(255,255,255,.75);--csx-fallback:var(--csx-fallback-l);--csx-img:var(--csx-img-l,none);--csx-ring:rgba(16,42,67,.07);--csx-card-bg:rgba(255,255,255,.62);--csx-card-bg-hover:rgba(255,255,255,.82);--csx-card-line:rgba(255,255,255,.9);--csx-card-ring:rgba(16,42,67,.07);--csx-card-shadow:0 1px 2px rgba(16,42,67,.05),0 8px 24px -14px rgba(16,42,67,.28);--csx-card-shadow-hover:0 2px 6px rgba(16,42,67,.06),0 18px 36px -16px rgba(16,42,67,.36);--csx-go-bg:rgba(16,42,67,.06);display:flex;flex-direction:column;gap:12px;color:var(--csu-text)}",
       "body[data-ds-dark-theme] .csx{--csx-brand:var(--csx-brand-d);--csx-on-brand:var(--csx-on-brand-d);--csx-glow:var(--csx-glow-d);--csx-glow-core:rgba(255,255,255,.06);--csx-fallback:var(--csx-fallback-d);--csx-img:var(--csx-img-d,none);--csx-ring:rgba(255,255,255,.07);--csx-card-bg:rgba(8,14,24,.46);--csx-card-bg-hover:rgba(12,20,32,.6);--csx-card-line:rgba(255,255,255,.08);--csx-card-ring:rgba(0,0,0,.3);--csx-card-shadow:0 1px 2px rgba(0,0,0,.3),0 10px 28px -14px rgba(0,0,0,.7);--csx-card-shadow-hover:0 2px 6px rgba(0,0,0,.35),0 20px 40px -16px rgba(0,0,0,.8);--csx-go-bg:rgba(255,255,255,.08)}",
@@ -420,6 +422,7 @@ window.__ModuleLoader__.load({
             draftId: rec.data.draftId,
             draft: rec.data.draft,
             sourceFilePath: rec.data.sourceFilePath || null,
+            signDateNote: rec.data.signDateNote || null,
             validation: rec.data.validation || null,
             status: rec.data.status || "staged",
           });
@@ -1970,6 +1973,8 @@ window.__ModuleLoader__.load({
       var [submitting, setSubmitting] = useState(false);
       var [error, setError] = useState("");
       var [confirmed, setConfirmed] = useState(confirmedInitial);
+      // 签订日期空着时第一次点确认只提醒，第二次才入库。
+      var [blankDateAcknowledged, setBlankDateAcknowledged] = useState(false);
 
       useEffect(function () {
         if (confirmedInitial && !confirmed) {
@@ -1985,7 +1990,10 @@ window.__ModuleLoader__.load({
       var parsedTotal = Number(form.totalAmount);
       var amountDiff = Number.isFinite(parsedTotal) ? Math.round((parsedTotal - nodesSum) * 100) / 100 : null;
       var warnings = Array.isArray(validation.warnings) ? validation.warnings : [];
-      var hasWarnings = warnings.length > 0 || validation.contractNoExists === true || (amountDiff != null && Math.abs(amountDiff) > 0.01);
+      var signDateText = String(form.signDate || "").trim();
+      var signDateMissing = signDateText === "";
+      var signDateNote = typeof item.signDateNote === "string" ? item.signDateNote.trim() : "";
+      var hasWarnings = warnings.length > 0 || validation.contractNoExists === true || (amountDiff != null && Math.abs(amountDiff) > 0.01) || signDateMissing;
       var readOnly = !!confirmed || submitting;
 
       function updateField(field, val) {
@@ -2011,6 +2019,15 @@ window.__ModuleLoader__.load({
           setError("请输入有效的合同总金额（纯数字，单位：元）。");
           return;
         }
+        if (!signDateMissing && !/^\d{4}-\d{2}-\d{2}$/.test(signDateText)) {
+          setError("签订日期请按 YYYY-MM-DD 填写，例如 2026-01-08。");
+          return;
+        }
+        if (signDateMissing && !blankDateAcknowledged) {
+          setBlankDateAcknowledged(true);
+          setError("签订日期还空着，请对照合同签字页填写。合同确实没写签订日期的话，再点一次确认即可入库。");
+          return;
+        }
         var editedDraft = Object.assign({}, draft, {
           contractNo: String(form.contractNo).trim(),
           contractName: String(form.contractName).trim(),
@@ -2018,7 +2035,7 @@ window.__ModuleLoader__.load({
           partyAName: String(form.partyAName || "").trim(),
           partyBName: String(form.partyBName || "").trim(),
           totalAmount: totalNum,
-          signDate: String(form.signDate || "").trim() || null,
+          signDate: signDateText || null,
           nodes: nodes,
         });
         setSubmitting(true);
@@ -2068,6 +2085,7 @@ window.__ModuleLoader__.load({
           amountDiff != null && Math.abs(amountDiff) > 0.01 && h("div", null,
             "• 合同总额（" + formatAmount(parsedTotal) + " 元）与节点合计（" + formatAmount(nodesSum) + " 元）相差 " + formatAmount(Math.abs(amountDiff)) + " 元。"
           ),
+          signDateMissing && h("div", null, "• 签订日期未识别，请对照合同签字页填写。"),
         ),
 
         confirmed && h("div", { className: "cs-banner cs-banner-ok", role: "status" },
@@ -2130,16 +2148,21 @@ window.__ModuleLoader__.load({
               onChange: function (e) { updateField("totalAmount", e.target.value); },
             }),
           ),
-          h("div", { className: "cs-field" },
-            h("label", null, "签订日期"),
+          h("div", { className: "cs-field" + (signDateMissing && !confirmed ? " cs-field-warn" : "") },
+            h("label", { htmlFor: "cs-sign-date-" + item.draftId }, "签订日期"),
             h("input", {
+              id: "cs-sign-date-" + item.draftId,
               className: "cs-input",
               type: "text",
               placeholder: "YYYY-MM-DD",
               value: form.signDate,
               disabled: readOnly,
+              "aria-invalid": signDateMissing && !confirmed ? "true" : undefined,
               onChange: function (e) { updateField("signDate", e.target.value); },
             }),
+            signDateMissing && !confirmed && h("span", { className: "cs-field-hint" },
+              signDateNote ? "未识别，签字页识别到：" + signDateNote : "未识别，请对照签字页填写",
+            ),
           ),
         ),
 

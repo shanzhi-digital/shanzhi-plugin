@@ -30,11 +30,11 @@ export function credentialsFilePath(configPath) {
 }
 
 const readFailed = () =>
-  new ApiError('读取本机凭据失败，请稍后重试；如果一直失败，请检查 DeepSeek Harness 的凭据存储。', {
+  new ApiError('读取本机凭据失败，请稍后重试；如果一直失败，请检查小智办公的凭据存储。', {
     code: 'CREDENTIAL_READ_FAILED',
   });
 const writeFailed = () =>
-  new ApiError('保存本机凭据失败，请稍后重试；如果一直失败，请检查 DeepSeek Harness 的凭据存储。', {
+  new ApiError('保存本机凭据失败，请稍后重试；如果一直失败，请检查小智办公的凭据存储。', {
     code: 'CREDENTIAL_WRITE_FAILED',
   });
 

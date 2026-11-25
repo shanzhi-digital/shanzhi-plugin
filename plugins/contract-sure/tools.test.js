@@ -534,7 +534,7 @@ test('browser authorization through the contractSure RPC handlers connects the a
   assert.equal(started.userCode, 'ABCD-2345');
   assert.equal(started.verifyUrl, `${new URL(baseUrl).origin}/plugin-authorize?req=${started.requestId}`);
   const startReq = requests.findLast((r) => r.pathname === '/api/v1/auth/plugin-authorize/start');
-  assert.deepEqual(JSON.parse(startReq.bodyText), { clientName: 'DeepSeek Harness · 履约无忧', deviceName: 'test-host' });
+  assert.deepEqual(JSON.parse(startReq.bodyText), { clientName: '小智办公 · 履约无忧', deviceName: 'test-host' });
   assert.equal(startReq.auth, '');
 
   const result = await waitForAuthorization(remote, started.requestId);
@@ -580,6 +580,7 @@ test('contract_stage_draft validates draft, emits plugin record, and contract_co
       contractType: 1,
       totalAmount: 500000,
       signDate: '2026-03-10',
+      signDateNote: '签订日期有值时这条说明会被丢掉',
       partyAName: '杭州市大数据局',
       partyBName: '善治数字科技有限公司',
       sourceFilePath: samplePdfPath,
@@ -619,6 +620,9 @@ test('contract_stage_draft validates draft, emits plugin record, and contract_co
   assert.equal(staged.kind, 'contract-sure-draft');
   assert.equal(staged.validation.valid, true);
   assert.equal(staged.validation.amountMatched, true);
+  assert.equal(staged.signDateNote, null);
+  assert.equal('signDateNote' in staged.draft, false);
+  assert.doesNotMatch(staged.hint, /签订日期为空/);
   assert.ok(appendedRecords.some((r) => r.type === DRAFT_RECORD_TYPE && r.data.draftId === staged.draftId));
 
   // Confirm save creates contract and uploads original PDF
@@ -676,6 +680,29 @@ test('contract_query (list & detail) and contract_dashboard return echarts-compa
   assert.equal(projected.confirmedByDraftId[projected.drafts[0].draftId].contractId, 101);
   assert.equal(projected.details.length, 1);
   assert.equal(projected.details[0].documents.length, 2);
+});
+
+test('contract_stage_draft carries signDateNote to the card when the signing date is blank', async () => {
+  const note = '乙方：2026 年【 】月 8 日，月份可能是手写数字没识别出来；甲方未填';
+  const staged = await runTool(
+    'contract_stage_draft',
+    {
+      contractNo: 'HT-2026-009',
+      contractName: '签字页日期不全的合同',
+      contractType: 1,
+      totalAmount: 1000,
+      signDate: null,
+      signDateNote: `  ${note}  `,
+      nodes: [{ nodeOrder: 1, nodeName: '全款', nodeAmount: 1000, paymentCondition: '验收后支付' }],
+    },
+    { agent: { id: 'sess-1' }, callId: 'call-stage-note' },
+  );
+  assert.equal(staged.draft.signDate, null);
+  assert.equal('signDateNote' in staged.draft, false);
+  assert.equal(staged.signDateNote, note);
+  assert.match(staged.hint, /签订日期为空/);
+  const record = appendedRecords.find((r) => r.type === DRAFT_RECORD_TYPE && r.data.draftId === staged.draftId);
+  assert.equal(record.data.signDateNote, note);
 });
 
 test('contract_query detail with null fields (the 图1 case, contractId 78) is lossless', async () => {

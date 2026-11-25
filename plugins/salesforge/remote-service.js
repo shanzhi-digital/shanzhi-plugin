@@ -1,6 +1,6 @@
 import { ApiError, safeErrorMessage } from './api-client.js';
 
-// 宿主 RPC 服务「salesforge」：设置页、插件页和对话授权卡片通过
+// 宿主 RPC 服务「salesforge」：设置页、插件页、对话里的授权卡片和日报草稿卡片通过
 // connection.rpc.call("/api", "salesforge/<方法>", { args }, signal) 调用这里的方法。
 export const REMOTE_SERVICE_NAME = 'salesforge';
 
@@ -30,6 +30,7 @@ export function createSalesforgeRemoteHandlers(deps = {}) {
   if (!accounts) {
     throw new TypeError('createSalesforgeRemoteHandlers 需要 deps.accounts（账户管理器）。');
   }
+  const submitReportDraft = deps.submitReportDraft;
   const guard = async (fn) => {
     try {
       return await fn();
@@ -63,6 +64,18 @@ export function createSalesforgeRemoteHandlers(deps = {}) {
     },
     disconnectAccount(accountId) {
       return guard(() => accounts.disconnectAccount(accountId));
+    },
+    // 日报草稿卡片的「提交日报」：只认插件暂存过的草稿，所以按 global 资源处理。
+    submitReportDraft(draftId, edited, signal) {
+      return guard(() => {
+        if (typeof draftId !== 'string' || !draftId) {
+          throw new SalesforgeRemoteError('INVALID_REQUEST', '缺少日报草稿标识。');
+        }
+        if (typeof submitReportDraft !== 'function') {
+          throw new SalesforgeRemoteError('NOT_CONFIGURED', '日报提交服务未初始化。');
+        }
+        return submitReportDraft({ draftId, edited, signal });
+      });
     },
   };
 }
@@ -154,6 +167,14 @@ export function registerSalesforgeRemote(ctx, deps = {}) {
         throw toRemoteError(error);
       }
     }
+
+    async submitReportDraft(draftId, edited, signal) {
+      try {
+        return await handlers.submitReportDraft(draftId, edited, signal);
+      } catch (error) {
+        throw toRemoteError(error);
+      }
+    }
   }
 
   // 没有 name / mode / resources 选项的方法直接用二元调用 Remote(method, context)，不能传 Remote({})。
@@ -166,6 +187,7 @@ export function registerSalesforgeRemote(ctx, deps = {}) {
     'cancelAuthorization',
     'setActiveAccount',
     'disconnectAccount',
+    'submitReportDraft',
   ]) {
     Remote(SalesforgeService.prototype[methodName], {
       kind: 'method',

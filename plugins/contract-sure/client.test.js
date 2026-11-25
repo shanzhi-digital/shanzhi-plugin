@@ -534,7 +534,7 @@ test('account panel lists accounts with status and expiry, and never renders tok
   assert.match(text, /连接另一个账户/);
   assert.match(text, /服务器与识别设置/);
   assert.match(text, /sk-\*\*\*\*9f2c/);
-  assert.match(text, /令牌保存在 DeepSeek Harness 凭据存储中，界面不会显示令牌。/);
+  assert.match(text, /令牌保存在小智办公凭据存储中，界面不会显示令牌。/);
 
   const serialized = JSON.stringify(renderedDom(renderer.tree));
   assert.doesNotMatch(serialized, /secret-token/);
@@ -1132,6 +1132,82 @@ test('an OCR key from the environment shows its source and cannot be cleared fro
   assert.match(textContent(renderer.tree), /来自环境变量 DEEPSEEK_API_KEY/);
   assert.equal(findButton(renderer.tree, '清除'), undefined);
   assert.ok(findButton(renderer.tree, '改用其他 Key'));
+});
+
+test('DraftVerificationCard flags a blank signing date, shows what the signature page gave, and asks once before saving', async () => {
+  const { React, renderComponent } = createReactStub();
+  const mod = loadClientModule(React);
+  const rpcCalls = [];
+  const connection = {
+    rpc: {
+      async call(_ep, method, payload) {
+        rpcCalls.push({ method, payload });
+        return { ok: true, value: { contractId: 111 } };
+      },
+    },
+  };
+  const def = mod.eventDefinition;
+  const state = def.start({}, {
+    event: {
+      type: 'plugin:contract-sure/draft',
+      seq: 5,
+      data: {
+        turn: 1,
+        draftId: 'draft_sign',
+        signDateNote: '乙方：2026 年【 】月 8 日；甲方未填',
+        validation: { valid: true, amountMatched: true, warnings: [] },
+        draft: { contractNo: 'SZ-1', contractName: '服务包', contractType: 1, totalAmount: 100, signDate: null, nodes: [] },
+      },
+    },
+  });
+  const location = def.buildLocationData({ state }, 'turn', null);
+  const turn = { turn: 1, data: new Map([[location.key, location.value]]) };
+  const tail = renderComponent(mod.TurnTail, { turn, connection, sidebarRight: null });
+  const cardNode = collectNodes(tail.tree, (n) => n.type === mod.DraftVerificationCard)[0];
+  assert.equal(cardNode.props.item.signDateNote, '乙方：2026 年【 】月 8 日；甲方未填');
+
+  const card = renderComponent(mod.DraftVerificationCard, Object.assign({}, cardNode.props, { sessionId: 'sess-ui' }));
+  const text = textContent(card.tree);
+  assert.match(text, /存在校验提示/);
+  assert.match(text, /签订日期未识别，请对照合同签字页填写/);
+  assert.match(text, /未识别，签字页识别到：乙方：2026 年【 】月 8 日；甲方未填/);
+  const field = collectNodes(card.tree, (n) => n.props && typeof n.props.className === 'string' && n.props.className.includes('cs-field-warn'));
+  assert.equal(field.length, 1);
+
+  const findConfirm = (tree) => collectNodes(tree, (n) => n.type === 'button').find((b) => textContent(b).includes('确认创建合同'));
+  findConfirm(card.tree).props.onClick();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(rpcCalls.length, 0);
+  const warned = renderComponent(mod.DraftVerificationCard, Object.assign({}, cardNode.props, { sessionId: 'sess-ui' }), card.states);
+  assert.match(textContent(warned.tree), /签订日期还空着/);
+
+  findConfirm(warned.tree).props.onClick();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(rpcCalls.length, 1);
+  assert.equal(rpcCalls[0].payload.args.editedDraft.signDate, null);
+});
+
+test('DraftVerificationCard rejects a signing date that is not YYYY-MM-DD', async () => {
+  const { React, renderComponent } = createReactStub();
+  const mod = loadClientModule(React);
+  const rpcCalls = [];
+  const connection = { rpc: { async call(_ep, method, payload) { rpcCalls.push({ method, payload }); return { ok: true, value: { contractId: 1 } }; } } };
+  const props = {
+    item: {
+      draftId: 'draft_fmt',
+      validation: { valid: true, warnings: [] },
+      draft: { contractNo: 'SZ-2', contractName: '服务包', contractType: 1, totalAmount: 100, signDate: '2026年1月8日', nodes: [] },
+    },
+    sessionId: 'sess-ui',
+    connection,
+  };
+  const card = renderComponent(mod.DraftVerificationCard, props);
+  assert.doesNotMatch(textContent(card.tree), /签订日期未识别/);
+  collectNodes(card.tree, (n) => n.type === 'button').find((b) => textContent(b).includes('确认创建合同')).props.onClick();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(rpcCalls.length, 0);
+  const after = renderComponent(mod.DraftVerificationCard, props, card.states);
+  assert.match(textContent(after.tree), /签订日期请按 YYYY-MM-DD 填写/);
 });
 
 test('TurnTail renders DraftVerificationCard with warnings, formatted triggerRule, confirm RPC, and DetailDocumentsCard preview', async () => {

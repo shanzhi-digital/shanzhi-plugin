@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +10,13 @@ import { registerSalesforgeRemote } from './remote-service.js';
 
 // 宿主包动态加载：独立跑 Node 单测时不需要任何 npm 依赖。
 let hostTypert = null;
+let hostAppendPluginRecord = null;
+try {
+  const sessionMod = await import('@deepseek-ai/dsh-session');
+  hostAppendPluginRecord = sessionMod.appendPluginRecord || null;
+} catch {
+  // 不在 DSH 宿主里运行（例如单测）。
+}
 try {
   const typertMod = await import('@deepseek-ai/dsh-typert-protocol');
   if (typertMod.TypertRemoteService && typertMod.Remote && typertMod.RemoteError) {
@@ -23,10 +31,21 @@ try {
 }
 
 export const name = '@local/salesforge';
-export const description = '销售管理（SalesForge）：只读查询客户、渠道、项目商机、看板、日报周报和销售目标';
+export const description = '销售管理（SalesForge）：查询客户、渠道、项目商机、看板、日报周报和销售目标，并可在你确认后新建工作日报';
 export const inject = ['tools'];
 
 export const PERSON_UNRESOLVED_KIND = 'salesforge-person-unresolved';
+export const REPORT_DRAFT_KIND = 'salesforge-report-draft';
+export const REPORT_SUBMITTED_KIND = 'salesforge-report-submitted';
+export const REPORT_SUBMITTED_RECORD_TYPE = 'plugin:salesforge/report-submitted';
+// 日报草稿只放在内存里：小智办公重启后草稿失效，要重新生成。
+const MAX_STAGED_REPORTS = 50;
+const REPORT_WRITE_ERRORS = Object.freeze({
+  FORBIDDEN: '销售管理系统拒绝了这次提交：可能是你的账号没有新建日报的权限，或者服务器还没升级到允许插件提交日报的版本，请联系管理员。',
+  BAD_REQUEST: '销售管理系统没有接受这条日报：请核对拜访日期、拜访对象和拜访人后重试。',
+  NOT_FOUND: '拜访对象或拜访人在销售管理系统里已经不存在，请让助手重新生成草稿。',
+});
+const MAX_REPORT_TEXT_LENGTH = 2000;
 
 const PAGE_SIZE_DEFAULT = 20;
 const PAGE_SIZE_MAX = 100;
@@ -434,6 +453,127 @@ export function setupSalesforge(ctx, deps = {}) {
     const result = await accounts.withBackend(fn);
     return result.ok ? result.value : result.authRequired;
   };
+
+  const appendPluginRecord = deps.appendPluginRecord ?? hostAppendPluginRecord;
+  const stagedReports = new Map();
+
+  function stageReport(entry) {
+    if (stagedReports.size >= MAX_STAGED_REPORTS) {
+      const oldest = stagedReports.keys().next().value;
+      if (oldest !== undefined) stagedReports.delete(oldest);
+    }
+    stagedReports.set(entry.draftId, entry);
+  }
+
+  /** 工具调用所在的会话和回合，用来把「已提交」记进会话，重新打开对话时卡片还是已提交。 */
+  function sessionTurnOf(sessionId, callId) {
+    const sessions = service(ctx, 'sessions');
+    const session = sessionId && typeof sessions?.get === 'function' ? sessions.get(sessionId) || null : null;
+    if (!session || typeof session.snapshotEvents !== 'function' || !callId) return { session, turn: null };
+    const call = session.snapshotEvents().find((event) => event?.type === 'tool/call' && event.data?.callId === callId);
+    return { session, turn: call?.data?.turn ?? null };
+  }
+
+  /** 提交日报时后端拒绝的原因：api-client 的通用文案是按「查询」写的，这里换成提交日报的说法。 */
+  function reportWriteError(error) {
+    const message = error instanceof ApiError ? REPORT_WRITE_ERRORS[error.code] : undefined;
+    if (!message) return error;
+    return new ApiError(message, { status: error.status, code: error.code, businessCode: error.businessCode });
+  }
+
+  /**
+   * 提交日报草稿：只接受本插件暂存过的草稿，拜访对象不能改，拜访人只能从草稿里的联系人中选。
+   * edited 可带 reportDate、contactId、workPlan、workSummary（用户在卡片上改过的内容）。
+   */
+  async function submitReportDraft({ draftId, edited, signal }) {
+    const staged = typeof draftId === 'string' ? stagedReports.get(draftId) : undefined;
+    if (!staged) {
+      throw new ApiError('这份日报草稿已失效（小智办公可能重启过），请让助手重新生成草稿。', { code: 'DRAFT_NOT_FOUND' });
+    }
+    if (staged.status === 'submitted') {
+      return { kind: REPORT_SUBMITTED_KIND, draftId, reportId: staged.reportId, alreadySubmitted: true, draft: staged.draft };
+    }
+    if (staged.status === 'submitting') {
+      throw new ApiError('这份日报正在提交，请稍候。', { code: 'SUBMITTING' });
+    }
+    const patch = edited && typeof edited === 'object' && !Array.isArray(edited) ? edited : {};
+    const final = { ...staged.draft };
+    if (patch.reportDate !== undefined) {
+      if (typeof patch.reportDate !== 'string' || !isRealDate(patch.reportDate.trim())) {
+        throw new ApiError('拜访日期请按 YYYY-MM-DD 填写，例如 2026-11-24。', { code: 'INVALID_ARGUMENT' });
+      }
+      final.reportDate = patch.reportDate.trim();
+    }
+    if (patch.contactId !== undefined) final.contactId = toNumber(patch.contactId);
+    for (const key of ['workPlan', 'workSummary']) {
+      if (patch[key] !== undefined) final[key] = typeof patch[key] === 'string' ? patch[key].trim() : '';
+    }
+    if (!staged.contacts.some((contact) => contact.contactId === final.contactId)) {
+      throw new ApiError(
+        staged.contacts.length
+          ? '请选择拜访人。'
+          : `${TARGET_TYPE_LABELS[final.targetType]}「${final.targetName}」还没有联系人，请先在销售管理系统网页里添加联系人。`,
+        { code: 'INVALID_ARGUMENT' },
+      );
+    }
+    for (const [key, label] of [['workPlan', '工作计划'], ['workSummary', '工作总结']]) {
+      if (!final[key]) throw new ApiError(`${label}不能为空。`, { code: 'INVALID_ARGUMENT' });
+      if (final[key].length > MAX_REPORT_TEXT_LENGTH) {
+        throw new ApiError(`${label}不能超过 ${MAX_REPORT_TEXT_LENGTH} 个字。`, { code: 'INVALID_ARGUMENT' });
+      }
+    }
+
+    staged.status = 'submitting';
+    let result;
+    try {
+      result = await accounts.withBackend(async (cfg) => {
+        // 草稿是用哪个服务器、哪个账户生成的，就只能用它提交。
+        if (cfg.serverUrl !== staged.serverUrl || cfg.accountId !== staged.accountId) {
+          throw new ApiError('当前连接的销售管理系统账户和生成草稿时不同，请让助手重新生成草稿。', { code: 'ACCOUNT_SWITCHED' });
+        }
+        return apiClient.createWorkReport(
+          cfg,
+          {
+            reportDate: final.reportDate,
+            targetType: final.targetType,
+            targetId: final.targetId,
+            contactId: final.contactId,
+            workPlan: final.workPlan,
+            workSummary: final.workSummary,
+          },
+          callOpts(signal),
+        ).catch((error) => {
+          throw reportWriteError(error);
+        });
+      });
+    } catch (error) {
+      staged.status = 'staged';
+      throw error;
+    }
+    if (!result.ok) {
+      staged.status = 'staged';
+      throw new ApiError('销售管理系统账户未连接或授权已失效，请先在「设置 → 销售管理配置」重新连接，再点提交。', { code: 'AUTH_REQUIRED' });
+    }
+    const reportId = toNumber(result.value);
+    staged.status = 'submitted';
+    staged.reportId = Number.isSafeInteger(reportId) ? reportId : null;
+    staged.draft = final;
+    if (appendPluginRecord && staged.session) {
+      try {
+        appendPluginRecord(staged.session, REPORT_SUBMITTED_RECORD_TYPE, {
+          version: 1,
+          turn: staged.turn,
+          draftId,
+          reportId: staged.reportId,
+          // 实际提交的内容：重新打开对话时卡片显示这些，而不是最初的草稿。
+          report: { reportDate: final.reportDate, contactId: final.contactId, workPlan: final.workPlan, workSummary: final.workSummary },
+        });
+      } catch {
+        // 记不进会话不影响提交结果：只是重新打开对话时卡片不显示「已提交」。
+      }
+    }
+    return { kind: REPORT_SUBMITTED_KIND, draftId, reportId: staged.reportId, alreadySubmitted: false, draft: final };
+  }
 
   /**
    * 把人员参数（xxxId 或 xxxName）换成可见范围内的一个人。
@@ -1175,8 +1315,106 @@ export function setupSalesforge(ctx, deps = {}) {
     },
   });
 
-  // ---------- 3. 宿主 RPC（设置页、插件页和授权卡片用） ----------
-  const remote = registerSalesforgeRemote(ctx, { ...(hostTypert || {}), ...(deps.typert || {}), accounts });
+  // 工具 9：sales_draft_work_report（只生成草稿，用户在卡片上点「提交日报」才写入）
+  registerTool({
+    name: 'sales_draft_work_report',
+    description:
+      '为用户起草一条工作日报（对一个客户或渠道的一次拜访/跟进记录），在对话里显示「日报草稿」卡片。这个工具不会写入任何数据：用户在卡片上核对、修改后点「提交日报」，才以用户本人的名义新建日报。拜访对象先用 sales_search 拿到客户或渠道的 ID；拜访人用 contactId 或 contactName 指定，不确定就不填，让用户在卡片上选。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        reportDate: { type: 'string', description: '拜访日期 YYYY-MM-DD，默认今天' },
+        targetType: { type: 'string', enum: ['customer', 'channel'], description: '拜访对象类型：customer 客户，channel 渠道' },
+        targetId: { type: 'integer', minimum: 1, description: '客户ID或渠道ID（用 sales_search 查）' },
+        contactId: { type: 'integer', minimum: 1, description: '可选：拜访人（联系人）ID' },
+        contactName: { type: 'string', description: '可选：拜访人姓名，和该客户或渠道的联系人精确匹配' },
+        workPlan: { type: 'string', description: `工作计划：下一步打算做什么，最多 ${MAX_REPORT_TEXT_LENGTH} 字` },
+        workSummary: { type: 'string', description: `工作总结：这次拜访做了什么、谈到了哪一步，最多 ${MAX_REPORT_TEXT_LENGTH} 字` },
+      },
+      required: ['targetType', 'targetId', 'workPlan', 'workSummary'],
+    },
+    async execute(args, exec) {
+      rejectUnknown(
+        args,
+        ['reportDate', 'targetType', 'targetId', 'contactId', 'contactName', 'workPlan', 'workSummary'],
+        'sales_draft_work_report',
+      );
+      const reportDate = optDate(args, 'reportDate') ?? localDay(now());
+      const targetKey = optEnum(args, 'targetType', ['customer', 'channel']);
+      const targetId = optInt(args, 'targetId', 1, Number.MAX_SAFE_INTEGER);
+      if (targetKey === undefined || targetId === undefined) throw invalid('请给出拜访对象：targetType（customer 或 channel）和 targetId。');
+      const contactId = optInt(args, 'contactId', 1, Number.MAX_SAFE_INTEGER);
+      const contactName = optText(args, 'contactName');
+      const texts = {};
+      for (const [key, label] of [['workPlan', '工作计划'], ['workSummary', '工作总结']]) {
+        const value = typeof args[key] === 'string' ? args[key].trim() : '';
+        if (!value) throw invalid(`${label}（${key}）不能为空。`);
+        if (value.length > MAX_REPORT_TEXT_LENGTH) throw invalid(`${label}（${key}）不能超过 ${MAX_REPORT_TEXT_LENGTH} 个字。`);
+        texts[key] = value;
+      }
+      const targetType = TARGET_TYPE_CODES[targetKey];
+
+      return viaBackend(async (cfg) => {
+        const isCustomer = targetType === 1;
+        const [target, contactList] = await Promise.all([
+          isCustomer ? apiClient.getCustomer(cfg, targetId, callOpts(exec.signal)) : apiClient.getChannel(cfg, targetId, callOpts(exec.signal)),
+          isCustomer
+            ? apiClient.listCustomerContacts(cfg, targetId, callOpts(exec.signal))
+            : apiClient.listChannelContacts(cfg, targetId, callOpts(exec.signal)),
+        ]);
+        const targetName = text(isCustomer ? target?.customerName : target?.companyName) || `${TARGET_TYPE_LABELS[targetType]} ${targetId}`;
+        const contacts = (Array.isArray(contactList) ? contactList : [])
+          .map((contact) => ({ contactId: toNumber(contact?.id), contactName: text(contact?.contactName), position: text(contact?.position) }))
+          .filter((contact) => Number.isSafeInteger(contact.contactId));
+
+        let chosen = null;
+        const notes = [];
+        if (contactId !== undefined) {
+          chosen = contacts.find((contact) => contact.contactId === contactId) || null;
+          if (!chosen) notes.push(`联系人 ${contactId} 不是「${targetName}」的联系人，请用户在卡片上选择拜访人。`);
+        } else if (contactName !== undefined) {
+          const matched = contacts.filter((contact) => contact.contactName === contactName);
+          if (matched.length === 1) chosen = matched[0];
+          else notes.push(`「${targetName}」的联系人里${matched.length ? `有 ${matched.length} 位叫「${contactName}」` : `没有「${contactName}」`}，请用户在卡片上选择拜访人。`);
+        } else if (contacts.length === 1) {
+          chosen = contacts[0];
+        }
+        if (!contacts.length) notes.push(`「${targetName}」还没有联系人：要先在销售管理系统网页里添加联系人，才能提交这条日报。`);
+
+        const draftId = `report_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+        const draft = { reportDate, targetType, targetName, targetId, contactId: chosen ? chosen.contactId : null, ...texts };
+        const { session, turn } = sessionTurnOf(exec.agent?.id || null, exec.callId);
+        stageReport({
+          draftId,
+          serverUrl: cfg.serverUrl,
+          accountId: cfg.accountId,
+          session,
+          turn,
+          draft,
+          contacts,
+          status: 'staged',
+        });
+        return {
+          kind: REPORT_DRAFT_KIND,
+          draftId,
+          status: 'staged',
+          draft: { ...draft, targetTypeLabel: TARGET_TYPE_LABELS[targetType] },
+          contacts,
+          notes,
+          hint: '日报草稿已显示在卡片上，还没有提交。请用户核对后点卡片上的「提交日报」；不要说已经提交，也不要自己再调用任何工具去提交。',
+        };
+      });
+    },
+  });
+
+  // ---------- 3. 宿主 RPC（设置页、插件页、授权卡片和日报卡片用） ----------
+  const remote = registerSalesforgeRemote(ctx, {
+    ...(hostTypert || {}),
+    ...(deps.typert || {}),
+    accounts,
+    submitReportDraft,
+  });
 
   if (typeof ctx.effect === 'function') {
     ctx.effect(() => () => {
@@ -1193,6 +1431,8 @@ export function setupSalesforge(ctx, deps = {}) {
   return {
     accounts,
     remoteHandlers: remote.handlers,
+    stagedReports,
+    submitReportDraft,
     dispose() {
       for (const dispose of disposers) {
         try {

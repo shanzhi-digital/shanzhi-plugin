@@ -654,6 +654,10 @@ export function setupContractSure(ctx, deps = {}) {
         totalAmount: { type: 'number', description: '合同总金额（人民币元，纯数字）' },
         taxRate: { type: 'number', description: '可选税率（百分比数字，如 6 或 13）' },
         signDate: { type: ['string', 'null'], description: '签订日期 YYYY-MM-DD，未知填 null' },
+        signDateNote: {
+          type: 'string',
+          description: '签订日期没能确定时（signDate 为 null）写明签字页识别到了什么，例如「乙方：2026 年【 】月 8 日，月份可能是手写数字没识别出来；甲方未填」，会显示在核对卡上提醒用户补全。signDate 有值时不传',
+        },
         startDate: { type: ['string', 'null'], description: '合同开始日期 YYYY-MM-DD' },
         endDate: { type: ['string', 'null'], description: '合同结束日期 YYYY-MM-DD' },
         partyAName: { type: 'string', description: '甲方户名' },
@@ -686,6 +690,10 @@ export function setupContractSure(ctx, deps = {}) {
       const sourceFilePath = typeof args.sourceFilePath === 'string' && args.sourceFilePath.trim()
         ? args.sourceFilePath.trim()
         : null;
+      // 只在签订日期为空时有意义；不进后端草稿，只给核对卡看。
+      const signDateNote = !draft.signDate && typeof args.signDateNote === 'string' && args.signDateNote.trim()
+        ? args.signDateNote.trim()
+        : null;
 
       const resolved = await accounts.resolveBackend();
       if (!resolved.ok) return resolved.authRequired;
@@ -706,6 +714,7 @@ export function setupContractSure(ctx, deps = {}) {
         turn,
         draft,
         sourceFilePath,
+        signDateNote,
         validation,
         status: 'staged',
         createdAt: new Date().toISOString(),
@@ -719,6 +728,7 @@ export function setupContractSure(ctx, deps = {}) {
         draftId,
         draft,
         sourceFilePath,
+        signDateNote,
         validation,
         status: 'staged',
       });
@@ -728,12 +738,16 @@ export function setupContractSure(ctx, deps = {}) {
       if (sourceFilePath && !UPLOAD_EXTENSIONS.includes(sourceExt)) {
         hint += `注意：原件是 ${sourceExt || '无扩展名'} 格式，履约系统只能归档 PDF、Word、Excel 和图片原件；确认后合同会创建，但这份原件不会归档。`;
       }
+      if (!draft.signDate) {
+        hint += '签订日期为空：核对卡已标红提示，请在回复里说明签字页识别到的内容，请用户对照原件补上后再确认。';
+      }
       return {
         kind: 'contract-sure-draft',
         draftId,
         status: 'staged',
         draft,
         sourceFilePath,
+        signDateNote,
         validation,
         hint,
       };

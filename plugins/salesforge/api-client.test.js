@@ -191,8 +191,31 @@ test('authorization endpoints are POST; only start goes out without a token', as
   assert.equal(revoke.calls[0].init.headers.Authorization, 'Bearer plugin-jwt-secret-1');
 });
 
-test('the default client exposes no write endpoints besides the three authorization calls', () => {
-  const posts = ['startPluginAuthorization', 'pollPluginAuthorization', 'revokePluginToken'];
+test('createWorkReport posts the report as JSON with the plugin token; detail and contact reads use numeric id paths', async () => {
+  const created = respond(200, { code: 200, data: 9001 });
+  const report = { reportDate: '2026-11-26', targetType: 1, targetId: 1001, contactId: 31, workPlan: '下周报价', workSummary: '演示' };
+  assert.equal(await defaultApiClient.createWorkReport(CFG, report, { fetchImpl: created.fetchImpl }), 9001);
+  assert.equal(new URL(created.calls[0].url).pathname, '/api/v1/work-reports');
+  assert.equal(created.calls[0].init.method, 'POST');
+  assert.equal(created.calls[0].init.headers.Authorization, 'Bearer plugin-jwt-secret-1');
+  assert.equal(created.calls[0].init.headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(created.calls[0].init.body), report);
+
+  for (const [name, path] of [
+    ['getCustomer', '/api/v1/customers/1001'],
+    ['getChannel', '/api/v1/channels/1001'],
+    ['listCustomerContacts', '/api/v1/customers/1001/contacts'],
+    ['listChannelContacts', '/api/v1/channels/1001/contacts'],
+  ]) {
+    const read = respond(200, { code: 200, data: [] });
+    await defaultApiClient[name](CFG, '1001.9', { fetchImpl: read.fetchImpl });
+    assert.equal(new URL(read.calls[0].url).pathname, path, name);
+    assert.equal(read.calls[0].init.method, 'GET', name);
+  }
+});
+
+test('the default client writes only through the three authorization calls and createWorkReport', () => {
+  const posts = ['startPluginAuthorization', 'pollPluginAuthorization', 'revokePluginToken', 'createWorkReport'];
   for (const name of Object.keys(defaultApiClient)) {
     assert.ok(posts.includes(name) || /^(get|list|search)/u.test(name), name);
   }

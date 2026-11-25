@@ -30,6 +30,9 @@ window.__ModuleLoader__.load({
     var KEY = "salesforge";
     var PACKAGE_NAME = "@local/salesforge";
     var AUTH_REQUIRED_KIND = "salesforge-auth-required";
+    var REPORT_DRAFT_KIND = "salesforge-report-draft";
+    var REPORT_SUBMITTED_RECORD_TYPE = "plugin:salesforge/report-submitted";
+    var REPORT_TEXT_MAX = 2000;
 
     var TRY_PROMPT = "帮我盘一下本季度的销售情况：目标完成了多少、还差多少，接下来该重点跟进哪些项目";
     var EXAMPLE_PROMPTS = [
@@ -64,13 +67,13 @@ window.__ModuleLoader__.load({
       revoked: "销售管理系统授权已失效",
     };
     var CREDENTIAL_NOTES = {
-      "dsh-credentials": "令牌保存在 DeepSeek Harness 凭据存储中，界面不会显示令牌。",
+      "dsh-credentials": "令牌保存在小智办公凭据存储中，界面不会显示令牌。",
       file: "令牌保存在本机插件配置文件中（仅本人可读），界面不会显示令牌。",
     };
 
     // Account panel, plugin page contributions, dialogs and the auth card. The values mirror the
     // host primitives (Button sm/md, Tag tones, Modal) through the same --dsw-* theme tokens, so
-    // light and dark themes follow DeepSeek Harness without a stylesheet of their own.
+    // light and dark themes follow the host app without a stylesheet of their own.
     var UI_CSS = [
       ".sfu{--sfu-text:var(--dsw-alias-label-primary,#1f1f1f);--sfu-muted:var(--dsw-alias-label-secondary,#5c5c5c);--sfu-subtle:var(--dsw-alias-label-tertiary,#8a8a8a);--sfu-line:var(--dsw-alias-border-l2,rgba(0,0,0,.08));--sfu-line-strong:var(--dsw-alias-border-l3,rgba(0,0,0,.16));--sfu-surface:var(--dsw-alias-bg-layer-2,#f7f7f7);--sfu-raised:var(--dsw-alias-bg-layer-3,#fff);--sfu-hover:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.05));--sfu-ok:var(--dsw-alias-state-success-primary,#1a7f37);--sfu-warn:var(--dsw-alias-state-warn-primary,#b45309);--sfu-err:var(--dsw-alias-state-error-primary,#d1242f);--sfu-info:var(--dsw-alias-state-business-primary,#2563eb);--sfu-r-sm:var(--dsw-radius-sm,6px);--sfu-r-md:var(--dsw-radius-md,8px);--sfu-r-lg:var(--dsw-radius-lg,12px);--sfu-hair:var(--dsh-hairline-width,.5px)}",
       ".sfu,.sfu *{box-sizing:border-box}",
@@ -169,6 +172,15 @@ window.__ModuleLoader__.load({
       ".sfu-card-title{margin:0;font-size:14px;line-height:20px;font-weight:500}",
       ".sfu-card-text{margin:0;color:var(--sfu-muted)}",
       ".sfu-card-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:8px}",
+      ".sfu-report{display:flex;flex-direction:column;gap:12px;margin:16px 0 8px;padding:14px 16px;border-radius:var(--sfu-r-lg);background:var(--sfu-surface);box-shadow:inset 0 0 0 var(--sfu-hair) var(--sfu-line-strong);color:var(--sfu-text);font-size:13px;line-height:20px}",
+      ".sfu-report-head{display:flex;align-items:center;justify-content:space-between;gap:8px}",
+      ".sfu-report-pill{flex:none;padding:0 8px;border-radius:999px;background:var(--sfu-raised);box-shadow:inset 0 0 0 var(--sfu-hair) var(--sfu-line-strong);color:var(--sfu-muted);font-size:12px;line-height:20px}",
+      ".sfu-report-pill-ok{background:color-mix(in srgb,var(--sfu-ok) 12%,transparent);box-shadow:none;color:var(--sfu-ok)}",
+      ".sfu-report-note{margin:0;font-size:12px;line-height:18px;color:var(--sfu-muted)}",
+      ".sfu-report-notes{margin:0;padding:8px 10px 8px 26px;border-radius:var(--sfu-r-md);background:color-mix(in srgb,var(--sfu-warn) 10%,transparent);color:var(--sfu-warn);font-size:12px;line-height:18px}",
+      ".sfu-report-error{padding:8px 10px;border-radius:var(--sfu-r-md);background:color-mix(in srgb,var(--sfu-err) 10%,transparent);color:var(--sfu-err);font-size:12px;line-height:18px}",
+      ".sfu-report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}",
+      ".sfu-report-text{height:auto;min-height:64px;padding:8px 10px;line-height:20px;resize:vertical}",
       ".sfu-settings{max-width:640px;padding:4px 0 12px;color:var(--sfu-text);font-size:13px;line-height:20px}",
       ".sfu-settings-hint{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;margin:0 0 16px;font-size:12px;line-height:18px;color:var(--sfu-muted)}",
     ].join("\n");
@@ -176,7 +188,7 @@ window.__ModuleLoader__.load({
     // "试试这样问" panel: a rounded panel over the plugin's background artwork, glass cards that open a new
     // session with the question, a soft light that follows the pointer and a slow drift of the artwork.
     // Plugin colors and images arrive as --sfx-*-l / --sfx-*-d custom properties (examplesStyle), and
-    // body[data-ds-dark-theme] (set by DeepSeek Harness) picks the dark half. Only the active theme's image loads.
+    // body[data-ds-dark-theme] (set by the host app) picks the dark half. Only the active theme's image loads.
     var EXAMPLES_CSS = [
       ".sfx{--sfx-brand:var(--sfx-brand-l);--sfx-on-brand:var(--sfx-on-brand-l);--sfx-glow:var(--sfx-glow-l);--sfx-glow-core:rgba(255,255,255,.75);--sfx-fallback:var(--sfx-fallback-l);--sfx-img:var(--sfx-img-l,none);--sfx-ring:rgba(16,42,67,.07);--sfx-card-bg:rgba(255,255,255,.62);--sfx-card-bg-hover:rgba(255,255,255,.82);--sfx-card-line:rgba(255,255,255,.9);--sfx-card-ring:rgba(16,42,67,.07);--sfx-card-shadow:0 1px 2px rgba(16,42,67,.05),0 8px 24px -14px rgba(16,42,67,.28);--sfx-card-shadow-hover:0 2px 6px rgba(16,42,67,.06),0 18px 36px -16px rgba(16,42,67,.36);--sfx-go-bg:rgba(16,42,67,.06);display:flex;flex-direction:column;gap:12px;color:var(--sfu-text)}",
       "body[data-ds-dark-theme] .sfx{--sfx-brand:var(--sfx-brand-d);--sfx-on-brand:var(--sfx-on-brand-d);--sfx-glow:var(--sfx-glow-d);--sfx-glow-core:rgba(255,255,255,.06);--sfx-fallback:var(--sfx-fallback-d);--sfx-img:var(--sfx-img-d,none);--sfx-ring:rgba(255,255,255,.07);--sfx-card-bg:rgba(20,12,28,.46);--sfx-card-bg-hover:rgba(30,18,40,.6);--sfx-card-line:rgba(255,255,255,.08);--sfx-card-ring:rgba(0,0,0,.3);--sfx-card-shadow:0 1px 2px rgba(0,0,0,.3),0 10px 28px -14px rgba(0,0,0,.7);--sfx-card-shadow-hover:0 2px 6px rgba(0,0,0,.35),0 20px 40px -16px rgba(0,0,0,.8);--sfx-go-bg:rgba(255,255,255,.08)}",
@@ -210,7 +222,7 @@ window.__ModuleLoader__.load({
     ].join("\n");
 
     // ---- Session event projection (mirrors event-projection.js) ----
-    // Only one thing matters per turn: did any tool answer "connect an account first"?
+    // Per turn: did any tool answer "connect an account first", and which daily-report drafts were staged (and submitted)?
     function withinRanges(seq, ranges) {
       if (typeof seq !== "number") return false;
       for (var i = 0; i < ranges.length; i++) {
@@ -236,22 +248,23 @@ window.__ModuleLoader__.load({
       return false;
     }
 
-    function extractAuthRequired(value) {
+    // The tool-result payloads this plugin draws a card for: the auth prompt and the daily-report draft.
+    function extractPayload(value) {
       if (typeof value === "string") {
         // Every tool result is checked, so skip parsing text that cannot carry this plugin's payload.
-        if (value.indexOf(AUTH_REQUIRED_KIND) === -1) return null;
+        if (value.indexOf(AUTH_REQUIRED_KIND) === -1 && value.indexOf(REPORT_DRAFT_KIND) === -1) return null;
         try {
-          return extractAuthRequired(JSON.parse(value));
+          return extractPayload(JSON.parse(value));
         } catch (_) {
           return null;
         }
       }
       if (!value || typeof value !== "object" || isFailedValue(value)) return null;
-      if (value.kind === AUTH_REQUIRED_KIND) return value;
+      if (value.kind === AUTH_REQUIRED_KIND || value.kind === REPORT_DRAFT_KIND) return value;
       var keys = ["structuredContent", "value", "result", "message"];
       for (var i = 0; i < keys.length; i++) {
         if (value[keys[i]] != null) {
-          var found = extractAuthRequired(value[keys[i]]);
+          var found = extractPayload(value[keys[i]]);
           if (found) return found;
         }
       }
@@ -259,7 +272,7 @@ window.__ModuleLoader__.load({
         for (var j = 0; j < value.content.length; j++) {
           var block = value.content[j];
           if (block && block.type === "text" && typeof block.text === "string") {
-            var foundText = extractAuthRequired(block.text);
+            var foundText = extractPayload(block.text);
             if (foundText) return foundText;
           }
         }
@@ -268,16 +281,35 @@ window.__ModuleLoader__.load({
     }
 
     function projectionValueOf(state) {
-      return { turn: state.turn, authRequired: state.authRequired };
+      return {
+        turn: state.turn,
+        authRequired: state.authRequired,
+        reportDrafts: state.reportDrafts,
+        submittedByDraftId: state.submittedByDraftId,
+      };
     }
 
     function refreshProjection(state) {
       var authRequired = null;
+      var reportDrafts = [];
       state.calls.forEach(function (call, callId) {
         var result = state.results.get(callId);
         if (!result || result.failed || !result.payload) return;
         var p = result.payload;
-        // One card per turn: the latest.
+        if (p.kind === REPORT_DRAFT_KIND) {
+          if (typeof p.draftId === "string" && p.draft && typeof p.draft === "object") {
+            reportDrafts.push({
+              seq: result.seq,
+              callId: callId,
+              draftId: p.draftId,
+              draft: p.draft,
+              contacts: Array.isArray(p.contacts) ? p.contacts : [],
+              notes: Array.isArray(p.notes) ? p.notes.filter(function (n) { return typeof n === "string" && n; }) : [],
+            });
+          }
+          return;
+        }
+        // One auth card per turn: the latest.
         if (!authRequired || (result.seq || 0) >= (authRequired.seq || 0)) {
           authRequired = {
             seq: result.seq,
@@ -289,13 +321,38 @@ window.__ModuleLoader__.load({
           };
         }
       });
-      var next = Object.assign({}, state, { authRequired: authRequired });
+      reportDrafts.sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
+      var submittedByDraftId = {};
+      state.records.forEach(function (rec) {
+        if (rec.data && typeof rec.data.draftId === "string") {
+          var report = rec.data.report;
+          submittedByDraftId[rec.data.draftId] = {
+            reportId: rec.data.reportId == null ? null : rec.data.reportId,
+            report: report && typeof report === "object" && !Array.isArray(report) ? report : null,
+          };
+        }
+      });
+      var next = Object.assign({}, state, {
+        authRequired: authRequired,
+        reportDrafts: reportDrafts,
+        submittedByDraftId: submittedByDraftId,
+      });
       next.value = projectionValueOf(next);
       return next;
     }
 
     function initialProjection(turn) {
-      var st = { turn: turn, calls: new Map(), results: new Map(), invalidated: new Set(), replacedRanges: [], authRequired: null };
+      var st = {
+        turn: turn,
+        calls: new Map(),
+        results: new Map(),
+        records: [],
+        invalidated: new Set(),
+        replacedRanges: [],
+        authRequired: null,
+        reportDrafts: [],
+        submittedByDraftId: {},
+      };
       st.value = projectionValueOf(st);
       return st;
     }
@@ -319,8 +376,19 @@ window.__ModuleLoader__.load({
         return refreshProjection(Object.assign({}, state, {
           calls: nextCalls,
           results: nextResults,
+          records: state.records.filter(function (rec) { return !withinRanges(rec.seq, [range]); }),
           invalidated: invalidated,
           replacedRanges: state.replacedRanges.concat([range]),
+        }));
+      }
+
+      if (event.type === REPORT_SUBMITTED_RECORD_TYPE) {
+        if (withinRanges(event.seq, state.replacedRanges)) return state;
+        for (var r = 0; r < state.records.length; r++) {
+          if (state.records[r].seq === event.seq) return state;
+        }
+        return refreshProjection(Object.assign({}, state, {
+          records: state.records.concat([{ seq: event.seq, data: event.data }]),
         }));
       }
 
@@ -350,7 +418,7 @@ window.__ModuleLoader__.load({
       if (typeof event.seq === "number" && event.seq <= callItem.callSeq) return state;
 
       var failedFlag = isFailedValue(event.data);
-      var payload = failedFlag ? null : extractAuthRequired(event.data);
+      var payload = failedFlag ? null : extractPayload(event.data);
       var resultsCopy = new Map(state.results);
       resultsCopy.set(resCallId, { seq: event.seq, failed: failedFlag, payload: payload });
       return refreshProjection(Object.assign({}, state, { results: resultsCopy }));
@@ -363,7 +431,11 @@ window.__ModuleLoader__.load({
         if (event.type === "tool/call" && typeof event.data.name === "string" && event.data.name) {
           return { id: String(event.data.turn), role: "start" };
         }
-        if (event.type === "tool/result" || (event.surfaceOp && event.surfaceOp.op === "replace")) {
+        if (
+          event.type === "tool/result" ||
+          event.type === REPORT_SUBMITTED_RECORD_TYPE ||
+          (event.surfaceOp && event.surfaceOp.op === "replace")
+        ) {
           return { id: String(event.data.turn), role: "start" };
         }
         return null;
@@ -1634,17 +1706,182 @@ window.__ModuleLoader__.load({
     }
 
     // ---- TurnTail: the auth card, when this turn needs one ----
+    // ---- Daily report draft card ("工作日报草稿") ----
+    function ReportDraftCard(props) {
+      var item = props.item || {};
+      var draft = item.draft || {};
+      var contacts = Array.isArray(item.contacts) ? item.contacts : [];
+      var notes = Array.isArray(item.notes) ? item.notes : [];
+      var services = props.services;
+      function connection() { return serviceOf(services, "connection"); }
+      var [form, setForm] = useState(function () {
+        // Reopened after submitting: show what was actually submitted, not the first draft.
+        var src = props.submitted && props.submitted.report ? Object.assign({}, draft, props.submitted.report) : draft;
+        return {
+          reportDate: src.reportDate || "",
+          contactId: src.contactId != null ? String(src.contactId) : "",
+          workPlan: src.workPlan || "",
+          workSummary: src.workSummary || "",
+        };
+      });
+      var [submitting, setSubmitting] = useState(false);
+      var [error, setError] = useState("");
+      var [submitted, setSubmitted] = useState(props.submitted || null);
+
+      useEffect(function () {
+        if (props.submitted && !submitted) setSubmitted(props.submitted);
+      }, [props.submitted]);
+
+      var readOnly = !!submitted || submitting;
+      var idBase = "sfu-report-" + String(item.draftId || "");
+      var targetLabel = (draft.targetTypeLabel || (Number(draft.targetType) === 2 ? "渠道" : "客户")) + " · " + (draft.targetName || "");
+
+      function update(field, value) {
+        setForm(function (prev) {
+          var next = Object.assign({}, prev);
+          next[field] = value;
+          return next;
+        });
+      }
+
+      function handleSubmit() {
+        if (readOnly) return;
+        var date = String(form.reportDate || "").trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          setError("拜访日期请按 YYYY-MM-DD 填写，例如 2026-11-24。");
+          return;
+        }
+        if (!contacts.length) {
+          setError("这个" + (Number(draft.targetType) === 2 ? "渠道" : "客户") + "还没有联系人，请先在销售管理系统网页里添加联系人。");
+          return;
+        }
+        if (!form.contactId) {
+          setError("请选择拜访人。");
+          return;
+        }
+        var plan = String(form.workPlan || "").trim();
+        var summary = String(form.workSummary || "").trim();
+        if (!plan || !summary) {
+          setError("工作计划和工作总结都要填写。");
+          return;
+        }
+        setSubmitting(true);
+        setError("");
+        var edited = { reportDate: date, contactId: Number(form.contactId), workPlan: plan, workSummary: summary };
+        callRpc(connection(), "submitReportDraft", { draftId: item.draftId, edited: edited }).then(function (value) {
+          setSubmitting(false);
+          setSubmitted({ reportId: value && value.reportId != null ? value.reportId : null });
+        }, function (err) {
+          setSubmitting(false);
+          setError(errorText(err, "提交失败，请重试。"));
+        });
+      }
+
+      function field(label, id, control) {
+        return h("div", { className: "sfu-field" }, h("label", { className: "sfu-label", htmlFor: id }, label), control);
+      }
+
+      return h("section", { className: "sfu sfu-report", "data-report-draft": item.draftId, "aria-label": "工作日报草稿" },
+        h("style", null, UI_CSS),
+        h("div", { className: "sfu-report-head" },
+          h("h3", { className: "sfu-card-title" }, "工作日报草稿"),
+          submitted
+            ? h("span", { className: "sfu-report-pill sfu-report-pill-ok" }, submitted.reportId != null ? "已提交 · 日报 #" + submitted.reportId : "已提交")
+            : h("span", { className: "sfu-report-pill" }, "未提交"),
+        ),
+        submitted
+          ? h("p", { className: "sfu-report-note", role: "status" }, "已以你的名义写入销售管理系统，可以在网页的工作报告里查看。")
+          : h("p", { className: "sfu-report-note" }, "核对或修改下面的内容，点「提交日报」后才会写入销售管理系统。"),
+        !submitted && notes.length
+          ? h("ul", { className: "sfu-report-notes" }, notes.map(function (n, i) { return h("li", { key: String(i) }, n); }))
+          : null,
+        error ? h("div", { className: "sfu-report-error", role: "alert" }, error) : null,
+        h("div", { className: "sfu-report-grid" },
+          field("拜访日期", idBase + "-date", h("input", {
+            id: idBase + "-date",
+            className: "sfu-input",
+            type: "text",
+            placeholder: "YYYY-MM-DD",
+            value: form.reportDate,
+            disabled: readOnly,
+            onChange: function (e) { update("reportDate", e.target.value); },
+          })),
+          field("拜访对象", idBase + "-target", h("input", {
+            id: idBase + "-target",
+            className: "sfu-input",
+            type: "text",
+            value: targetLabel,
+            readOnly: true,
+            disabled: true,
+          })),
+          field("拜访人", idBase + "-contact", contacts.length
+            ? h("select", {
+              id: idBase + "-contact",
+              className: "sfu-input",
+              value: form.contactId,
+              disabled: readOnly,
+              onChange: function (e) { update("contactId", e.target.value); },
+            },
+            h("option", { value: "" }, "请选择拜访人"),
+            contacts.map(function (c) {
+              return h("option", { key: String(c.contactId), value: String(c.contactId) }, c.contactName + (c.position ? " - " + c.position : ""));
+            }))
+            : h("input", { id: idBase + "-contact", className: "sfu-input", type: "text", value: "还没有联系人，请先在网页里添加", readOnly: true, disabled: true })),
+        ),
+        field("工作总结", idBase + "-summary", h("textarea", {
+          id: idBase + "-summary",
+          className: "sfu-input sfu-report-text",
+          rows: 3,
+          maxLength: REPORT_TEXT_MAX,
+          value: form.workSummary,
+          disabled: readOnly,
+          onChange: function (e) { update("workSummary", e.target.value); },
+        })),
+        field("工作计划", idBase + "-plan", h("textarea", {
+          id: idBase + "-plan",
+          className: "sfu-input sfu-report-text",
+          rows: 3,
+          maxLength: REPORT_TEXT_MAX,
+          value: form.workPlan,
+          disabled: readOnly,
+          onChange: function (e) { update("workPlan", e.target.value); },
+        })),
+        submitted ? null : h("div", { className: "sfu-row sfu-row-end" },
+          h("button", {
+            type: "button",
+            className: "sfu-btn sfu-btn-sm sfu-btn-primary",
+            disabled: submitting,
+            onClick: handleSubmit,
+          }, submitting ? [h("span", { key: "s", className: "sfu-spinner", "aria-hidden": "true" }), "正在提交"] : "提交日报"),
+        ),
+      );
+    }
+
     function TurnTail(props) {
       var turn = props.turn;
       var data = turn && turn.data && typeof turn.data.get === "function" ? turn.data.get(KEY) : null;
-      var authRequired = data && data.authRequired ? data.authRequired : null;
-      if (!authRequired) return null;
-      return h(AuthRequiredCard, {
-        key: "auth-" + String(authRequired.callId || ""),
-        info: authRequired,
-        store: props.store,
-        services: props.services,
+      if (!data) return null;
+      var authRequired = data.authRequired || null;
+      var drafts = Array.isArray(data.reportDrafts) ? data.reportDrafts : [];
+      var submittedMap = data.submittedByDraftId || {};
+      if (!authRequired && !drafts.length) return null;
+      var cards = drafts.map(function (item) {
+        return h(ReportDraftCard, {
+          key: "report-" + item.draftId,
+          item: item,
+          submitted: submittedMap[item.draftId] || null,
+          services: props.services,
+        });
       });
+      if (authRequired) {
+        cards.push(h(AuthRequiredCard, {
+          key: "auth-" + String(authRequired.callId || ""),
+          info: authRequired,
+          store: props.store,
+          services: props.services,
+        }));
+      }
+      return cards.length === 1 ? cards[0] : h("div", { className: "sfu-tail" }, cards);
     }
 
     // ---- Cordis Client Plugin Entrypoint ----
@@ -1654,6 +1891,7 @@ window.__ModuleLoader__.load({
     exports.AccountPanel = AccountPanel;
     exports.AuthorizeDialog = AuthorizeDialog;
     exports.AuthRequiredCard = AuthRequiredCard;
+    exports.ReportDraftCard = ReportDraftCard;
     exports.DetailActions = DetailActions;
     exports.DetailBadge = DetailBadge;
     exports.ExamplesSection = ExamplesSection;

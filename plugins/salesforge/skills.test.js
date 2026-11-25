@@ -87,7 +87,7 @@ test('每个 SKILL.md 的 frontmatter 合法', () => {
 
 test('正文点名的工具都存在：本插件的工具，或宿主的看图、加载工具', () => {
   const tools = registeredToolNames();
-  assert.equal(tools.size, 8);
+  assert.equal(tools.size, 9);
   const seen = new Set();
   for (const skillName of BUNDLED_SKILL_NAMES) {
     for (const file of listFiles(join(SKILLS_DIR, skillName)).filter((f) => f.endsWith('.md'))) {
@@ -203,13 +203,13 @@ test('skills 服务不在时插件照常启动；服务后来出现再注册', (
 
   const bare = fakeCtx();
   const first = setupSalesforge(bare.ctx, { configPath });
-  assert.equal(bare.tools.length, 8);
+  assert.equal(bare.tools.length, 9);
   first.dispose();
 
   const injected = [];
   const withInject = fakeCtx({ inject(deps, callback) { injected.push({ deps, callback }); } });
   const second = setupSalesforge(withInject.ctx, { configPath });
-  assert.equal(withInject.tools.length, 8);
+  assert.equal(withInject.tools.length, 9);
   const pending = injected.find((item) => item.deps.includes('skills'));
   assert.deepEqual(pending.deps, ['skills']);
   let registered = 0;

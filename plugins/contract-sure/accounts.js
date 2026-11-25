@@ -24,7 +24,7 @@ import { createCredentialStore, credentialsFilePath } from './credential-store.j
 // 报错和日志只用固定文案，不回显底层异常、请求头或后端返回的原文。
 
 export const AUTH_REQUIRED_KIND = 'contract-sure-auth-required';
-export const CLIENT_NAME = 'DeepSeek Harness · 履约无忧';
+export const CLIENT_NAME = '小智办公 · 履约无忧';
 export const NOT_UPGRADED_MESSAGE = '履约系统还没升级到支持插件授权的版本，请联系管理员';
 
 const OCR_KEY_RECORD_ID = 'ocr-api-key';

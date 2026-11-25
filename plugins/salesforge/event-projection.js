@@ -1,7 +1,10 @@
 // 会话事件投影（与 client.js 里浏览器端的投影保持一致，单测用它核对）。
-// 只关心一件事：本回合有没有工具返回「需要连接账户」（kind = salesforge-auth-required），有就在回合末尾显示授权卡片。
+// 关心两件事：本回合有没有工具返回「需要连接账户」（kind = salesforge-auth-required），有就在回合末尾显示授权卡片；
+// 有没有生成日报草稿（kind = salesforge-report-draft），有就显示草稿卡片，并按会话里的「已提交」记录标出已提交的草稿。
 export const KEY = 'salesforge';
 export const AUTH_REQUIRED_KIND = 'salesforge-auth-required';
+export const REPORT_DRAFT_KIND = 'salesforge-report-draft';
+export const REPORT_SUBMITTED_RECORD_TYPE = 'plugin:salesforge/report-submitted';
 
 const within = (seq, ranges) =>
   typeof seq === 'number' && ranges.some((range) => seq >= range.startSeq && seq <= range.endSeq);
@@ -16,28 +19,30 @@ const failed = (value) =>
       ((value.error != null && value.error !== false) || value.isError || failed(value.message) || failed(value.result)),
   );
 
-function extractAuthRequired(value) {
+const CARD_KINDS = [AUTH_REQUIRED_KIND, REPORT_DRAFT_KIND];
+
+function extractPayload(value) {
   if (typeof value === 'string') {
-    // 每个工具结果都要检查，先排除不可能带本插件授权提示的文本，省掉解析。
-    if (!value.includes(AUTH_REQUIRED_KIND)) return null;
+    // 每个工具结果都要检查，先排除不可能带本插件卡片内容的文本，省掉解析。
+    if (!CARD_KINDS.some((kind) => value.includes(kind))) return null;
     try {
-      return extractAuthRequired(JSON.parse(value));
+      return extractPayload(JSON.parse(value));
     } catch {
       return null;
     }
   }
   if (!value || typeof value !== 'object' || failed(value)) return null;
-  if (value.kind === AUTH_REQUIRED_KIND) return value;
+  if (CARD_KINDS.includes(value.kind)) return value;
   for (const key of ['structuredContent', 'value', 'result', 'message']) {
     if (value[key] != null) {
-      const found = extractAuthRequired(value[key]);
+      const found = extractPayload(value[key]);
       if (found) return found;
     }
   }
   if (Array.isArray(value.content)) {
     for (const block of value.content) {
       if (block?.type === 'text' && typeof block.text === 'string') {
-        const found = extractAuthRequired(block.text);
+        const found = extractPayload(block.text);
         if (found) return found;
       }
     }
@@ -45,15 +50,34 @@ function extractAuthRequired(value) {
   return null;
 }
 
-const valueOf = (state) => ({ turn: state.turn, authRequired: state.authRequired });
+const valueOf = (state) => ({
+  turn: state.turn,
+  authRequired: state.authRequired,
+  reportDrafts: state.reportDrafts,
+  submittedByDraftId: state.submittedByDraftId,
+});
 
 function refresh(state) {
   let authRequired = null;
+  const reportDrafts = [];
   for (const [callId, call] of state.calls) {
     const result = state.results.get(callId);
     if (!result || result.failed || !result.payload) continue;
     const payload = result.payload;
-    // 一个回合只显示一张卡片，取最后一次。
+    if (payload.kind === REPORT_DRAFT_KIND) {
+      if (typeof payload.draftId === 'string' && payload.draft && typeof payload.draft === 'object') {
+        reportDrafts.push({
+          seq: result.seq,
+          callId,
+          draftId: payload.draftId,
+          draft: payload.draft,
+          contacts: Array.isArray(payload.contacts) ? payload.contacts : [],
+          notes: Array.isArray(payload.notes) ? payload.notes.filter((note) => typeof note === 'string' && note) : [],
+        });
+      }
+      continue;
+    }
+    // 一个回合只显示一张授权卡片，取最后一次。
     if (!authRequired || (result.seq ?? 0) >= (authRequired.seq ?? 0)) {
       authRequired = {
         seq: result.seq,
@@ -65,12 +89,33 @@ function refresh(state) {
       };
     }
   }
-  const next = { ...state, authRequired };
+  reportDrafts.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+  const submittedByDraftId = {};
+  for (const record of state.records) {
+    if (typeof record.data?.draftId === 'string') {
+      const report = record.data.report;
+      submittedByDraftId[record.data.draftId] = {
+        reportId: record.data.reportId ?? null,
+        report: report && typeof report === 'object' && !Array.isArray(report) ? report : null,
+      };
+    }
+  }
+  const next = { ...state, authRequired, reportDrafts, submittedByDraftId };
   return { ...next, value: valueOf(next) };
 }
 
 function initial(turn) {
-  const state = { turn, calls: new Map(), results: new Map(), invalidated: new Set(), replacedRanges: [], authRequired: null };
+  const state = {
+    turn,
+    calls: new Map(),
+    results: new Map(),
+    records: [],
+    invalidated: new Set(),
+    replacedRanges: [],
+    authRequired: null,
+    reportDrafts: [],
+    submittedByDraftId: {},
+  };
   return { ...state, value: valueOf(state) };
 }
 
@@ -90,9 +135,15 @@ function updateState(state, event) {
       ...state,
       calls: keep(state.calls),
       results: keep(state.results),
+      records: state.records.filter((record) => !within(record.seq, [range])),
       invalidated,
       replacedRanges: [...state.replacedRanges, range],
     });
+  }
+
+  if (event.type === REPORT_SUBMITTED_RECORD_TYPE) {
+    if (within(event.seq, state.replacedRanges) || state.records.some((record) => record.seq === event.seq)) return state;
+    return refresh({ ...state, records: [...state.records, { seq: event.seq, data: event.data }] });
   }
 
   if (event.type === 'tool/call') {
@@ -120,7 +171,7 @@ function updateState(state, event) {
   if (typeof event.seq === 'number' && event.seq <= call.callSeq) return state;
 
   const isFailed = failed(event.data);
-  const payload = isFailed ? null : extractAuthRequired(event.data);
+  const payload = isFailed ? null : extractPayload(event.data);
   return refresh({
     ...state,
     results: new Map([...state.results, [callId, { seq: event.seq, failed: isFailed, payload }]]),
@@ -134,7 +185,7 @@ export const definition = {
     if (event.type === 'tool/call' && typeof event.data.name === 'string' && event.data.name) {
       return { id: String(event.data.turn), role: 'start' };
     }
-    if (event.type === 'tool/result' || event.surfaceOp?.op === 'replace') {
+    if (event.type === 'tool/result' || event.type === REPORT_SUBMITTED_RECORD_TYPE || event.surfaceOp?.op === 'replace') {
       return { id: String(event.data.turn), role: 'start' };
     }
     return null;
@@ -159,5 +210,5 @@ export function projectEvents(events) {
     if (event.type === 'turn/start') state = initial(event.data?.turn);
     else if (state) state = updateState(state, event);
   }
-  return state?.value ?? { turn: null, authRequired: null };
+  return state?.value ?? { turn: null, authRequired: null, reportDrafts: [], submittedByDraftId: {} };
 }

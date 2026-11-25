@@ -4,10 +4,10 @@ import http from 'node:http';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setupSalesforge, PERSON_UNRESOLVED_KIND } from './index.js';
+import { setupSalesforge, PERSON_UNRESOLVED_KIND, REPORT_DRAFT_KIND, REPORT_SUBMITTED_KIND, REPORT_SUBMITTED_RECORD_TYPE } from './index.js';
 import { createSalesforgeRemoteHandlers } from './remote-service.js';
 import { ApiError } from './api-client.js';
-import { projectEvents, AUTH_REQUIRED_KIND } from './event-projection.js';
+import { projectEvents, AUTH_REQUIRED_KIND, REPORT_DRAFT_KIND as PROJECTED_DRAFT_KIND } from './event-projection.js';
 import { normalizeTable } from '../datahub-echarts/results.js';
 import { assertLossless, isLosslessJson } from './assert-lossless.js';
 
@@ -80,6 +80,24 @@ const PROJECTS = [
   project(6, '必签项目', '2026-11-01', 45),
 ];
 const BIG_PROJECTS = Array.from({ length: 620 }, (_, i) => project(100 + i, '必签项目', '2026-11-15', 1));
+// 写日报用到的客户、渠道详情和联系人（联系人带手机号，插件不能把手机号放进工具输出）。
+const TARGET_DETAILS = {
+  customers: { 1001: { id: 1001, customerName: '华光科技' }, 1002: { id: 1002, customerName: '客户3' } },
+  channels: { 9: { id: 9, companyName: '华光渠道' } },
+};
+const TARGET_CONTACTS = {
+  customers: {
+    1001: [
+      { id: 31, customerId: 1001, contactName: '刘老师', position: '信息中心主任', phone: '13800000031' },
+      { id: 32, customerId: 1001, contactName: '陈工', position: null, phone: '13800000032' },
+    ],
+    1002: [],
+  },
+  channels: { 9: [{ id: 41, channelId: 9, contactName: '周总', position: '总经理', phone: '13800000041' }] },
+};
+// 插件新建的日报：{ id, reporterToken, body }。
+const createdReports = [];
+
 const SCOPE_USERS = [
   { id: 7, username: 'wangjl', realName: '王经理', deptId: 3 },
   { id: 21, username: 'zhangsan', realName: '张三', deptId: 4 },
@@ -108,6 +126,7 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify(payload));
   };
   const ok = (data) => sendJson(200, { code: 200, message: 'success', data, timestamp: 1 });
+  const ok_400 = (message) => sendJson(200, { code: 400, message, data: null, timestamp: 1 });
 
   // 约定 S：S1 发起授权、S5 轮询、S8 吊销。
   if (req.method === 'POST' && path === '/auth/plugin-authorize/start') {
@@ -138,10 +157,28 @@ const server = http.createServer(async (req, res) => {
     validTokens.delete(bearer);
     return ok(null);
   }
-  // 插件令牌只读：除了 S8，其他 POST/PUT/DELETE 一律 HTTP 403。
+  // 插件令牌唯一能写的接口：新建工作日报（和后端一样核对拜访人属于拜访对象）。
+  if (req.method === 'POST' && path === '/work-reports') {
+    if (forced[path]) return sendJson(forced[path].httpStatus, forced[path].body);
+    const report = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+    const kind = report.targetType === 2 ? 'channels' : 'customers';
+    const contacts = TARGET_CONTACTS[kind][report.targetId] || [];
+    if (!contacts.some((c) => c.id === report.contactId)) return ok_400('拜访人不是所选拜访对象的联系人');
+    const id = 9001 + createdReports.length;
+    createdReports.push({ id, reporterToken: bearer, body: report });
+    return ok(id);
+  }
+  // 其他 POST/PUT/DELETE 一律 HTTP 403。
   if (req.method !== 'GET') return sendJson(403, { code: 403, message: '无操作权限', data: null });
   if (blockedForPluginToken(path)) return sendJson(403, { code: 403, message: '无操作权限', data: null });
   if (forced[path]) return sendJson(forced[path].httpStatus, forced[path].body);
+
+  const target = path.match(/^\/(customers|channels)\/(\d+)(\/contacts)?$/u);
+  if (target) {
+    const [, kind, id, contacts] = target;
+    const found = contacts ? TARGET_CONTACTS[kind][id] : TARGET_DETAILS[kind][id];
+    return found ? ok(found) : sendJson(200, { code: 404, message: '数据不存在', data: null });
+  }
 
   switch (path) {
     case '/auth/info':
@@ -260,6 +297,9 @@ let promptSections;
 let hostCredentials;
 let pluginInstance;
 const toolsWithLosslessOutput = new Set();
+// 宿主会话的替身：工具调用按 exec.agent.id 找会话，提交日报后往会话里追加「已提交」记录。
+const fakeSessions = new Map();
+const appendedRecords = [];
 
 function memoryCredentials() {
   const records = new Map();
@@ -327,11 +367,13 @@ test.before(async () => {
     tools: { register(def) { registeredTools.set(def.name, def); } },
     systemPrompt: { section(sec) { promptSections.push(sec); return () => {}; } },
     credentials: hostCredentials,
+    sessions: { get: (id) => fakeSessions.get(id) },
     get(svc) { return this[svc]; },
     effect() {},
   };
   pluginInstance = setupSalesforge(ctx, {
     configPath,
+    appendPluginRecord: (session, type, data) => appendedRecords.push({ session, type, data }),
     hostname: () => 'test-host',
     now: () => FIXED_NOW + clockOffsetMs,
     schedule: (fn) => setTimeout(fn, 2),
@@ -346,12 +388,13 @@ test.after(async () => {
   rmSync(workDir, { recursive: true, force: true });
 });
 
-test('registers all 8 tools and systemPrompt section plugin:salesforge (order 941)', () => {
+test('registers all 9 tools and systemPrompt section plugin:salesforge (order 941)', () => {
   assert.deepEqual(
     [...registeredTools.keys()].sort(),
     [
       'sales_config',
       'sales_dashboard',
+      'sales_draft_work_report',
       'sales_query_channels',
       'sales_query_customers',
       'sales_query_projects',
@@ -364,7 +407,7 @@ test('registers all 8 tools and systemPrompt section plugin:salesforge (order 94
   assert.equal(promptSections[0].name, 'plugin:salesforge');
   assert.equal(promptSections[0].order, 941);
   const prompt = promptSections[0].text;
-  for (const pattern of [/万元/u, /includeArchived/u, /salesforge-person-unresolved/u, /salesforge-auth-required/u, /query_result_chart/u, /不要自己用 curl/u, /设置 → 销售管理配置/u]) {
+  for (const pattern of [/万元/u, /includeArchived/u, /salesforge-person-unresolved/u, /salesforge-auth-required/u, /query_result_chart/u, /不要自己用 curl/u, /设置 → 销售管理配置/u, /点「提交日报」/u, /不要说已经提交/u]) {
     assert.match(prompt, pattern);
   }
   for (const toolName of registeredTools.keys()) assert.match(prompt, new RegExp(toolName, 'u'));
@@ -403,6 +446,7 @@ test('without an account every backend tool returns the auth-required output and
     ['sales_dashboard', { view: 'sales' }],
     ['sales_query_work_reports', { reporterName: '张三' }],
     ['sales_targets', {}],
+    ['sales_draft_work_report', { targetType: 'customer', targetId: 1001, workPlan: '演示', workSummary: '拜访' }],
   ];
   for (const [name, args] of calls) assert.deepEqual(await runTool(name, args), expected, name);
   assert.equal(requests.length, before);
@@ -426,7 +470,7 @@ test('browser authorization through the salesforge RPC handlers connects the acc
   assert.equal(started.userCode, 'WXYZ-2345');
   assert.equal(started.verifyUrl, `${new URL(baseUrl).origin}/plugin-authorize?req=${started.requestId}`);
   const startReq = lastRequest('/auth/plugin-authorize/start');
-  assert.deepEqual(JSON.parse(startReq.bodyText), { clientName: 'DeepSeek Harness · 销售管理', deviceName: 'test-host' });
+  assert.deepEqual(JSON.parse(startReq.bodyText), { clientName: '小智办公 · 销售管理', deviceName: 'test-host' });
   assert.equal(startReq.auth, '');
 
   const result = await waitForAuthorization(remote, started.requestId);
@@ -863,6 +907,141 @@ test('sales_targets reads personal quarterly targets and team completion', async
   await rejectsArg('sales_targets', { scope: 'company' }, /scope 只能是 personal、team 之一/u);
 });
 
+test('sales_draft_work_report stages a draft card and writes nothing; only submitReportDraft creates the report', async () => {
+  const remote = pluginInstance.remoteHandlers;
+  const session = {
+    id: 's-report',
+    snapshotEvents: () => [
+      { type: 'turn/start', data: { turn: 5 } },
+      { type: 'tool/call', data: { turn: 5, callId: 'call-r1', name: 'sales_draft_work_report' } },
+    ],
+  };
+  fakeSessions.set('s-report', session);
+  const postsBefore = requests.filter((r) => r.method !== 'GET').length;
+
+  // 按姓名选中拜访人；不传日期就用今天；联系人只带 id、姓名、职务，不带手机号。
+  const draft = await runTool(
+    'sales_draft_work_report',
+    { targetType: 'customer', targetId: 1001, contactName: '刘老师', workSummary: '  演示了数据平台，客户认可方案  ', workPlan: '下周提交报价' },
+    { agent: { id: 's-report' }, callId: 'call-r1' },
+  );
+  assert.equal(draft.kind, REPORT_DRAFT_KIND);
+  assert.equal(PROJECTED_DRAFT_KIND, REPORT_DRAFT_KIND);
+  assert.match(draft.draftId, /^report_[0-9a-f]{16}$/u);
+  assert.equal(draft.status, 'staged');
+  assert.deepEqual(draft.draft, {
+    reportDate: '2026-11-26',
+    targetType: 1,
+    targetName: '华光科技',
+    targetId: 1001,
+    contactId: 31,
+    workPlan: '下周提交报价',
+    workSummary: '演示了数据平台，客户认可方案',
+    targetTypeLabel: '客户',
+  });
+  assert.deepEqual(draft.contacts, [
+    { contactId: 31, contactName: '刘老师', position: '信息中心主任' },
+    { contactId: 32, contactName: '陈工', position: '' },
+  ]);
+  assert.deepEqual(draft.notes, []);
+  assert.match(draft.hint, /还没有提交/u);
+  assert.doesNotMatch(JSON.stringify(draft), /138000000/u);
+  assert.equal(requests.filter((r) => r.method !== 'GET').length, postsBefore, '生成草稿不写入');
+
+  // 渠道只有一位联系人时自动选上；给的姓名对不上时留空并提示。
+  const channelDraft = await runTool('sales_draft_work_report', { targetType: 'channel', targetId: 9, reportDate: '2026-11-25', workPlan: '约技术交流', workSummary: '电话沟通合作' });
+  assert.equal(channelDraft.draft.contactId, 41);
+  assert.equal(channelDraft.draft.targetName, '华光渠道');
+  assert.equal(channelDraft.draft.targetTypeLabel, '渠道');
+  const unmatched = await runTool('sales_draft_work_report', { targetType: 'customer', targetId: 1001, contactName: '王老师', workPlan: 'a', workSummary: 'b' });
+  assert.equal(unmatched.draft.contactId, null);
+  assert.match(unmatched.notes[0], /没有「王老师」.*在卡片上选择拜访人/u);
+  const noContacts = await runTool('sales_draft_work_report', { targetType: 'customer', targetId: 1002, workPlan: 'a', workSummary: 'b' });
+  assert.deepEqual(noContacts.contacts, []);
+  assert.match(noContacts.notes[0], /还没有联系人/u);
+
+  await rejectsArg('sales_draft_work_report', { targetType: 'customer', targetId: 1001, workPlan: 'a', workSummary: '  ' }, /工作总结（workSummary）不能为空/u);
+  await rejectsArg('sales_draft_work_report', { targetType: 'customer', targetId: 1001, workPlan: 'a'.repeat(2001), workSummary: 'b' }, /不能超过 2000 个字/u);
+  await rejectsArg('sales_draft_work_report', { targetType: 'project', targetId: 1, workPlan: 'a', workSummary: 'b' }, /targetType/u);
+  await rejectsArg('sales_draft_work_report', { targetType: 'customer', targetId: 1001, reportDate: '2026-02-30', workPlan: 'a', workSummary: 'b' }, /reportDate/u);
+  assert.equal(requests.filter((r) => r.method !== 'GET').length, postsBefore);
+
+  // 提交前在卡片上的校验：拜访人只能从草稿里的联系人中选，日期要是真实日期。
+  await assert.rejects(() => remote.submitReportDraft('report_missing', {}), (err) => err.code === 'DRAFT_NOT_FOUND' && /重新生成草稿/u.test(err.message));
+  await assert.rejects(() => remote.submitReportDraft(draft.draftId, { contactId: 41 }), (err) => err.code === 'INVALID_ARGUMENT' && err.message === '请选择拜访人。');
+  await assert.rejects(() => remote.submitReportDraft(draft.draftId, { reportDate: '2026/11/26' }), (err) => err.code === 'INVALID_ARGUMENT' && /YYYY-MM-DD/u.test(err.message));
+  await assert.rejects(() => remote.submitReportDraft(draft.draftId, { workPlan: ' ' }), (err) => err.code === 'INVALID_ARGUMENT' && err.message === '工作计划不能为空。');
+  await assert.rejects(() => remote.submitReportDraft(noContacts.draftId, {}), (err) => err.code === 'INVALID_ARGUMENT' && /客户「客户3」还没有联系人/u.test(err.message));
+  assert.equal(requests.filter((r) => r.method !== 'GET').length, postsBefore);
+
+  // 后端拒绝时换成提交日报的说法，草稿仍可重试。
+  try {
+    forced = { '/work-reports': { httpStatus: 403, body: { code: 403, message: '无操作权限' } } };
+    await assert.rejects(() => remote.submitReportDraft(draft.draftId, {}), (err) => err.code === 'FORBIDDEN' && /拒绝了这次提交/u.test(err.message));
+    forced = { '/work-reports': { httpStatus: 200, body: { code: 400, message: 'secret' } } };
+    await assert.rejects(() => remote.submitReportDraft(draft.draftId, {}), (err) => err.code === 'BAD_REQUEST' && /没有接受这条日报/u.test(err.message) && !/secret/u.test(err.message));
+  } finally {
+    forced = {};
+  }
+  assert.equal(createdReports.length, 0);
+
+  // 用户在卡片上改了拜访人和总结后提交：只发一条 POST，报告人由后端按令牌确定，插件不传。
+  const submitted = await remote.submitReportDraft(draft.draftId, { contactId: 32, workSummary: '演示了数据平台，约了下周报价 ' });
+  assert.deepEqual(submitted, {
+    kind: REPORT_SUBMITTED_KIND,
+    draftId: draft.draftId,
+    reportId: 9001,
+    alreadySubmitted: false,
+    draft: {
+      reportDate: '2026-11-26',
+      targetType: 1,
+      targetName: '华光科技',
+      targetId: 1001,
+      contactId: 32,
+      workPlan: '下周提交报价',
+      workSummary: '演示了数据平台，约了下周报价',
+    },
+  });
+  assert.equal(createdReports.length, 1);
+  assert.deepEqual(createdReports[0].body, {
+    reportDate: '2026-11-26',
+    targetType: 1,
+    targetId: 1001,
+    contactId: 32,
+    workPlan: '下周提交报价',
+    workSummary: '演示了数据平台，约了下周报价',
+  });
+  assert.equal(createdReports[0].reporterToken, 'plugin-jwt-1');
+  const post = lastRequest('/work-reports');
+  assert.equal(post.method, 'POST');
+  assert.equal(post.auth, 'Bearer plugin-jwt-1');
+  // 「已提交」记进工具调用所在的会话和回合，重新打开对话时卡片仍显示已提交。
+  assert.deepEqual(appendedRecords.at(-1), {
+    session,
+    type: REPORT_SUBMITTED_RECORD_TYPE,
+    data: {
+      version: 1,
+      turn: 5,
+      draftId: draft.draftId,
+      reportId: 9001,
+      report: { reportDate: '2026-11-26', contactId: 32, workPlan: '下周提交报价', workSummary: '演示了数据平台，约了下周报价' },
+    },
+  });
+
+  // 再点一次不会重复写入。
+  const again = await remote.submitReportDraft(draft.draftId, {});
+  assert.equal(again.alreadySubmitted, true);
+  assert.equal(again.reportId, 9001);
+  assert.equal(createdReports.length, 1);
+
+  // 渠道草稿：会话找不到时照样能提交，只是不记会话。
+  const recordsBefore = appendedRecords.length;
+  assert.equal((await remote.submitReportDraft(channelDraft.draftId, {})).reportId, 9002);
+  assert.equal(createdReports[1].body.targetType, 2);
+  assert.equal(appendedRecords.length, recordsBefore);
+  fakeSessions.delete('s-report');
+});
+
 test('HTTP 403/404/503 and business errors become fixed messages; the account stays connected', async () => {
   const cases = [
     ['/projects/dashboard/sales', { httpStatus: 403, body: { code: 403, message: '无操作权限 secret' } }, 'FORBIDDEN', /^没有查看权限/u],
@@ -927,12 +1106,12 @@ test('a backend 401 returns the auth-required output and marks the account; re-a
   assert.equal((await waitForAuthorization(remote, again.requestId)).status, 'approved');
 });
 
-test('every one of the 8 tools produced lossless output', () => {
+test('every one of the 9 tools produced lossless output', () => {
   assert.deepEqual([...toolsWithLosslessOutput].sort(), [...registeredTools.keys()].sort());
   assert.equal(isLosslessJson({ broken: undefined }), false);
 });
 
-test('the plugin only reads: no writes, no paths the backend filter rejects for plugin tokens, tokens only in the Authorization header', () => {
+test('the only write is POST /work-reports from a clicked submit; no paths the backend filter rejects; tokens only in the Authorization header', () => {
   // 过滤器规则本身（和 L1 一致）。
   assert.equal(blockedForPluginToken('/users/scope'), false);
   assert.equal(blockedForPluginToken('/depts/tree'), false);
@@ -941,7 +1120,7 @@ test('the plugin only reads: no writes, no paths the backend filter rejects for 
   assert.equal(blockedForPluginToken('/auth/info'), false);
   const authPosts = new Set(['/auth/plugin-authorize/start', '/auth/plugin-authorize/poll', '/auth/plugin-token/revoke']);
   for (const r of requests) {
-    assert.ok(r.method === 'GET' || (r.method === 'POST' && authPosts.has(r.path)), `${r.method} ${r.path}`);
+    assert.ok(r.method === 'GET' || (r.method === 'POST' && (authPosts.has(r.path) || r.path === '/work-reports')), `${r.method} ${r.path}`);
     if (r.method === 'GET') assert.equal(blockedForPluginToken(r.path), false, `GET ${r.path} 会被后端过滤器拒绝`);
     assert.doesNotMatch(r.path, /\/generate$/u);
     assert.ok(!('token' in r.query), r.path);
@@ -971,7 +1150,26 @@ test('event projection shows the auth card for the last auth-required result in 
     { type: 'system/message', seq: 6, surfaceOp: { op: 'replace', startSeq: 4, endSeq: 5 }, data: { turn: 4 } },
   ]);
   assert.equal(none.authRequired, null);
-  assert.deepEqual(projectEvents([]), { turn: null, authRequired: null });
+  assert.deepEqual(projectEvents([]), { turn: null, authRequired: null, reportDrafts: [], submittedByDraftId: {} });
+
+  // 日报草稿：每份草稿一张卡片；会话里的「已提交」记录标出已提交的草稿，被 replace 掉的记录不算。
+  const draftResult = (draftId) =>
+    JSON.stringify({ kind: PROJECTED_DRAFT_KIND, draftId, status: 'staged', draft: { reportDate: '2026-11-26', targetType: 1, targetName: '华光科技' }, contacts: [{ contactId: 31, contactName: '刘老师', position: '' }], notes: ['请选择拜访人', 7] });
+  const drafts = projectEvents([
+    { type: 'turn/start', seq: 1, data: { turn: 6 } },
+    { type: 'tool/call', seq: 2, data: { turn: 6, callId: 'r1', name: 'sales_draft_work_report' } },
+    { type: 'tool/result', seq: 3, surfaceOp: 'append', data: { turn: 6, callId: 'r1', content: [{ type: 'text', text: draftResult('report_a') }] } },
+    { type: 'tool/call', seq: 4, data: { turn: 6, callId: 'r2', name: 'sales_draft_work_report' } },
+    { type: 'tool/result', seq: 5, surfaceOp: 'append', data: { turn: 6, callId: 'r2', content: [{ type: 'text', text: draftResult('report_b') }] } },
+    { type: REPORT_SUBMITTED_RECORD_TYPE, seq: 8, data: { version: 1, turn: 6, draftId: 'report_a', reportId: 9001, report: { contactId: 31 } } },
+    { type: REPORT_SUBMITTED_RECORD_TYPE, seq: 9, data: { version: 1, turn: 6, draftId: 'report_b', reportId: 9002 } },
+    { type: 'system/message', seq: 10, surfaceOp: { op: 'replace', startSeq: 9, endSeq: 9 }, data: { turn: 6 } },
+  ]);
+  assert.equal(drafts.authRequired, null);
+  assert.deepEqual(drafts.reportDrafts.map((d) => [d.draftId, d.callId, d.seq]), [['report_a', 'r1', 3], ['report_b', 'r2', 5]]);
+  assert.deepEqual(drafts.reportDrafts[0].contacts, [{ contactId: 31, contactName: '刘老师', position: '' }]);
+  assert.deepEqual(drafts.reportDrafts[0].notes, ['请选择拜访人']);
+  assert.deepEqual(drafts.submittedByDraftId, { report_a: { reportId: 9001, report: { contactId: 31 } } });
 });
 
 test('TypertRemoteService "salesforge" is registered with the binary Remote form and RPC argument names', async () => {
@@ -1028,6 +1226,7 @@ test('TypertRemoteService "salesforge" is registered with the binary Remote form
       cancelAuthorization: ['requestId', 'signal'],
       setActiveAccount: ['accountId', 'signal'],
       disconnectAccount: ['accountId', 'signal'],
+      submitReportDraft: ['draftId', 'edited', 'signal'],
     });
     const instance = new pluginsRegistered[0](mockCtx);
     assert.equal(instance.serviceName, 'salesforge');

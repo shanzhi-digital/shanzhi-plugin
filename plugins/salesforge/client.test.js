@@ -538,7 +538,7 @@ test('account panel lists accounts with status and expiry, and never renders tok
   assert.match(text, /连接另一个账户/);
   assert.match(text, /服务器设置/);
   assert.doesNotMatch(text, /识别|OCR|Key/u);
-  assert.match(text, /令牌保存在 DeepSeek Harness 凭据存储中，界面不会显示令牌。/);
+  assert.match(text, /令牌保存在小智办公凭据存储中，界面不会显示令牌。/);
 
   const serialized = JSON.stringify(renderedDom(renderer.tree));
   assert.doesNotMatch(serialized, /secret-token/);
@@ -1054,6 +1054,167 @@ test('auth-required tool results project into one card per turn, titled by reaso
   }
 });
 
+function reportDraftEvents(payload, extra = []) {
+  return [
+    { type: 'turn/start', seq: 1, data: { turn: 3 } },
+    { type: 'tool/call', seq: 5, data: { turn: 3, callId: 'r1', name: 'sales_draft_work_report' } },
+    { type: 'tool/result', seq: 6, surfaceOp: 'append', data: { turn: 3, callId: 'r1', result: { content: [{ type: 'text', text: JSON.stringify(payload) }] } } },
+    ...extra,
+  ];
+}
+
+function runDefinition(def, events) {
+  let state = def.start({}, { event: events[1] });
+  for (const event of events.slice(2)) state = def.update({ state }, { event });
+  return def.buildLocationData({ state }, 'turn', null);
+}
+
+const REPORT_PAYLOAD = {
+  kind: 'salesforge-report-draft',
+  draftId: 'report_0123456789abcdef',
+  status: 'staged',
+  draft: { reportDate: '2026-11-26', targetType: 1, targetName: '华光科技', targetId: 1001, contactId: null, workPlan: '下周提交报价', workSummary: '演示了数据平台', targetTypeLabel: '客户' },
+  contacts: [
+    { contactId: 31, contactName: '刘老师', position: '信息中心主任' },
+    { contactId: 32, contactName: '陈工', position: '' },
+  ],
+  notes: ['「华光科技」的联系人里没有「王老师」，请用户在卡片上选择拜访人。'],
+  hint: '日报草稿已显示在卡片上，还没有提交。',
+};
+
+const findAll = (tree, type) => collectNodes(tree, (n) => n.type === type);
+const change = (node, value) => node.props.onChange({ target: { value } });
+
+test('report drafts project into an editable card that writes only when 提交日报 is clicked, matching the Node projection', async () => {
+  const renderer = createRenderer();
+  const mod = loadClientModule(renderer.React);
+  const def = mod.eventDefinition;
+  const events = reportDraftEvents(REPORT_PAYLOAD);
+
+  // Browser projection and its Node mirror agree.
+  assert.deepEqual(plain(def.match(events[2])), { id: '3', role: 'start' });
+  const location = runDefinition(def, events);
+  assert.deepEqual(plain(location.value.reportDrafts), projectEvents(events).reportDrafts);
+  assert.equal(location.value.reportDrafts.length, 1);
+  assert.equal(location.value.authRequired, null);
+
+  let submits = 0;
+  const rpc = createRpc({
+    submitReportDraft: (args) => {
+      submits += 1;
+      if (submits === 1) throw new Error('当前连接的销售管理系统账户和生成草稿时不同，请让助手重新生成草稿。');
+      return { kind: 'salesforge-report-submitted', draftId: args.draftId, reportId: 9001, alreadySubmitted: false };
+    },
+  });
+  const turn = { turn: 3, data: new Map([[location.key, location.value]]) };
+  renderer.mount(renderer.h(mod.TurnTail, { turn, services: servicesFor(rpc.connection) }));
+  await renderer.settle();
+  let text = textContent(renderer.tree);
+  assert.match(text, /工作日报草稿/);
+  assert.match(text, /未提交/);
+  assert.match(text, /点「提交日报」后才会写入/);
+  // 卡片自带样式表，和授权卡片一样不依赖别的界面先注入。
+  assert.ok(findAll(renderer.tree, 'style').some((n) => textContent(n).includes('.sfu-report{')));
+  assert.match(text, /没有「王老师」/);
+  assert.equal(findAll(renderer.tree, 'input').find((n) => n.props.value === '客户 · 华光科技').props.disabled, true, '拜访对象不能改');
+  const options = findAll(renderer.tree, 'option').map((n) => textContent(n));
+  assert.deepEqual(options, ['请选择拜访人', '刘老师 - 信息中心主任', '陈工']);
+  assert.equal(rpc.count('submitReportDraft'), 0, '显示卡片不提交');
+
+  // 没选拜访人、日期格式不对：卡片上直接提示，不发请求。
+  click(findButton(renderer.tree, '提交日报'));
+  await renderer.settle();
+  assert.match(textContent(renderer.tree), /请选择拜访人。/);
+  change(findAll(renderer.tree, 'select')[0], '32');
+  change(findAll(renderer.tree, 'input')[0], '2026/11/26');
+  await renderer.settle();
+  click(findButton(renderer.tree, '提交日报'));
+  await renderer.settle();
+  assert.match(textContent(renderer.tree), /YYYY-MM-DD/);
+  assert.equal(rpc.count('submitReportDraft'), 0);
+
+  // 宿主拒绝时显示原因，按钮还在，可以重试。
+  change(findAll(renderer.tree, 'input')[0], '2026-11-25');
+  change(findAll(renderer.tree, 'textarea')[0], '  演示了数据平台，约了下周报价 ');
+  await renderer.settle();
+  click(findButton(renderer.tree, '提交日报'));
+  await renderer.settle();
+  assert.match(textContent(renderer.tree), /账户和生成草稿时不同/);
+  assert.ok(findButton(renderer.tree, '提交日报'));
+
+  click(findButton(renderer.tree, '提交日报'));
+  await renderer.settle();
+  assert.deepEqual(plain(rpc.argsOf('submitReportDraft')[1]), {
+    draftId: 'report_0123456789abcdef',
+    edited: { reportDate: '2026-11-25', contactId: 32, workPlan: '下周提交报价', workSummary: '演示了数据平台，约了下周报价' },
+  });
+  text = textContent(renderer.tree);
+  assert.match(text, /已提交 · 日报 #9001/);
+  assert.match(text, /已以你的名义写入销售管理系统/);
+  assert.equal(findButton(renderer.tree, '提交日报'), undefined);
+  assert.ok(findAll(renderer.tree, 'textarea').every((n) => n.props.disabled), '提交后不能再改');
+  renderer.unmount();
+});
+
+test('a submitted record keeps the card submitted after reload; drafts without contacts cannot be submitted', async () => {
+  const renderer = createRenderer();
+  const mod = loadClientModule(renderer.React);
+  const def = mod.eventDefinition;
+
+  const submittedReport = { reportDate: '2026-11-25', contactId: 32, workPlan: '下周提交报价', workSummary: '演示了数据平台，约了下周报价' };
+  const record = { type: 'plugin:salesforge/report-submitted', seq: 9, data: { version: 1, turn: 3, draftId: 'report_0123456789abcdef', reportId: 9001, report: submittedReport } };
+  const events = reportDraftEvents(REPORT_PAYLOAD, [record]);
+  assert.deepEqual(plain(def.match(record)), { id: '3', role: 'start' });
+  const location = runDefinition(def, events);
+  assert.deepEqual(plain(location.value.submittedByDraftId), { report_0123456789abcdef: { reportId: 9001, report: submittedReport } });
+  assert.deepEqual(plain(location.value.submittedByDraftId), projectEvents(events).submittedByDraftId);
+  // replace 掉的记录不算。
+  const replaced = [...events, { type: 'system/message', seq: 10, surfaceOp: { op: 'replace', startSeq: 9, endSeq: 9 }, data: { turn: 3 } }];
+  assert.deepEqual(plain(runDefinition(def, replaced).value.submittedByDraftId), {});
+  assert.deepEqual(projectEvents(replaced).submittedByDraftId, {});
+
+  const rpc = createRpc({});
+  renderer.mount(renderer.h(mod.TurnTail, { turn: { turn: 3, data: new Map([[location.key, location.value]]) }, services: servicesFor(rpc.connection) }));
+  await renderer.settle();
+  let text = textContent(renderer.tree);
+  assert.match(text, /已提交 · 日报 #9001/);
+  assert.doesNotMatch(text, /没有「王老师」/, '已提交的卡片不再显示提示');
+  assert.equal(findButton(renderer.tree, '提交日报'), undefined);
+  // 显示实际提交的内容，而不是最初的草稿。
+  assert.equal(findAll(renderer.tree, 'select')[0].props.value, '32');
+  assert.equal(findAll(renderer.tree, 'input')[0].props.value, '2026-11-25');
+  assert.equal(findAll(renderer.tree, 'textarea')[0].props.value, '演示了数据平台，约了下周报价');
+  renderer.unmount();
+
+  // 客户还没有联系人：拜访人一栏提示先去网页添加，点提交只提示不发请求。
+  const empty = { ...REPORT_PAYLOAD, draftId: 'report_fedcba9876543210', contacts: [], notes: [] };
+  const emptyLocation = runDefinition(def, reportDraftEvents(empty));
+  renderer.mount(renderer.h(mod.TurnTail, { turn: { turn: 3, data: new Map([[emptyLocation.key, emptyLocation.value]]) }, services: servicesFor(rpc.connection) }));
+  await renderer.settle();
+  assert.equal(findAll(renderer.tree, 'select').length, 0);
+  assert.ok(findAll(renderer.tree, 'input').some((n) => n.props.value === '还没有联系人，请先在网页里添加'));
+  click(findButton(renderer.tree, '提交日报'));
+  await renderer.settle();
+  assert.match(textContent(renderer.tree), /这个客户还没有联系人，请先在销售管理系统网页里添加联系人。/);
+  assert.equal(rpc.count('submitReportDraft'), 0);
+  renderer.unmount();
+
+  // 同一回合既有草稿又要授权：两张卡片都显示。
+  const auth = { kind: 'salesforge-auth-required', reason: 'expired', serverUrl: 'http://sales.test/api/v1', message: '授权已过期，请重新连接。' };
+  const both = reportDraftEvents(REPORT_PAYLOAD, [
+    { type: 'tool/call', seq: 7, data: { turn: 3, callId: 'c2', name: 'sales_targets' } },
+    { type: 'tool/result', seq: 8, surfaceOp: 'append', data: { turn: 3, callId: 'c2', result: { content: [{ type: 'text', text: JSON.stringify(auth) }] } } },
+  ]);
+  const bothLocation = runDefinition(def, both);
+  const store = mod.createAccountStore(() => createRpc({ getState: () => stateWith([], null) }).connection);
+  renderer.mount(renderer.h(mod.TurnTail, { turn: { turn: 3, data: new Map([[bothLocation.key, bothLocation.value]]) }, store, services: servicesFor(rpc.connection) }));
+  await renderer.settle();
+  text = textContent(renderer.tree);
+  assert.match(text, /工作日报草稿/);
+  assert.match(text, /授权已过期，请重新连接。/);
+  renderer.unmount();
+});
+
 test('settings page reuses the account panel; changing the server asks first and disconnects accounts', async () => {
   const renderer = createRenderer();
   const mod = loadClientModule(renderer.React);
@@ -1144,21 +1305,21 @@ test('every RPC the client calls exists on the host service, with the same argum
       params.split(',').map((p) => p.trim()).filter((p) => p && p !== 'signal'),
     ]),
   );
-  assert.equal(Object.keys(hostMethods).length, 8);
+  assert.equal(Object.keys(hostMethods).length, 9);
 
   const clientCalls = [...clientSource.matchAll(/callRpc\([^,]+, "(\w+)", \{([^}]*)\}/gu)].map(([, name, body]) => ({
     name,
     keys: [...body.matchAll(/(\w+):/gu)].map((m) => m[1]),
   }));
-  assert.ok(clientCalls.length >= 8);
+  assert.ok(clientCalls.length >= 9);
   for (const { name, keys } of clientCalls) {
     assert.ok(hostMethods[name], `host has ${name}`);
     assert.deepEqual(keys, hostMethods[name], `${name} args`);
   }
-  // 插件页、设置页、授权卡片用到的方法都覆盖到了（getState 走 store，单独调用）。
+  // 插件页、设置页、授权卡片和日报卡片用到的方法都覆盖到了（getState 走 store，单独调用）。
   assert.deepEqual(
     [...new Set(clientCalls.map((c) => c.name))].sort(),
-    ['cancelAuthorization', 'disconnectAccount', 'getState', 'pollAuthorization', 'saveSettings', 'setActiveAccount', 'startAuthorization', 'testConnection'],
+    ['cancelAuthorization', 'disconnectAccount', 'getState', 'pollAuthorization', 'saveSettings', 'setActiveAccount', 'startAuthorization', 'submitReportDraft', 'testConnection'],
   );
 });
 

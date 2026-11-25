@@ -12,7 +12,7 @@ import { createCredentialStore, credentialsFilePath } from './credential-store.j
 // 报错和日志只用固定文案，不回显底层异常、请求头或后端返回的原文。
 
 export const AUTH_REQUIRED_KIND = 'salesforge-auth-required';
-export const CLIENT_NAME = 'DeepSeek Harness · 销售管理';
+export const CLIENT_NAME = '小智办公 · 销售管理';
 export const NOT_UPGRADED_MESSAGE = '销售管理系统还没升级到支持插件授权的版本，请联系管理员';
 
 const MAX_ACTIVE_AUTHORIZATIONS = 3;
