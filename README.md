@@ -7,8 +7,8 @@
 | 插件 | 包名 | 版本 | 主要功能 |
 | --- | --- | --- | --- |
 | [通用查询结果图表](plugins/datahub-echarts/README.md) | `@local/datahub-echarts` | 0.10.1 | 真实查询结果默认以表格展示，表头与数据居中，多结果标签切换，柱状图/折线图/饼图及 CSV/XLSX 导出 |
-| [问知文档](plugins/datahub-knowledge-docs/README.md) | `@local/datahub-knowledge-docs` | 0.3.0 | 找文档时显示确认匹配的文件，问知识时显示检索来源，支持在右侧预览原文 |
-| [问数增强](plugins/datahub-query-enhance/README.md) | `@local/datahub-query-enhance` | 0.1.1 | 引导读取公共查询规范、设置中文结果列名、输出数据洞察，并自动显示指标可信状态 |
+| [问知文档](plugins/datahub-knowledge-docs/README.md) | `@local/datahub-knowledge-docs` | 0.3.1 | 找文档时显示确认匹配的文件，问知识时显示检索来源，支持在右侧预览原文 |
+| [问数增强](plugins/datahub-query-enhance/README.md) | `@local/datahub-query-enhance` | 0.1.2 | 引导读取公共查询规范、设置中文结果列名、输出数据洞察，并自动显示指标可信状态 |
 | [公文全流程处理专家](plugins/gongwen/README.md) | `gongwen-skill` | 2.15.0-local.3 | 上游公文工具的本地适配版本，提供生成、检查、修复、模板与版式处理及 DSH 集成 |
 | [数据源](plugins/dsh-datasource/README.md) | `dsh-sql` | 0.9.0-local.13 | 只读数据源接入、源表启停、问题泛化与辅助选表；提供目录、标注与关系存储、全局保存校验 |
 | [数据标注](plugins/dsh-data-annotation/README.md) | `dsh-data-annotation` | 0.1.0-local.11 | 表标注、字段标注、业务主题关系画布、标注确认四步；AI 按主表生成多个业务组合草稿与人工确认；依赖 dsh-sql 0.9.0-local.13 及管理库 v7 |

@@ -1,6 +1,6 @@
 {
   "name": "@local/datahub-query-enhance",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -8,6 +8,7 @@
   "exports": { ".": "./index.js", "./client": "./client.js", "./locale/*.json": "./locale/*.json", "./icon": "./icon.svg" },
   "files": ["index.js", "trust.js", "host-bridge.js", "event-projection.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "LICENSE"],
   "scripts": { "test": "node --test trust.test.js host-bridge.test.js event-projection.test.js" },
-  "peerDependencies": { "@deepseek-ai/dsh-llm": "0.2.2-rc.1" },
+  "peerDependencies": { "@deepseek-ai/dsh-llm": ">=0.2.0-0" },
+  "peerDependenciesMeta": { "@deepseek-ai/dsh-llm": { "optional": true } },
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" }, "client": { "platform": "web", "immediately": true, "inject": ["@deepseek-ai/dsh-client-ui-conversation"] } }
 }
