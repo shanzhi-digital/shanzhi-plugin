@@ -198,6 +198,9 @@ test('插件不依赖旧服务即可注册独立接口及工具，未配置管�
   assert.equal(response.status, 503);
   assert.match((await response.json()).error, /管理库/);
   await handlers.dispose();
+  const closed = await routes.find(route => route.path.endsWith('/questions')).fetch(new Request('http://localhost/api/question-set/questions'));
+  assert.equal(closed.status, 503);
+  assert.match((await closed.json()).error, /已关闭/);
 });
 
 test('失败或取消任务可丢弃，重新加载不会恢复旧结果', async () => {

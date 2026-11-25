@@ -7,58 +7,94 @@ import { AiTasks } from './ai-tasks.js';
 import { QuestionFlow } from './flow.js';
 import { createRoutes } from './routes.js';
 import { createSettings } from './settings.js';
+import { InternalHttp } from './internal-http.js';
 
 export const name = 'question-set';
 export const inject = ['connection', 'tools', 'credentials', ...injectKeys];
 
+async function createProductionServices(ctx, config) {
+  const db = await openSharedDb(ctx);
+  let query, bridge;
+  try {
+    const store = createQuestionStore(db);
+    query = createQueryService({ db, credentials: ctx.credentials });
+    bridge = new DatasourceSessionBridge(ctx);
+    const flow = new QuestionFlow({ store, query, bridge, cwd: resolve(config.workingDirectory || process.cwd()) });
+    const tasks = new AiTasks({
+      validate: input => flow.validate(input),
+      identify: input => ({ sourceId: input.sourceId, kind: 'generalize' }),
+      execute: (input, signal, report, taskId) => flow.run(input, signal, report, taskId),
+    });
+    return { db, store, query, flow, tasks };
+  } catch (error) {
+    try { await bridge?.close(); } finally { try { await query?.close(); } finally { await db.close(); } }
+    throw error;
+  }
+}
+
 export async function apply(ctx, config = {}) {
-  const settings = createSettings({ profileDir: config.profileDir });
-  // Database setup failures stay visible on this plugin's page; no dependency on the old plugin's activation.
-  let services, initializing, closed = false;
+  return applyWithServices(ctx, config);
+}
+
+// Contract tests inject services; production owns one shared set for both transports.
+export async function applyWithServices(ctx, config = {}, {
+  createServices = createProductionServices,
+  createTransport = options => new InternalHttp(options),
+  settings = createSettings({ profileDir: config.profileDir }),
+} = {}) {
+  const http = createTransport(config.internalApi);
+  let services, initializing, routes, closed = false;
+  const disposers = [];
+  const unavailable = () => Response.json({ error: '问题集服务已关闭。' }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
   const initialize = () => {
     if (closed) throw Object.assign(new Error('问题集服务已关闭。'), { publicMessage: '问题集服务已关闭。' });
-    return initializing ??= (async () => {
-    const db = await openSharedDb(ctx);
-    try {
-      const store = createQuestionStore(db);
-      const query = createQueryService({ db, credentials: ctx.credentials });
-      const bridge = new DatasourceSessionBridge(ctx);
-      const flow = new QuestionFlow({ store, query, bridge, cwd: resolve(config.workingDirectory || process.cwd()) });
-      const tasks = new AiTasks({
-        validate: input => flow.validate(input),
-        identify: input => ({ sourceId: input.sourceId, kind: 'generalize' }),
-        execute: (input, signal, report, taskId) => flow.run(input, signal, report, taskId),
-      });
-      services = { db, store, query, bridge, flow, tasks, settings };
-      return services;
-    } catch (error) { await db.close(); throw error; }
-  })().catch(error => { initializing = null; throw error; });
+    return initializing ??= Promise.resolve().then(() => createServices(ctx, config)).then(value => {
+      services = value;
+      routes = new Map(createRoutes({ ...value, settings }).map(route => [route.path, route]));
+      return value;
+    }).catch(error => { initializing = null; throw error; });
   };
-  // Routes need synchronous task admission. Initialize their services before invoking the matching handler.
-  const routePaths = createRoutes({ store: {}, query: {}, flow: {}, tasks: {}, settings });
-  for (const definition of routePaths) {
-    if (definition.path === '/api/question-set/prompt-settings') {
-      ctx.connection.fetch.register(definition);
-      continue;
-    }
-    ctx.connection.fetch.register({ ...definition, async fetch(request) {
-      try {
-        const value = await initialize();
-        return await createRoutes(value).find(route => route.path === definition.path).fetch(request);
-      } catch (error) {
-        return Response.json({ error: error.publicMessage || '问题集无法连接共享管理库，请先完成已有管理库配置。' }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
-      }
-    } });
-  }
-  const tool = QuestionFlow.prototype.getTool.call({ task: async (input, execution) => (await initialize()).flow.task(input, execution) });
-  ctx.tools.register(tool);
-  ctx.on('dispose', async () => {
+  const close = async () => {
+    if (closed) return;
     closed = true;
-    if (initializing) await initializing.catch(() => {});
-    if (!services) return;
-    await services.tasks.close();
-    await services.flow.close();
-    await services.query.close();
-    await services.db.close();
-  });
+    http.stopAccepting();
+    try {
+      if (initializing) await initializing.catch(() => {});
+      if (services) {
+        try { await services.tasks.close(); }
+        finally {
+          try { await services.flow.close(); }
+          finally { try { await services.query.close(); } finally { await services.db.close(); } }
+        }
+      }
+    } finally {
+      try { for (const dispose of disposers.reverse()) dispose?.(); }
+      finally { await http.close(); }
+    }
+  };
+  try {
+    const definitions = createRoutes({ store: {}, query: {}, flow: {}, tasks: {}, settings });
+    for (const definition of definitions) {
+      const route = { ...definition, async fetch(request) {
+        if (closed) return unavailable();
+        if (definition.path === '/api/question-set/prompt-settings') return definition.fetch(request);
+        try {
+          await initialize();
+          if (closed) return unavailable();
+          return await routes.get(definition.path).fetch(request);
+        } catch (error) {
+          return Response.json({ error: error.publicMessage || '问题集无法连接共享管理库，请先完成已有管理库配置。' }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
+        }
+      } };
+      disposers.push(ctx.connection.fetch.register(route));
+      disposers.push(http.register(route));
+    }
+    const tool = QuestionFlow.prototype.getTool.call({ task: async (input, execution) => (await initialize()).flow.task(input, execution) });
+    disposers.push(ctx.tools.register(tool));
+    await http.listen();
+    ctx.on('dispose', close);
+  } catch (error) {
+    await close();
+    throw error;
+  }
 }
