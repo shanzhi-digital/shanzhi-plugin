@@ -1,0 +1,14 @@
+{
+  "name": "dsh-question-set",
+  "version": "0.1.0",
+  "description": "问题集：问题、真实查询答案与关联表，支持勾选泛化及缺失答案补齐。",
+  "type": "module",
+  "main": "./index.js",
+  "exports": { ".": "./index.js", "./client": "./client.js", "./package.json": "./package.json", "./cordis.patch.yml": "./cordis.patch.yml" },
+  "files": ["*.js", "vendor/*.js", "cordis.patch.yml", "LICENSE", "THIRD-PARTY-NOTICES.md"],
+  "scripts": { "test": "node --test test/*.test.mjs", "check": "node --check index.js && node --check client.js && node --check routes.js && node --check flow.js && node --check task-prompts.js && node --check store.js && node --check query.js && node --check credentials.js && node --check management-db.js && node --check host-bridge.js && node --check ai-tasks.js && node --check sql-policy.js && node --check freshness.js && node --check vendor/adapters.js && node --check vendor/config.js" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" }, "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-sidebar", "@deepseek-ai/dsh-client-connection"] } },
+  "engines": { "node": ">=24.0.0", "dsh": ">=0.2.1-rc.5" },
+  "dependencies": { "mysql2": "^3.11.0", "node-sql-parser": "5.4.0", "pg": "^8.23.0" },
+  "license": "MIT"
+}

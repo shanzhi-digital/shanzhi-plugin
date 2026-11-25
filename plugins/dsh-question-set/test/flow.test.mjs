@@ -1,0 +1,173 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { QuestionFlow } from '../flow.js';
+import { AiTasks } from '../ai-tasks.js';
+import { createRoutes } from '../routes.js';
+import { apply, inject } from '../index.js';
+
+const table = { tableId: 't1', name: 'beds', schema: 'main', fields: [{ name: 'count', type: 'INTEGER' }], structureHash: 'hash' };
+const rows = [
+  { id: 'q1', version: 1, text: '床位总数是多少？', answer: '', origin: 'generated', links: [] },
+  { id: 'q2', version: 2, text: '床位平均数是多少？', answer: '已有答案', origin: 'original', links: [] },
+];
+const refs = rows.map(({ id, version }) => ({ id, version }));
+function fixture(script) {
+  let flow, commits = [], calls = [], operation, end;
+  const bridge = {
+    async create() { return { sessionId: 's1' }; },
+    async observe({ onEnd }) { end = onEnd; return async () => {}; },
+    async send() { try { await script({ call: (value) => flow.task(value, { agent: { session: { id: 's1' } } }), end }); } catch (error) { end(error); } return { accepted: true }; },
+    async cancel() { calls.push('cancel'); }, async close() {},
+  };
+  const store = { async list() { return structuredClone(rows); }, async commit(input) { commits.push(structuredClone(input)); } };
+  const query = { async schema() { return { sourceId: 'source', name: 'source', engine: 'sqlite', tables: [table] }; }, async query(sourceId, sql) { calls.push({ sourceId, sql }); if (sql === 'broken') throw new Error('SQL失败'); return { columns: ['total'], rows: [[12]], rowCount: 1, truncated: false, tables: [table] }; } };
+  flow = new QuestionFlow({ store, query, bridge, cwd: process.cwd(), timeoutMs: 2000 });
+  const run = (input = { sourceId: 'source', questions: refs }, signal = new AbortController().signal, taskId = 'task1') => flow.run(input, signal, update => { operation = update; }, taskId);
+  return { flow, run, commits, calls, store, query, latest: () => operation };
+}
+async function plan(call) {
+  await call({ operation: 'read' });
+  return (await call({ operation: 'plan', candidates: [{ text: '床位最大值是多少？' }], reason: '当前仅有床位指标，生成一个可查询候选。' })).items;
+}
+async function answer(call, item) {
+  const result = await call({ operation: 'query', itemId: item.id, sql: 'SELECT sum(count) FROM beds' });
+  await call({ operation: 'answer', itemId: item.id, answer: '床位合计12张。', queryIds: [result.queryId] });
+}
+
+test('任意来源问题泛化、补答并以真实查询结果形成三项结果，已有答案不改写', async () => {
+  const fx = fixture(async ({ call }) => {
+    const items = await plan(call);
+    assert.equal(items.length, 2);
+    assert.equal(items[0].id, 'q1');
+    for (const item of items) await answer(call, item);
+    await call({ operation: 'finish' });
+  });
+  const result = await fx.run();
+  assert.equal(fx.calls.length, 2);
+  assert.equal(result.updates.length, 1);
+  assert.equal(result.updates[0].answer, '床位合计12张。');
+  assert.equal(result.candidates[0].links[0].tableId, 't1');
+  assert.equal(result.candidates[0].links[0].tableName, 'beds');
+  assert.equal(fx.commits.length, 0, '完成任务不直接写共享库');
+  await fx.flow.save({ taskId: 'task1', candidateIds: [result.candidates[0].id], updateIds: ['q1'] });
+  assert.equal(fx.commits.length, 1);
+  assert.deepEqual(fx.commits[0].references, refs);
+  assert.equal(fx.commits[0].sourceId, 'source');
+  await assert.rejects(fx.flow.save({ taskId: 'task1', updateIds: ['q1'] }), /已保存/);
+});
+
+test('拒绝没有查询证据、伪造查询ID以及引用其它问题的查询结果', async () => {
+  const fx = fixture(async ({ call }) => {
+    const items = await plan(call);
+    await assert.rejects(call({ operation: 'answer', itemId: items[0].id, answer: '12', queryIds: [] }), /成功查询/);
+    await assert.rejects(call({ operation: 'answer', itemId: items[0].id, answer: '12', queryIds: ['fake'] }), /不属于/);
+    const result = await call({ operation: 'query', itemId: items[0].id, sql: 'SELECT count FROM beds' });
+    await assert.rejects(call({ operation: 'answer', itemId: items[1].id, answer: '12', queryIds: [result.queryId] }), /不属于/);
+    for (const item of items) await call({ operation: 'fail-item', itemId: item.id, error: '缺少统计口径' });
+    await call({ operation: 'finish' });
+  });
+  const result = await fx.run();
+  assert.ok(result.updates[0].error);
+  await assert.rejects(fx.flow.save({ taskId: 'task1', updateIds: ['q1'] }), /成功查询/);
+});
+
+test('失败条目可重试，成功候选保留且候选不重新泛化', async () => {
+  let stage = 0;
+  const fx = fixture(async ({ call }) => {
+    if (stage++ === 0) {
+      const items = await plan(call);
+      await call({ operation: 'fail-item', itemId: items[0].id, error: '查询失败' });
+      await answer(call, items[1]);
+    } else {
+      const { items } = await call({ operation: 'read' });
+      assert.equal(items.length, 1);
+      assert.equal(items[0].id, 'q1');
+      await assert.rejects(call({ operation: 'plan', candidates: [] }), /不可重复/);
+      await answer(call, items[0]);
+    }
+    await call({ operation: 'finish' });
+  });
+  const first = await fx.run();
+  const retry = fx.flow.retry('task1');
+  fx.flow.retire('task1');
+  const second = await fx.run(retry, new AbortController().signal, 'task2');
+  assert.equal(second.candidates[0].id, first.candidates[0].id);
+  assert.equal(second.candidates[0].answer, first.candidates[0].answer);
+  assert.equal(second.updates[0].answer, '床位合计12张。');
+  await assert.rejects(fx.flow.save({ taskId: 'task1', candidateIds: [first.candidates[0].id] }), /失效/);
+});
+
+test('成功空结果可回答无记录，查询异常不会生成成功查询证据', async () => {
+  const fx = fixture(async ({ call }) => {
+    const items = await plan(call);
+    await assert.rejects(call({ operation: 'query', itemId: items[0].id, sql: 'broken' }), /SQL失败/);
+    await call({ operation: 'fail-item', itemId: items[0].id, error: '数据库查询失败' });
+    const result = await call({ operation: 'query', itemId: items[1].id, sql: 'SELECT count FROM beds' });
+    await call({ operation: 'answer', itemId: items[1].id, answer: '未查到符合条件的数据。', queryIds: [result.queryId] });
+    await call({ operation: 'finish' });
+  });
+  fx.query.query = async (_id, sql) => { if (sql === 'broken') throw new Error('SQL失败'); return { columns: ['count'], rows: [], rowCount: 0, truncated: false, tables: [table] }; };
+  const result = await fx.run();
+  assert.equal(result.candidates[0].answer, '未查到符合条件的数据。');
+  assert.ok(result.updates[0].error);
+});
+
+test('问题版本冲突在创建会话前拒绝，取消任务不产生可保存草稿', async () => {
+  const fx = fixture(async () => {});
+  await assert.rejects(fx.run({ sourceId: 'source', questions: [{ id: 'q1', version: 99 }] }), /已更新/);
+  const controller = new AbortController();
+  const running = fx.run(undefined, controller.signal);
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(running, /取消/);
+  assert.equal(fx.flow.drafts.size, 0);
+  assert.ok(fx.calls.includes('cancel'));
+});
+
+test('插件不依赖旧服务即可注册独立接口及工具，未配置管理库返回明确错误', async () => {
+  const routes = [], tools = [], handlers = {};
+  const ctx = {
+    credentials: { async readRecord() { return undefined; } },
+    connection: { fetch: { register(route) { routes.push(route); } } },
+    tools: { register(tool) { tools.push(tool); } },
+    on(event, handler) { handlers[event] = handler; },
+  };
+  assert.equal(inject.includes('datasourceCatalog'), false);
+  await apply(ctx);
+  assert.equal(tools[0].name, 'question_set_task');
+  assert.ok(routes.every(route => route.path.startsWith('/api/question-set/')));
+  const response = await routes.find(route => route.path.endsWith('/questions')).fetch(new Request('http://localhost/api/question-set/questions'));
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).error, /管理库/);
+  await handlers.dispose();
+});
+
+test('失败或取消任务可丢弃，重新加载不会恢复旧结果', async () => {
+  const fx = fixture(async () => {});
+  const tasks = new AiTasks({ validate: input => fx.flow.validate(input), identify: input => ({ sourceId: input.sourceId, kind: 'generalize' }), execute: async () => { throw new Error('失败'); } });
+  const task = tasks.start({ sourceId: 'source', questions: refs });
+  await tasks.tasks.get(task.taskId).done;
+  const routes = createRoutes({ store: fx.store, query: fx.query, flow: fx.flow, tasks });
+  const discard = routes.find(route => route.path.endsWith('/results-discard'));
+  assert.equal((await discard.fetch(new Request('http://localhost/api/question-set/results-discard', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskId: task.taskId }) }))).status, 200);
+  const get = routes.find(route => route.path.endsWith('/ai-tasks'));
+  const response = await get.fetch(new Request(`http://localhost/api/question-set/ai-tasks?sourceId=source`));
+  assert.equal((await response.json()).task.resultState, 'discarded');
+  await tasks.close();
+});
+
+test('任务路由直接接收任意来源问题并隔离内部重试种子', async () => {
+  const fx = fixture(async ({ call }) => { for (const item of await plan(call)) await answer(call, item); await call({ operation: 'finish' }); });
+  const tasks = new AiTasks({ validate: input => fx.flow.validate(input), identify: input => ({ sourceId: input.sourceId, kind: 'generalize' }), execute: (...args) => fx.flow.run(...args) });
+  const routes = createRoutes({ store: fx.store, query: fx.query, flow: fx.flow, tasks });
+  const endpoint = routes.find(route => route.path === '/api/question-set/ai-tasks');
+  const request = value => new Request('http://localhost/api/question-set/ai-tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
+  const invalid = await endpoint.fetch(request({ sourceId: 'source', questions: refs, seed: {} }));
+  assert.equal(invalid.status, 400);
+  const response = await endpoint.fetch(request({ sourceId: 'source', questions: refs }));
+  assert.equal(response.status, 202);
+  const { task } = await response.json();
+  await tasks.tasks.get(task.taskId).done;
+  assert.equal(tasks.get(task.taskId).status, 'succeeded');
+  await tasks.close();
+});
