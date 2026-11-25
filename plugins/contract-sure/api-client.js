@@ -409,10 +409,24 @@ export async function validateContractDraft(cfg, draft, opts = {}) {
   });
 }
 
+/**
+ * 创建合同。带 detail=true：新版后端返回 { id, contractNo, externalContractNo, autoNumbered, match }，
+ * 其中 contractNo 是入库时确定的最终编号；旧版后端不认这个参数，仍只返回合同 ID。
+ */
 export async function createContract(cfg, draft, opts = {}) {
   return requestJson(cfg, '/contracts', {
     method: 'POST',
     body: draft,
+    query: { detail: 'true' },
+    ...opts,
+  });
+}
+
+/** 确认流水上的户名 aliasName 和合同户名 canonicalName 是同一家；返回 { engine, adjustedContracts, ... } */
+export async function confirmPartyAlias(cfg, aliasName, canonicalName, opts = {}) {
+  return requestJson(cfg, '/party-aliases', {
+    method: 'POST',
+    body: { aliasName, canonicalName },
     ...opts,
   });
 }
@@ -688,6 +702,7 @@ export const defaultApiClient = Object.freeze({
   extractPdfText,
   validateContractDraft,
   createContract,
+  confirmPartyAlias,
   uploadContractFile,
   uploadNodeDocument,
   listContracts,

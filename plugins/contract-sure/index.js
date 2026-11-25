@@ -87,6 +87,7 @@ const MATCH_STATUS_LABELS = Object.freeze({
   1: '自动匹配',
   2: '人工确认',
   3: '人工调整',
+  4: '部分匹配',
 });
 
 const textRender = (_args, value) => [{ type: 'text', text: JSON.stringify(value) }];
@@ -100,6 +101,105 @@ function toFiniteNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
+}
+
+/** 金额写成「¥50,000」：整数不带小数，其余最多两位小数，和网页端一致 */
+export function formatYuan(value) {
+  const num = toFiniteNumber(value) ?? 0;
+  return `¥${num.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`;
+}
+
+function toIdOrNull(value) {
+  const num = toFiniteNumber(value);
+  return num != null && Number.isInteger(num) ? num : null;
+}
+
+/** 后端返回的「顺带调整的合同」整理成无损 JSON */
+export function normalizeAdjustedContracts(list) {
+  return (Array.isArray(list) ? list : []).map((c) => ({
+    contractId: toIdOrNull(c?.contractId),
+    contractNo: typeof c?.contractNo === 'string' ? c.contractNo : '',
+    contractName: typeof c?.contractName === 'string' ? c.contractName : '',
+    moneyBefore: toFiniteNumber(c?.moneyBefore) ?? 0,
+    moneyAfter: toFiniteNumber(c?.moneyAfter) ?? 0,
+    invoiceBefore: toFiniteNumber(c?.invoiceBefore) ?? 0,
+    invoiceAfter: toFiniteNumber(c?.invoiceAfter) ?? 0,
+  }));
+}
+
+/** 疑似同一家：流水上的户名和合同户名只是包含关系，不会自动匹配，要用户确认 */
+export function normalizeSuspects(list) {
+  return (Array.isArray(list) ? list : []).map((x) => ({
+    transactionPartyName: typeof x?.transactionPartyName === 'string' ? x.transactionPartyName : '',
+    contractPartyName: typeof x?.contractPartyName === 'string' ? x.contractPartyName : '',
+    transactionCount: toFiniteNumber(x?.transactionCount) ?? 0,
+    transactionTotal: toFiniteNumber(x?.transactionTotal) ?? 0,
+  }));
+}
+
+/** 入库后的匹配结果（后端 ContractMatchSummary）整理成无损 JSON；旧版后端没有时为 null */
+export function normalizeMatchSummary(match) {
+  if (!match || typeof match !== 'object') return null;
+  return {
+    engine: typeof match.engine === 'string' ? match.engine : '',
+    moneyCount: toFiniteNumber(match.moneyCount) ?? 0,
+    moneyTotal: toFiniteNumber(match.moneyTotal) ?? 0,
+    invoiceCount: toFiniteNumber(match.invoiceCount) ?? 0,
+    invoiceTotal: toFiniteNumber(match.invoiceTotal) ?? 0,
+    overAllocated: match.overAllocated === true,
+    adjustedContracts: normalizeAdjustedContracts(match.adjustedContracts),
+    suspects: normalizeSuspects(match.suspects),
+    error: typeof match.error === 'string' && match.error ? match.error : null,
+  };
+}
+
+function contractLabels(list) {
+  const names = list.slice(0, 3).map((c) => c.contractNo || (c.contractId != null ? `#${c.contractId}` : '未编号'));
+  return list.length > 3 ? `${names.join('、')} 等` : names.join('、');
+}
+
+/** 匹配结果的一句话，措辞和网页端新增合同的提示一致；旧匹配规则下不说 */
+export function describeMatchSummary(summary) {
+  if (!summary) return '';
+  if (summary.error) return `自动匹配没有完成（${summary.error}），可以稍后在流水池点「重新匹配」`;
+  if (summary.engine !== 'PARTY_FIFO') return '';
+  const parts = [
+    `匹配收付款 ${summary.moneyCount} 笔 ${formatYuan(summary.moneyTotal)}、发票 ${summary.invoiceCount} 张 ${formatYuan(summary.invoiceTotal)}`,
+  ];
+  if (summary.adjustedContracts.length > 0) {
+    parts.push(`顺带调整了 ${summary.adjustedContracts.length} 份合同（${contractLabels(summary.adjustedContracts)}）`);
+  }
+  if (summary.overAllocated) parts.push('已开票或已收付超过合同金额，请核对');
+  if (summary.suspects.length > 0) parts.push(`还有 ${summary.suspects.length} 个疑似同一家的户名没确认，相关流水没有自动匹配`);
+  return parts.join('；');
+}
+
+/** 核对草稿时给模型看的编号预览和预匹配摘要 */
+export function describeDraftPreview(validation) {
+  const v = validation && typeof validation === 'object' ? validation : {};
+  let text = '';
+  if (v.autoNumbered === true && typeof v.previewContractNo === 'string' && v.previewContractNo) {
+    text += `系统编号：预计 ${v.previewContractNo}（入库时确定）。`;
+  }
+  const preview = v.matchPreview && typeof v.matchPreview === 'object' ? v.matchPreview : null;
+  if (!preview) return text;
+  if (preview.available === false) {
+    return preview.reason ? `${text}预匹配：${preview.reason}。` : text;
+  }
+  const money = preview.money || {};
+  const invoice = preview.invoice || {};
+  text += `预匹配（以入库结果为准）：收付款 ${toFiniteNumber(money.count) ?? 0} 笔 ${formatYuan(money.total)}、`
+    + `发票 ${toFiniteNumber(invoice.count) ?? 0} 张 ${formatYuan(invoice.total)}`;
+  const adjusted = normalizeAdjustedContracts(preview.adjustedContracts);
+  if (adjusted.length > 0) text += `；入库后会顺带调整 ${adjusted.length} 份合同（${contractLabels(adjusted)}）`;
+  if (preview.reason) text += `；${preview.reason}`;
+  text += '。';
+  const suspects = normalizeSuspects(preview.suspects);
+  if (suspects.length > 0) {
+    text += `疑似同一家：${suspects.map((x) => `流水户名「${x.transactionPartyName}」可能就是「${x.contractPartyName}」`).join('；')}。`
+      + '这些流水不会自动匹配，请用户在核对卡上确认是否同一家。';
+  }
+  return text;
 }
 
 function normalizeTriggerRule(rule) {
@@ -139,8 +239,10 @@ export function normalizeContractDraft(input = {}) {
       })
     : [];
 
+  const externalContractNo = typeof src.externalContractNo === 'string' ? src.externalContractNo.trim() : '';
   return {
     contractNo: typeof src.contractNo === 'string' ? src.contractNo.trim() : '',
+    ...(externalContractNo ? { externalContractNo } : {}),
     contractName: typeof src.contractName === 'string' ? src.contractName.trim() : '',
     contractType: src.contractType != null ? Number(src.contractType) : 1,
     totalAmount: toFiniteNumber(src.totalAmount),
@@ -436,10 +538,13 @@ export function setupContractSure(ctx, deps = {}) {
         kind: 'contract-sure-confirmed',
         draftId,
         contractId: staged.contractId,
+        contractNo: staged.contractNo || null,
+        match: staged.match || null,
+        matchText: staged.matchText || '',
         alreadyConfirmed: true,
         uploadedDoc: staged.uploadedDoc || null,
         uploadWarning: staged.uploadWarning || null,
-        message: `该草稿已入库（合同 ID: #${staged.contractId}），无需重复创建。`,
+        message: `该草稿已入库（${staged.contractNo ? `编号 ${staged.contractNo}，` : ''}合同 ID: #${staged.contractId}），无需重复创建。`,
       };
     }
 
@@ -447,10 +552,8 @@ export function setupContractSure(ctx, deps = {}) {
       ...(staged?.draft || {}),
       ...(draft && typeof draft === 'object' ? draft : {}),
     };
+    // 合同编号可以留空：后端开启自动编号时入库才定号，没开启时由后端提示必须填写。
     const finalDraft = normalizeContractDraft(mergedRaw);
-    if (!finalDraft.contractNo) {
-      throw new ApiError('合同编号（contractNo）不能为空。', { code: 'INVALID_ARGUMENT' });
-    }
     if (!finalDraft.contractName) {
       throw new ApiError('合同名称（contractName）不能为空。', { code: 'INVALID_ARGUMENT' });
     }
@@ -460,8 +563,18 @@ export function setupContractSure(ctx, deps = {}) {
       });
     }
 
-    const createdId = await apiClient.createContract(cfg, finalDraft, callOpts(signal));
-    const contractId = typeof createdId === 'object' && createdId !== null ? createdId.id ?? createdId.contractId : createdId;
+    const created = await apiClient.createContract(cfg, finalDraft, callOpts(signal));
+    // 新版后端返回 { id, contractNo, match, ... }；旧版只返回合同 ID。
+    const createdObj = typeof created === 'object' && created !== null ? created : null;
+    const contractId = createdObj ? createdObj.id ?? createdObj.contractId : created;
+    const contractNo = typeof createdObj?.contractNo === 'string' && createdObj.contractNo
+      ? createdObj.contractNo
+      : finalDraft.contractNo || null;
+    const externalContractNo = typeof createdObj?.externalContractNo === 'string' && createdObj.externalContractNo
+      ? createdObj.externalContractNo
+      : finalDraft.externalContractNo || null;
+    const match = normalizeMatchSummary(createdObj?.match);
+    const matchText = describeMatchSummary(match);
 
     const finalSourcePath =
       typeof sourceFilePath === 'string' && sourceFilePath.trim()
@@ -488,6 +601,9 @@ export function setupContractSure(ctx, deps = {}) {
     if (staged) {
       staged.status = 'confirmed';
       staged.contractId = contractId;
+      staged.contractNo = contractNo;
+      staged.match = match;
+      staged.matchText = matchText;
       staged.draft = finalDraft;
       staged.uploadedDoc = uploadedDoc;
       staged.uploadWarning = uploadWarning;
@@ -504,21 +620,71 @@ export function setupContractSure(ctx, deps = {}) {
         callSeq,
         draftId,
         contractId,
+        contractNo,
+        matchText,
         uploadedDoc,
         uploadWarning,
       });
     }
 
+    const createdText = `合同已成功创建（${contractNo ? `编号 ${contractNo}，` : ''}ID: #${contractId}）`;
+    const matchSuffix = matchText ? `${matchText}。` : '';
     return {
       kind: 'contract-sure-confirmed',
       draftId: draftId || null,
       contractId,
+      contractNo,
+      externalContractNo,
+      autoNumbered: createdObj?.autoNumbered === true,
+      match,
+      matchText,
       alreadyConfirmed: false,
       uploadedDoc,
       uploadWarning,
       message: uploadedDoc
-        ? `合同已成功创建（ID: #${contractId}），并已自动归档原件《${uploadedDoc.fileName}》。`
-        : uploadWarning || `合同已成功创建（ID: #${contractId}）。`,
+        ? `${createdText}，并已自动归档原件《${uploadedDoc.fileName}》。${matchSuffix}`
+        : uploadWarning
+          ? `${uploadWarning}${matchSuffix ? ` ${matchSuffix}` : ''}`
+          : `${createdText}。${matchSuffix}`,
+    };
+  }
+
+  // 核对卡改了签订日期、户名、金额等字段后重新校验，拿到新的预计编号和预匹配结果。只读，不入库。
+  async function previewContractDraft({ draftId, draft, sessionId, signal, cfg }) {
+    const staged = draftId ? stagedDrafts.get(draftId) : null;
+    if (staged && staged.sessionId && sessionId && staged.sessionId !== sessionId) {
+      throw new ApiError(`未找到暂存草稿（${draftId}），请重新调用 contract_stage_draft 生成核对草稿。`, {
+        code: 'DRAFT_NOT_FOUND',
+      });
+    }
+    if (staged && (staged.serverUrl !== cfg.serverUrl || staged.accountId !== cfg.accountId)) {
+      throw new ApiError(ACCOUNT_SWITCHED_MESSAGE, { code: 'ACCOUNT_SWITCHED' });
+    }
+    const merged = normalizeContractDraft({
+      ...(staged?.draft || {}),
+      ...(draft && typeof draft === 'object' ? draft : {}),
+    });
+    const validation = await apiClient.validateContractDraft(cfg, merged, callOpts(signal));
+    return { draftId: draftId || null, validation: validation ?? null };
+  }
+
+  // 确认流水上的户名和合同户名是同一家；新规则下后端马上按对方重排，返回顺带调整的合同。
+  async function confirmPartyAlias({ aliasName, canonicalName, signal, cfg }) {
+    const alias = typeof aliasName === 'string' ? aliasName.trim() : '';
+    const canonical = typeof canonicalName === 'string' ? canonicalName.trim() : '';
+    if (!alias || !canonical) {
+      throw new ApiError('请提供流水户名（aliasName）和合同户名（canonicalName）。', { code: 'INVALID_ARGUMENT' });
+    }
+    const res = await apiClient.confirmPartyAlias(cfg, alias, canonical, callOpts(signal));
+    const adjustedContracts = normalizeAdjustedContracts(res?.adjustedContracts);
+    const adjustedText = adjustedContracts.length > 0
+      ? `，顺带调整了 ${adjustedContracts.length} 份合同（${contractLabels(adjustedContracts)}）`
+      : '';
+    return {
+      aliasName: alias,
+      canonicalName: canonical,
+      adjustedContracts,
+      message: `已确认「${alias}」就是「${canonical}」，以后按同一家匹配${adjustedText}。`,
     };
   }
 
@@ -643,12 +809,19 @@ export function setupContractSure(ctx, deps = {}) {
   registerTool({
     name: 'contract_stage_draft',
     description:
-      '校验提取的合同草稿并生成交互式「合同识别核对卡」。调用后端 POST /contracts/validate 核对编号重复与节点总额一致性，暂存草稿供用户确认。',
+      '校验提取的合同草稿并生成交互式「合同识别核对卡」。调用后端 POST /contracts/validate 核对编号重复与节点总额一致性，返回预计的系统编号和入库后的预匹配结果，暂存草稿供用户确认。',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        contractNo: { type: 'string', description: '合同编号' },
+        contractNo: {
+          type: 'string',
+          description: '系统合同编号。一般留空：入库时按「前缀-年份-序号」自动编号。只有用户明确指定了系统编号时才填',
+        },
+        externalContractNo: {
+          type: 'string',
+          description: '原合同编号：合同上印的编号（纸质合同或对方的编号），照原文填；没有就不传',
+        },
         contractName: { type: 'string', description: '合同名称' },
         contractType: { type: 'integer', enum: [1, 2], description: '合同类型：1=销售合同，2=采购合同' },
         totalAmount: { type: 'number', description: '合同总金额（人民币元，纯数字）' },
@@ -660,8 +833,8 @@ export function setupContractSure(ctx, deps = {}) {
         },
         startDate: { type: ['string', 'null'], description: '合同开始日期 YYYY-MM-DD' },
         endDate: { type: ['string', 'null'], description: '合同结束日期 YYYY-MM-DD' },
-        partyAName: { type: 'string', description: '甲方户名' },
-        partyBName: { type: 'string', description: '乙方户名' },
+        partyAName: { type: 'string', description: '甲方户名：完整的法定名称，和公章、开户名一致，不写简称' },
+        partyBName: { type: 'string', description: '乙方户名：完整的法定名称，和公章、开户名一致，不写简称' },
         sourceFilePath: { type: 'string', description: '可选：合同原件本地路径，确认入库时将自动归档上传' },
         nodes: {
           type: 'array',
@@ -682,7 +855,7 @@ export function setupContractSure(ctx, deps = {}) {
           },
         },
       },
-      required: ['contractNo', 'contractName', 'contractType', 'totalAmount'],
+      required: ['contractName', 'contractType', 'totalAmount'],
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: textRender },
     async execute(args, exec) {
@@ -741,6 +914,7 @@ export function setupContractSure(ctx, deps = {}) {
       if (!draft.signDate) {
         hint += '签订日期为空：核对卡已标红提示，请在回复里说明签字页识别到的内容，请用户对照原件补上后再确认。';
       }
+      hint += describeDraftPreview(validation);
       return {
         kind: 'contract-sure-draft',
         draftId,
@@ -921,14 +1095,14 @@ export function setupContractSure(ctx, deps = {}) {
   registerTool({
     name: 'contract_manage_flow',
     description:
-      '执行履约三流确定性业务操作：import_excel（导入发票/银行流水 Excel 并自动匹配）、list_unmatched（分页查询未匹配流水）、manual_match（人工关联流水到合同/节点）、upload_node_evidence（上传节点发票/收付款单/验收材料）、set_node_manual_date（人工指定节点应付款日期）。list_unmatched 每次最多返回 limit 条（默认 50，最大 200）：结果里 total 是总条数，hasMore 为 true 时用 offset=nextOffset 再调用一次取下一页；需要全部明细时逐页翻，不要一次要太多。',
+      '执行履约三流确定性业务操作：import_excel（导入发票/银行流水 Excel 并自动匹配）、list_unmatched（分页查询未匹配流水）、manual_match（人工关联流水到合同/节点）、upload_node_evidence（上传节点发票/收付款单/验收材料）、set_node_manual_date（人工指定节点应付款日期）、confirm_party_alias（用户确认流水上的户名和合同户名是同一家后登记别名，以后按同一家匹配；只在用户明确确认后调用）。list_unmatched 每次最多返回 limit 条（默认 50，最大 200）：结果里 total 是总条数，hasMore 为 true 时用 offset=nextOffset 再调用一次取下一页；需要全部明细时逐页翻，不要一次要太多。',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         action: {
           type: 'string',
-          enum: ['import_excel', 'list_unmatched', 'manual_match', 'upload_node_evidence', 'set_node_manual_date'],
+          enum: ['import_excel', 'list_unmatched', 'manual_match', 'upload_node_evidence', 'set_node_manual_date', 'confirm_party_alias'],
           description: '业务动作类型',
         },
         filePath: {
@@ -948,6 +1122,8 @@ export function setupContractSure(ctx, deps = {}) {
         eventDate: { type: 'string', description: 'upload_node_evidence 可选：事件日期 YYYY-MM-DD（开票日/收付款日/验收日）' },
         date: { type: 'string', description: 'set_node_manual_date 必填：人工指定的应付款日期 YYYY-MM-DD' },
         remark: { type: 'string', description: 'set_node_manual_date 可选：调整备注说明' },
+        aliasName: { type: 'string', description: 'confirm_party_alias 必填：流水上的户名（疑似同一家里的流水户名）' },
+        canonicalName: { type: 'string', description: 'confirm_party_alias 必填：合同上的户名' },
         limit: {
           type: 'integer',
           minimum: 1,
@@ -1023,14 +1199,20 @@ export function setupContractSure(ctx, deps = {}) {
           throw new ApiError('manual_match 必须提供 transactionId 和 contractId。', { code: 'INVALID_ARGUMENT' });
         }
         return viaBackend(async (cfg) => {
-          await apiClient.manualMatchTransaction(cfg, args.transactionId, args.contractId, args.nodeId, opts);
+          const res = await apiClient.manualMatchTransaction(cfg, args.transactionId, args.contractId, args.nodeId, opts);
+          // 新匹配规则下，人工指定会让同一对方的其他流水重排；后端返回顺带调整的合同。
+          const adjustedContracts = normalizeAdjustedContracts(res?.adjustedContracts);
+          const adjustedText = adjustedContracts.length > 0
+            ? `，顺带调整了 ${adjustedContracts.length} 份合同（${contractLabels(adjustedContracts)}）`
+            : '';
           return {
             action: 'manual_match',
             ok: true,
             transactionId: args.transactionId,
             contractId: args.contractId,
             nodeId: args.nodeId ?? null,
-            message: `已将流水 #${args.transactionId} 关联至合同 #${args.contractId}${args.nodeId ? `（节点 #${args.nodeId}）` : ''}并重算节点状态。`,
+            adjustedContracts,
+            message: `已将流水 #${args.transactionId} 关联至合同 #${args.contractId}${args.nodeId ? `（节点 #${args.nodeId}）` : ''}并重算节点状态${adjustedText}。`,
           };
         });
       }
@@ -1084,6 +1266,19 @@ export function setupContractSure(ctx, deps = {}) {
         });
       }
 
+      if (args.action === 'confirm_party_alias') {
+        return viaBackend(async (cfg) => ({
+          action: 'confirm_party_alias',
+          ok: true,
+          ...(await confirmPartyAlias({
+            aliasName: args.aliasName,
+            canonicalName: args.canonicalName,
+            signal: exec.signal,
+            cfg,
+          })),
+        }));
+      }
+
       throw new ApiError(`不支持的业务动作：${args.action}`, { code: 'INVALID_ARGUMENT' });
     },
   });
@@ -1097,6 +1292,8 @@ export function setupContractSure(ctx, deps = {}) {
     accounts,
     fetchImpl,
     confirmDraft: confirmContractDraft,
+    previewDraft: previewContractDraft,
+    confirmPartyAlias,
   });
 
   if (typeof ctx.effect === 'function') {
@@ -1118,6 +1315,8 @@ export function setupContractSure(ctx, deps = {}) {
     accounts,
     remoteHandlers: remote.handlers,
     confirmContractDraft,
+    previewContractDraft,
+    confirmPartyAlias,
     dispose() {
       for (const dispose of disposers) {
         try {

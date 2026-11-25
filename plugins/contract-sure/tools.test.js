@@ -47,6 +47,40 @@ let failSummaryWith401 = false;
 let failUploadWith401 = false;
 // 数据库故障时 L1 对插件令牌返回 HTTP 503。
 let serviceUnavailable = false;
+// 模拟旧版后端：创建合同只返回合同 ID，不认 detail=true。
+let legacyCreateResponse = false;
+
+// 新匹配规则下「星河数据」草稿的预匹配：一笔拆单、一份顺带调整的合同、一个疑似同一家。
+const XINGHE = '北京星河数据有限公司';
+function xingheMatchPreview() {
+  return {
+    available: true,
+    engine: 'PARTY_FIFO',
+    reason: null,
+    counterparty: { name: XINGHE, side: 'A', guessed: false },
+    money: {
+      count: 2,
+      total: 50000,
+      items: [
+        { transactionId: 2, date: '2026-04-15', counterparty: XINGHE, referenceNo: 'R002', transactionAmount: 80000, allocatedAmount: 40000, split: true, matchMethod: 'PARTY_FIFO' },
+        { transactionId: 4, date: '2026-05-01', counterparty: XINGHE, referenceNo: 'R004', transactionAmount: 30000, allocatedAmount: 10000, split: true, matchMethod: 'PARTY_FIFO' },
+      ],
+    },
+    invoice: {
+      count: 1,
+      total: 50000,
+      items: [{ transactionId: 7, date: '2026-06-15', counterparty: XINGHE, referenceNo: 'INV002', transactionAmount: 50000, allocatedAmount: 50000, split: false, matchMethod: 'PARTY_FIFO' }],
+    },
+    overAllocated: false,
+    adjustedContracts: [
+      { contractId: 3, contractNo: 'sz-2026-0001', contractName: '星河数据平台二期', moneyBefore: 60000, moneyAfter: 60000, invoiceBefore: 50000, invoiceAfter: 0 },
+    ],
+    suspects: [
+      { transactionPartyName: '星河数据', transactionPartyKey: '星河数据', contractPartyName: XINGHE, contractPartyKey: XINGHE, transactionCount: 1, transactionTotal: 30000 },
+    ],
+    note: '预匹配结果以入库结果为准',
+  };
+}
 
 async function readRequestBody(req) {
   const chunks = [];
@@ -139,24 +173,76 @@ const server = http.createServer(async (req, res) => {
     const diff = Number(draft.totalAmount || 0) - nodesSum;
     const warnings = [];
     if (Math.abs(diff) > 0.01) warnings.push(`节点金额合计（${nodesSum}）与合同总额（${draft.totalAmount}）不一致`);
+    const autoNumbered = !draft.contractNo;
+    const year = typeof draft.signDate === 'string' ? draft.signDate.slice(0, 4) : '2026';
     return sendJson(200, {
       code: 200,
       message: 'success',
       data: {
         valid: warnings.length === 0,
         contractNoExists: false,
+        autoNumbered,
+        previewContractNo: autoNumbered ? `sz-${year}-0007` : null,
+        previewContractNoHint: autoNumbered ? '预计编号，入库时确定' : null,
         totalAmount: draft.totalAmount,
         nodesAmountSum: nodesSum,
         amountMatched: Math.abs(diff) <= 0.01,
         amountDiff: diff,
         warnings,
+        ...(String(draft.partyAName || '').includes('星河') ? { matchPreview: xingheMatchPreview() } : {}),
       },
     });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/v1/contracts') {
     const id = nextContractId++;
-    return sendJson(200, { code: 200, message: 'success', data: id });
+    if (legacyCreateResponse || url.searchParams.get('detail') !== 'true') {
+      return sendJson(200, { code: 200, message: 'success', data: id });
+    }
+    const draft = JSON.parse(rawBody.toString('utf8'));
+    const xinghe = String(draft.partyAName || '').includes('星河');
+    const preview = xingheMatchPreview();
+    return sendJson(200, {
+      code: 200,
+      message: 'success',
+      data: {
+        id,
+        contractNo: draft.contractNo || `sz-2026-${String(id).padStart(4, '0')}`,
+        externalContractNo: draft.externalContractNo || null,
+        autoNumbered: !draft.contractNo,
+        match: {
+          engine: xinghe ? 'PARTY_FIFO' : 'LEGACY',
+          moneyCount: xinghe ? 2 : 0,
+          moneyTotal: xinghe ? 50000 : 0,
+          invoiceCount: xinghe ? 1 : 0,
+          invoiceTotal: xinghe ? 50000 : 0,
+          overAllocated: false,
+          adjustedContracts: xinghe ? preview.adjustedContracts : [],
+          suspects: [],
+          error: null,
+        },
+      },
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/v1/party-aliases') {
+    const body = JSON.parse(rawBody.toString('utf8'));
+    if (!body.aliasName || !body.canonicalName) {
+      return sendJson(200, { code: 400, message: '户名不能为空', data: null });
+    }
+    return sendJson(200, {
+      code: 200,
+      message: 'success',
+      data: {
+        engine: 'PARTY_FIFO',
+        parties: [XINGHE],
+        adjustedContracts: [
+          { contractId: 3, contractNo: 'sz-2026-0001', contractName: '星河数据平台二期', moneyBefore: 60000, moneyAfter: 90000, invoiceBefore: 0, invoiceAfter: 0 },
+        ],
+        allocations: [],
+        overAllocatedContractIds: [],
+      },
+    });
   }
 
   if (req.method === 'POST' && /^\/api\/v1\/contracts\/\d+\/upload$/.test(url.pathname)) {
@@ -682,6 +768,115 @@ test('contract_query (list & detail) and contract_dashboard return echarts-compa
   assert.equal(projected.details[0].documents.length, 2);
 });
 
+test('合同编号可以留空：核对时给出预计编号和预匹配，入库后返回最终编号、匹配结果和顺带调整的合同', async () => {
+  const staged = await runTool(
+    'contract_stage_draft',
+    {
+      externalContractNo: ' XH-2026-042 ',
+      contractName: '星河数据运维（4月）',
+      contractType: 1,
+      totalAmount: 50000,
+      signDate: '2026-04-20',
+      partyAName: XINGHE,
+      partyBName: '善治数字科技（成都）有限公司',
+    },
+    { agent: { id: 'sess-1' }, callId: 'call-stage-auto' },
+  );
+  assert.equal(staged.draft.contractNo, '');
+  assert.equal(staged.draft.externalContractNo, 'XH-2026-042');
+  const validateReq = requests.findLast((r) => r.pathname === '/api/v1/contracts/validate');
+  assert.equal(JSON.parse(validateReq.bodyText).externalContractNo, 'XH-2026-042');
+  assert.match(staged.hint, /系统编号：预计 sz-2026-0007（入库时确定）。/u);
+  assert.match(staged.hint, /预匹配（以入库结果为准）：收付款 2 笔 ¥50,000、发票 1 张 ¥50,000；入库后会顺带调整 1 份合同（sz-2026-0001）。/u);
+  assert.match(staged.hint, /流水户名「星河数据」可能就是「北京星河数据有限公司」/u);
+
+  const confirmed = await runTool(
+    'contract_confirm_save',
+    { draftId: staged.draftId },
+    { agent: { id: 'sess-1' }, callId: 'call-confirm-auto' },
+  );
+  const createReq = requests.findLast((r) => r.pathname === '/api/v1/contracts' && r.method === 'POST');
+  assert.equal(createReq.search, '?detail=true');
+  assert.equal(JSON.parse(createReq.bodyText).contractNo, '');
+  const expectedNo = `sz-2026-${String(confirmed.contractId).padStart(4, '0')}`;
+  assert.equal(confirmed.contractNo, expectedNo);
+  assert.equal(confirmed.externalContractNo, 'XH-2026-042');
+  assert.equal(confirmed.autoNumbered, true);
+  assert.equal(confirmed.match.moneyCount, 2);
+  assert.deepEqual(confirmed.match.adjustedContracts.map((c) => c.contractNo), ['sz-2026-0001']);
+  assert.equal(confirmed.matchText, '匹配收付款 2 笔 ¥50,000、发票 1 张 ¥50,000；顺带调整了 1 份合同（sz-2026-0001）');
+  assert.equal(
+    confirmed.message,
+    `合同已成功创建（编号 ${expectedNo}，ID: #${confirmed.contractId}）。匹配收付款 2 笔 ¥50,000、发票 1 张 ¥50,000；顺带调整了 1 份合同（sz-2026-0001）。`,
+  );
+  const record = appendedRecords.findLast((r) => r.type === DRAFT_CONFIRMED_RECORD_TYPE);
+  assert.equal(record.data.contractNo, expectedNo);
+  assert.equal(record.data.matchText, confirmed.matchText);
+  assertLossless(record.data, '入库记录');
+
+  const again = await runTool('contract_confirm_save', { draftId: staged.draftId }, { agent: { id: 'sess-1' } });
+  assert.equal(again.alreadyConfirmed, true);
+  assert.equal(again.contractNo, expectedNo);
+  assert.match(again.message, new RegExp(`编号 ${expectedNo}`, 'u'));
+});
+
+test('旧版后端创建合同只返回 ID 时照常入库，编号取草稿里填的', async () => {
+  legacyCreateResponse = true;
+  try {
+    const staged = await runTool(
+      'contract_stage_draft',
+      { contractNo: 'HT-OLD-1', contractName: '旧后端合同', contractType: 2, totalAmount: 1000 },
+      { agent: { id: 'sess-1' } },
+    );
+    const confirmed = await runTool('contract_confirm_save', { draftId: staged.draftId }, { agent: { id: 'sess-1' } });
+    assert.equal(confirmed.contractNo, 'HT-OLD-1');
+    assert.equal(confirmed.match, null);
+    assert.equal(confirmed.matchText, '');
+    assert.equal(confirmed.message, `合同已成功创建（编号 HT-OLD-1，ID: #${confirmed.contractId}）。`);
+  } finally {
+    legacyCreateResponse = false;
+  }
+});
+
+test('核对卡改字段后重新校验、确认疑似同一家，都走会话内的 RPC；对话里也能确认户名', async () => {
+  const handlers = pluginInstance.remoteHandlers;
+  const staged = await runTool(
+    'contract_stage_draft',
+    { contractName: '星河数据运维', contractType: 1, totalAmount: 50000, signDate: '2026-04-20', partyAName: XINGHE, partyBName: '善治数字科技（成都）有限公司' },
+    { agent: { id: 'sess-1' } },
+  );
+
+  const preview = await handlers.previewDraft('sess-1', staged.draftId, { ...staged.draft, signDate: '2025-12-30' });
+  assertLossless(preview, 'previewDraft 的结果');
+  assert.equal(preview.draftId, staged.draftId);
+  assert.equal(preview.validation.previewContractNo, 'sz-2025-0007');
+  assert.equal(JSON.parse(requests.findLast((r) => r.pathname === '/api/v1/contracts/validate').bodyText).signDate, '2025-12-30');
+  // 草稿属于暂存它的会话。
+  await assert.rejects(
+    () => handlers.previewDraft('sess-2', staged.draftId, staged.draft),
+    (err) => err.code === 'DRAFT_NOT_FOUND',
+  );
+  await assert.rejects(() => handlers.previewDraft('sess-1', staged.draftId, null), (err) => err.code === 'INVALID_REQUEST');
+
+  const alias = await handlers.confirmPartyAlias('sess-1', ' 星河数据 ', XINGHE);
+  assertLossless(alias, 'confirmPartyAlias 的结果');
+  assert.deepEqual(JSON.parse(requests.findLast((r) => r.pathname === '/api/v1/party-aliases').bodyText), {
+    aliasName: '星河数据',
+    canonicalName: XINGHE,
+  });
+  assert.equal(alias.message, '已确认「星河数据」就是「北京星河数据有限公司」，以后按同一家匹配，顺带调整了 1 份合同（sz-2026-0001）。');
+  await assert.rejects(() => handlers.confirmPartyAlias('sess-1', ' ', XINGHE), (err) => err.code === 'INVALID_REQUEST');
+
+  const viaTool = await runTool('contract_manage_flow', { action: 'confirm_party_alias', aliasName: '星河数据', canonicalName: XINGHE });
+  assert.equal(viaTool.action, 'confirm_party_alias');
+  assert.equal(viaTool.ok, true);
+  assert.equal(viaTool.adjustedContracts[0].moneyAfter, 90000);
+  await assert.rejects(
+    () => runTool('contract_manage_flow', { action: 'confirm_party_alias', aliasName: '星河数据' }),
+    (err) => err.code === 'INVALID_ARGUMENT',
+  );
+});
+
 test('contract_stage_draft carries signDateNote to the card when the signing date is blank', async () => {
   const note = '乙方：2026 年【 】月 8 日，月份可能是手写数字没识别出来；甲方未填';
   const staged = await runTool(
@@ -1140,23 +1335,31 @@ test('event-projection handles surfaceOp replace invalidation and TypertRemoteSe
   });
   try {
     assert.equal(pluginsRegistered.length, 1);
+    // 约定 B 的形参名就是 RPC args 的键名，最后一个形参叫 signal。
+    const params = (fn) => fn.toString().match(/^async\s+\w+\(([^)]*)\)/u)[1].split(',').map((p) => p.trim()).filter(Boolean);
     assert.deepEqual(
       decoratedMethods.map((m) => m.name).sort(),
       [
         'cacheOriginalDocument',
         'cancelAuthorization',
         'confirmDraft',
+        'confirmPartyAlias',
         'disconnectAccount',
         'getState',
         'pollAuthorization',
+        'previewDraft',
         'saveSettings',
         'setActiveAccount',
         'startAuthorization',
         'testConnection',
       ],
     );
-    // 约定 B 的形参名就是 RPC args 的键名，最后一个形参叫 signal。
-    const params = (fn) => fn.toString().match(/^async\s+\w+\(([^)]*)\)/u)[1].split(',').map((p) => p.trim()).filter(Boolean);
+    // 带 resources 的方法同样按形参名取 args：会话标识在第一个，最后一个形参叫 signal。
+    const withResources = decoratedMethods.filter((m) => m.meta && m.meta.resources).map((m) => m.name).sort();
+    assert.deepEqual(withResources, ['cacheOriginalDocument', 'confirmDraft', 'confirmPartyAlias', 'previewDraft']);
+    const proto = pluginsRegistered[0].prototype;
+    assert.deepEqual(params(proto.previewDraft), ['sessionId', 'draftId', 'editedDraft', 'signal']);
+    assert.deepEqual(params(proto.confirmPartyAlias), ['sessionId', 'aliasName', 'canonicalName', 'signal']);
     const plain = Object.fromEntries(decoratedMethods.filter((m) => m.fn).map((m) => [m.name, params(m.fn)]));
     assert.deepEqual(plain, {
       getState: ['signal'],
