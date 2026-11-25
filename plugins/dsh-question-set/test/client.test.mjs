@@ -153,6 +153,20 @@ test('registers an isolated question-set page and loads only the new API', async
   assert.equal(ui.nodes().some((node) => node.type === 'dialog'), false);
 });
 
+test('source occupies its own first row while search and origin filters align with toolbar actions', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  const sourceRow = ui.nodes().find(node => node.props.className === 'qs-source-row');
+  const toolbar = ui.nodes().find(node => node.props.className === 'qs-toolbar');
+  const filters = toolbar.props.children[0], actions = toolbar.props.children[1];
+  assert.equal(sourceRow.props.children[0].props['aria-label'], '泛化数据源');
+  assert.ok(ui.nodes().indexOf(sourceRow) < ui.nodes().indexOf(toolbar));
+  assert.equal(filters.props.className, 'qs-filters');
+  assert.equal(filters.props.children[0].props['aria-label'], '搜索问题或答案');
+  assert.equal(filters.props.children[1].props['aria-label'], '问题来源');
+  assert.equal(actions.props.className, 'qs-actions qs-toolbar-actions');
+  assert.equal(ui.text(actions), '泛化问题泛化提示词批量评测新增问题');
+});
+
 test('editing a table without a comment displays only its table name', async (t) => {
   const ui = await mountClient(); t.after(ui.unmount);
   await ui.click('编辑 问题 1', true);
