@@ -1,6 +1,6 @@
 # 问知文档（datahub-knowledge-docs）
 
-DeepSeek Harness 问知结果展示插件，包名 `@local/datahub-knowledge-docs`，版本 **0.3.0**。配合 DataHub 知识库 MCP，在会话中展示真实文档、检索证据，并通过右侧文件预览打开原文。
+DeepSeek Harness 问知结果展示插件，包名 `@local/datahub-knowledge-docs`，版本 **0.3.1**。配合 DataHub 知识库 MCP，在会话中展示真实文档、检索证据，并通过右侧文件预览打开原文。
 
 ## 功能
 
@@ -15,7 +15,7 @@ DeepSeek Harness 问知结果展示插件，包名 `@local/datahub-knowledge-doc
 
 需要已授权的 `mcp__datahub-knowledge__retrieve_knowledge`，其结构化返回须包含 `schemaVersion: 2` 及文档、证据信息。旧接口未提供展示数据时插件会提示不支持，不能据此宣称已生成卡片。
 
-本版本使用的 DSH peer API 声明为 `0.2.2-rc.1`，客户端依赖会话与右侧栏服务。是否适用于其他宿主版本，需要实际安装验证。
+本版本使用的 DSH peer API 声明为 `>=0.2.0-0`，客户端依赖会话与右侧栏服务。是否适用于其他宿主版本，需要实际安装验证。
 
 通过插件目录或官方插件管理器安装本仓库的 `plugins/datahub-knowledge-docs`，不要安装仓库根目录。目录链接安装必须保留源码目录；也可在本目录执行 `npm pack --ignore-scripts` 后，通过 `dsh plugin --profile desktop add "<安装包绝对路径.tgz>"` 安装独立包。核对包名、版本、来源和运行状态；宿主要求重启或仍引用旧目录时，完整退出桌面端后重开。
 

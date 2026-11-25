@@ -1,6 +1,6 @@
 # 问数增强（datahub-query-enhance）
 
-DeepSeek Harness 的 DataHub 查询辅助插件，包名 `@local/datahub-query-enhance`，版本 **0.1.1**。负责查询规范提示、中文结果列名、数据洞察及指标可信状态；表格、图表和导出由独立的 [通用查询结果图表插件](../datahub-echarts/README.md) 提供。
+DeepSeek Harness 的 DataHub 查询辅助插件，包名 `@local/datahub-query-enhance`，版本 **0.1.2**。负责查询规范提示、中文结果列名、数据洞察及指标可信状态；表格、图表和导出由独立的 [通用查询结果图表插件](../datahub-echarts/README.md) 提供。
 
 ## 功能与边界
 
@@ -36,7 +36,7 @@ DeepSeek Harness 的 DataHub 查询辅助插件，包名 `@local/datahub-query-e
 
 ## 安装
 
-需要已授权的 DataHub 问数 MCP；仅安装此插件不会获得数据源访问权限。本版本的 DSH peer API 声明为 `0.2.2-rc.1`，其他宿主版本的兼容性需实际验证。
+需要已授权的 DataHub 问数 MCP；仅安装此插件不会获得数据源访问权限。本版本的 DSH peer API 声明为 `>=0.2.0-0`，其他宿主版本的兼容性需实际验证。
 
 通过插件目录或官方插件管理器安装 `plugins/datahub-query-enhance`，不要安装整个仓库根目录。目录链接安装需保留源码目录；也可在本目录执行 `npm pack --ignore-scripts`，再用 `dsh plugin --profile desktop add "<安装包绝对路径.tgz>"` 安装独立包。
 
