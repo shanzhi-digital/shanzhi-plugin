@@ -111,6 +111,22 @@ window.__ModuleLoader__.load({
       ".cs-input:disabled,.cs-select:disabled{opacity:.7;cursor:not-allowed}",
       ".cs-field-warn .cs-input{border-color:var(--dsw-alias-label-warning,#d97706);box-shadow:0 0 0 2px rgba(217,119,6,.15)}",
       ".cs-field-hint{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-warning,#b45309)}",
+      ".cs-field-note{font-size:11px;line-height:1.5;color:var(--cs-muted)}",
+      ".cs-field-note b{color:var(--cs-text);font-weight:600;font-variant-numeric:tabular-nums}",
+      ".cs-preview{border:1px solid var(--cs-border);border-radius:8px;background:var(--cs-bg-input);padding:10px 12px;margin-bottom:12px;font-size:12px}",
+      ".cs-preview-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:6px}",
+      ".cs-preview-title{font-weight:650;font-size:12px;color:var(--cs-text)}",
+      ".cs-preview-note{font-size:11px;color:var(--cs-subtle)}",
+      ".cs-preview-line{margin:3px 0;color:var(--cs-muted)}",
+      ".cs-preview-line strong{color:var(--cs-text);font-weight:600;font-variant-numeric:tabular-nums}",
+      ".cs-preview-warn{color:var(--dsw-alias-label-warning,#b45309)}",
+      ".cs-preview-list{list-style:none;margin:2px 0 6px;padding:0 0 0 12px;display:grid;gap:2px;color:var(--cs-muted);font-variant-numeric:tabular-nums}",
+      ".cs-split{color:var(--dsw-alias-label-warning,#b45309)}",
+      ".cs-suspects{margin-top:8px;padding-top:6px;border-top:1px dashed var(--cs-border)}",
+      ".cs-suspect{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 0}",
+      ".cs-suspect-text{min-width:0;overflow-wrap:anywhere;color:var(--cs-muted)}",
+      ".cs-suspect-text strong{color:var(--cs-text);font-weight:600}",
+      ".cs-btn-sm{padding:3px 10px;font-size:12px;font-weight:500;white-space:nowrap}",
       ".cs-table-wrap{overflow-x:auto;border:1px solid var(--cs-border);border-radius:8px;margin-bottom:10px;background:var(--cs-bg-input)}",
       ".cs-table{width:100%;border-collapse:collapse;font-size:12px}",
       ".cs-table th,.cs-table td{padding:7px 9px;border-bottom:1px solid var(--cs-border);text-align:left;vertical-align:top}",
@@ -296,6 +312,30 @@ window.__ModuleLoader__.load({
       return num.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
+    function yuan(value) {
+      return "¥" + formatAmount(value);
+    }
+
+    function contractLabelsOf(list) {
+      var names = list.slice(0, 3).map(function (c) {
+        return c.contractNo || (c.contractId != null ? "#" + c.contractId : "未编号");
+      });
+      return list.length > 3 ? names.join("、") + " 等" : names.join("、");
+    }
+
+    // 「已收付 ¥a → ¥b，已开票 ¥c → ¥d」：只写有变化的一项
+    function describeContractChange(c) {
+      var parts = [];
+      if (Number(c.moneyBefore) !== Number(c.moneyAfter)) parts.push("已收付 " + yuan(c.moneyBefore) + " → " + yuan(c.moneyAfter));
+      if (Number(c.invoiceBefore) !== Number(c.invoiceAfter)) parts.push("已开票 " + yuan(c.invoiceBefore) + " → " + yuan(c.invoiceAfter));
+      // 合计没变、只是分到的流水换了几笔，也算顺带调整
+      return parts.length > 0 ? parts.join("，") : "分到的流水换了，金额不变";
+    }
+
+    // 预匹配的签约日期或金额正在输入、还不完整时不发请求
+    var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    var PREVIEW_DELAY_MS = 500;
+
     function formatFileSize(bytes) {
       var n = Number(bytes);
       if (!Number.isFinite(n) || n <= 0) return "";
@@ -429,6 +469,8 @@ window.__ModuleLoader__.load({
         } else if (rec.type === DRAFT_CONFIRMED_RECORD_TYPE && rec.data && rec.data.draftId) {
           confirmedByDraftId[rec.data.draftId] = {
             contractId: rec.data.contractId,
+            contractNo: rec.data.contractNo || null,
+            matchText: rec.data.matchText || "",
             uploadedDoc: rec.data.uploadedDoc || null,
             uploadWarning: rec.data.uploadWarning || null,
           };
@@ -473,6 +515,8 @@ window.__ModuleLoader__.load({
         } else if (call.name === CONFIRM_SAVE_TOOL && p.kind === "contract-sure-confirmed" && p.draftId) {
           confirmedByDraftId[p.draftId] = {
             contractId: p.contractId,
+            contractNo: p.contractNo || null,
+            matchText: p.matchText || "",
             uploadedDoc: p.uploadedDoc || null,
             uploadWarning: p.uploadWarning || null,
           };
@@ -1951,17 +1995,112 @@ window.__ModuleLoader__.load({
     }
 
     // ---- 2. Draft Verification Card ("合同识别核对卡") ----
+
+    // 预匹配里的一笔笔流水；拆单的写「拆单取 ¥x / 原笔 ¥y」
+    function renderPreviewItems(items) {
+      var list = Array.isArray(items) ? items : [];
+      if (list.length === 0) return null;
+      var shown = list.slice(0, 4);
+      return h("ul", { className: "cs-preview-list" },
+        shown.map(function (it, idx) {
+          return h("li", { key: idx },
+            (it.date || "") + " " + (it.counterparty || "") + " ",
+            it.split
+              ? h("span", { className: "cs-split" }, "拆单取 " + yuan(it.allocatedAmount) + " / 原笔 " + yuan(it.transactionAmount))
+              : yuan(it.allocatedAmount),
+            it.matchMethod === "EXACT_NO" ? "（按合同编号整笔匹配）" : null,
+          );
+        }),
+        list.length > shown.length ? h("li", { key: "more" }, "……共 " + list.length + " 笔") : null,
+      );
+    }
+
+    // 入库后预计匹配：只读预演，以入库结果为准
+    function renderMatchPreview(validation, state) {
+      var p = validation && validation.matchPreview;
+      if (!p || typeof p !== "object") return null;
+      var head = h("div", { className: "cs-preview-head" },
+        h("span", { className: "cs-preview-title" }, "入库后预计匹配"),
+        h("span", { className: "cs-preview-note" }, state.previewing ? "正在按最新填写重新预演…" : "以入库结果为准"),
+      );
+      var errorLine = state.previewError
+        ? h("div", { className: "cs-preview-line cs-preview-warn" }, state.previewError)
+        : null;
+      if (p.available === false) {
+        return h("div", { className: "cs-preview", "aria-label": "入库后预计匹配" },
+          head,
+          errorLine,
+          h("div", { className: "cs-preview-line" }, p.reason || "暂时无法预演匹配结果"),
+        );
+      }
+      var money = p.money || {};
+      var invoice = p.invoice || {};
+      var cp = p.counterparty;
+      var adjusted = Array.isArray(p.adjustedContracts) ? p.adjustedContracts : [];
+      var suspects = Array.isArray(p.suspects) ? p.suspects : [];
+      return h("div", { className: "cs-preview", "aria-label": "入库后预计匹配" },
+        head,
+        errorLine,
+        cp && cp.name && h("div", { className: "cs-preview-line" },
+          "对方：", h("strong", null, cp.name), "（" + (cp.side === "B" ? "乙方" : "甲方") + "）",
+          cp.guessed
+            ? h("span", { className: "cs-preview-warn" }, " 甲乙双方都不是我司户名，先按惯例认定，请到履约系统「业务配置」核对我司户名")
+            : null,
+        ),
+        p.reason && h("div", { className: "cs-preview-line cs-preview-warn" }, p.reason),
+        h("div", { className: "cs-preview-line" }, "收付款：", h("strong", null, (money.count || 0) + " 笔 " + yuan(money.total || 0))),
+        renderPreviewItems(money.items),
+        h("div", { className: "cs-preview-line" }, "发票：", h("strong", null, (invoice.count || 0) + " 张 " + yuan(invoice.total || 0))),
+        renderPreviewItems(invoice.items),
+        p.overAllocated && h("div", { className: "cs-preview-line cs-preview-warn" }, "流水上写了这份合同的编号，整笔分配后超过合同金额，入库后请核对。"),
+        adjusted.length > 0 && h("div", { className: "cs-preview-line" }, "入库后会顺带调整 " + adjusted.length + " 份合同："),
+        adjusted.length > 0 && h("ul", { className: "cs-preview-list" },
+          adjusted.map(function (c, idx) {
+            return h("li", { key: idx },
+              (c.contractNo || (c.contractId != null ? "#" + c.contractId : "未编号")) +
+              (c.contractName ? " " + c.contractName : "") + "：" + describeContractChange(c),
+            );
+          }),
+        ),
+        suspects.length > 0 && h("div", { className: "cs-suspects" },
+          h("div", { className: "cs-preview-line" }, "疑似同一家：户名只是相互包含，这些流水不会自动匹配。确认是同一家后，以后按同一家匹配。"),
+          suspects.map(function (s, idx) {
+            var key = s.transactionPartyName + "|" + s.contractPartyName;
+            var st = state.aliasStatus[key];
+            var failed = typeof st === "string" && st !== "pending" && st !== "done";
+            return h("div", { key: idx, className: "cs-suspect" },
+              h("span", { className: "cs-suspect-text" },
+                "流水户名「", h("strong", null, s.transactionPartyName), "」",
+                "（" + (s.transactionCount || 0) + " 笔，" + yuan(s.transactionTotal || 0) + "）可能就是「",
+                h("strong", null, s.contractPartyName), "」",
+                failed ? h("span", { className: "cs-preview-warn" }, " " + st) : null,
+              ),
+              st === "done"
+                ? h("span", { className: "cs-pill cs-pill-ok" }, "已确认")
+                : h("button", {
+                    type: "button",
+                    className: "cs-btn cs-btn-sm",
+                    disabled: state.readOnly || st === "pending",
+                    onClick: function () { state.onConfirmAlias(s); },
+                  }, st === "pending" ? "确认中…" : "确认是同一家"),
+            );
+          }),
+        ),
+      );
+    }
+
     function DraftVerificationCard(props) {
       var item = props.item;
       var confirmedInitial = props.confirmed || null;
       var sessionId = props.sessionId;
       var connection = props.connection;
+      var previewDelay = Number.isFinite(props.previewDelayMs) ? props.previewDelayMs : PREVIEW_DELAY_MS;
       var draft = item.draft || {};
-      var validation = item.validation || {};
 
       var [form, setForm] = useState(function () {
         return {
           contractNo: draft.contractNo || "",
+          externalContractNo: draft.externalContractNo || "",
           contractName: draft.contractName || "",
           contractType: draft.contractType || 1,
           partyAName: draft.partyAName || "",
@@ -1975,6 +2114,14 @@ window.__ModuleLoader__.load({
       var [confirmed, setConfirmed] = useState(confirmedInitial);
       // 签订日期空着时第一次点确认只提醒，第二次才入库。
       var [blankDateAcknowledged, setBlankDateAcknowledged] = useState(false);
+      // 改了字段后重新校验得到的结果；没改过时用暂存草稿时的校验结果。
+      var [liveValidation, setLiveValidation] = useState(null);
+      var [previewing, setPreviewing] = useState(false);
+      var [previewError, setPreviewError] = useState("");
+      // 疑似同一家的确认状态：键是「流水户名|合同户名」，值是 "pending"、"done" 或报错文案。
+      var [aliasStatus, setAliasStatus] = useState({});
+      var previewSeqRef = useRef(0);
+      var lastPreviewKeyRef = useRef(null);
 
       useEffect(function () {
         if (confirmedInitial && !confirmed) {
@@ -1982,6 +2129,7 @@ window.__ModuleLoader__.load({
         }
       }, [confirmedInitial]);
 
+      var validation = liveValidation || item.validation || {};
       var nodes = Array.isArray(draft.nodes) ? draft.nodes : [];
       var nodesSum = nodes.reduce(function (acc, n) {
         var amt = Number(n && n.nodeAmount);
@@ -1995,12 +2143,101 @@ window.__ModuleLoader__.load({
       var signDateNote = typeof item.signDateNote === "string" ? item.signDateNote.trim() : "";
       var hasWarnings = warnings.length > 0 || validation.contractNoExists === true || (amountDiff != null && Math.abs(amountDiff) > 0.01) || signDateMissing;
       var readOnly = !!confirmed || submitting;
+      var contractNoText = String(form.contractNo || "").trim();
 
       function updateField(field, val) {
         setForm(function (prev) {
           var next = Object.assign({}, prev);
           next[field] = val;
           return next;
+        });
+      }
+
+      function buildEditedDraft(totalNum) {
+        return Object.assign({}, draft, {
+          contractNo: contractNoText,
+          externalContractNo: String(form.externalContractNo || "").trim(),
+          contractName: String(form.contractName || "").trim(),
+          contractType: Number(form.contractType) || 1,
+          partyAName: String(form.partyAName || "").trim(),
+          partyBName: String(form.partyBName || "").trim(),
+          totalAmount: totalNum,
+          signDate: signDateText || null,
+          nodes: nodes,
+        });
+      }
+
+      // 影响预计编号和预匹配的字段：任一变了就重新校验（签订日期、金额还没填完整时先不发）。
+      var previewKey = [contractNoText, form.externalContractNo, form.contractType, form.partyAName, form.partyBName, form.totalAmount, signDateText]
+        .map(function (v) { return String(v == null ? "" : v).trim(); })
+        .join("\u0001");
+      var previewReady = Number.isFinite(parsedTotal) && parsedTotal >= 0 && (signDateMissing || DATE_RE.test(signDateText));
+
+      function runPreview(key) {
+        if (!sessionId) return;
+        lastPreviewKeyRef.current = key;
+        var seq = ++previewSeqRef.current;
+        setPreviewing(true);
+        rpcCall(connection, "previewDraft", {
+          sessionId: sessionId,
+          draftId: item.draftId,
+          editedDraft: buildEditedDraft(parsedTotal),
+        }).then(function (res) {
+          if (seq !== previewSeqRef.current) return;
+          setPreviewing(false);
+          if (res && res.ok && res.value && res.value.validation) {
+            setLiveValidation(res.value.validation);
+            setPreviewError("");
+          } else {
+            setPreviewError(extractRpcError(res, "预计编号和预匹配没有刷新，请稍后再试。"));
+          }
+        }).catch(function (err) {
+          if (seq !== previewSeqRef.current) return;
+          setPreviewing(false);
+          setPreviewError(err && err.message ? err.message : "预计编号和预匹配没有刷新，请稍后再试。");
+        });
+      }
+
+      useEffect(function () {
+        // 第一次渲染时，暂存草稿的校验结果就是按这组字段算的，不用再请求。
+        if (lastPreviewKeyRef.current === null) {
+          lastPreviewKeyRef.current = previewKey;
+          return undefined;
+        }
+        if (confirmed || !sessionId || !previewReady || previewKey === lastPreviewKeyRef.current) return undefined;
+        var timer = setTimeout(function () { runPreview(previewKey); }, previewDelay);
+        return function () { clearTimeout(timer); };
+      }, [previewKey, previewReady, !!confirmed]);
+
+      function handleConfirmAlias(s) {
+        var key = s.transactionPartyName + "|" + s.contractPartyName;
+        if (readOnly || aliasStatus[key] === "pending" || aliasStatus[key] === "done") return;
+        if (!sessionId) {
+          setError("当前会话标识不可用，请在对话中回复“确认是同一家”。");
+          return;
+        }
+        function mark(value) {
+          setAliasStatus(function (prev) {
+            var next = Object.assign({}, prev);
+            next[key] = value;
+            return next;
+          });
+        }
+        mark("pending");
+        rpcCall(connection, "confirmPartyAlias", {
+          sessionId: sessionId,
+          aliasName: s.transactionPartyName,
+          canonicalName: s.contractPartyName,
+        }).then(function (res) {
+          if (!res || !res.ok) {
+            mark(extractRpcError(res, "确认失败，请重试。"));
+            return;
+          }
+          mark("done");
+          // 别名生效后，这份草稿能分到的票款可能变了：重新预演。
+          if (previewReady) runPreview(previewKey);
+        }).catch(function (err) {
+          mark(err && err.message ? err.message : "确认失败，请重试。");
         });
       }
 
@@ -2011,15 +2248,15 @@ window.__ModuleLoader__.load({
           return;
         }
         var totalNum = Number(form.totalAmount);
-        if (!String(form.contractNo || "").trim() || !String(form.contractName || "").trim()) {
-          setError("合同编号与合同名称不能为空。");
+        if (!String(form.contractName || "").trim()) {
+          setError("合同名称不能为空。");
           return;
         }
         if (!Number.isFinite(totalNum) || totalNum < 0) {
           setError("请输入有效的合同总金额（纯数字，单位：元）。");
           return;
         }
-        if (!signDateMissing && !/^\d{4}-\d{2}-\d{2}$/.test(signDateText)) {
+        if (!signDateMissing && !DATE_RE.test(signDateText)) {
           setError("签订日期请按 YYYY-MM-DD 填写，例如 2026-01-08。");
           return;
         }
@@ -2028,22 +2265,15 @@ window.__ModuleLoader__.load({
           setError("签订日期还空着，请对照合同签字页填写。合同确实没写签订日期的话，再点一次确认即可入库。");
           return;
         }
-        var editedDraft = Object.assign({}, draft, {
-          contractNo: String(form.contractNo).trim(),
-          contractName: String(form.contractName).trim(),
-          contractType: Number(form.contractType) || 1,
-          partyAName: String(form.partyAName || "").trim(),
-          partyBName: String(form.partyBName || "").trim(),
-          totalAmount: totalNum,
-          signDate: signDateText || null,
-          nodes: nodes,
-        });
+        // 正在进行的预演结果作废，入库后不再回填。
+        previewSeqRef.current++;
+        setPreviewing(false);
         setSubmitting(true);
         setError("");
         rpcCall(connection, "confirmDraft", {
           sessionId: sessionId,
           draftId: item.draftId,
-          editedDraft: editedDraft,
+          editedDraft: buildEditedDraft(totalNum),
         }).then(function (res) {
           setSubmitting(false);
           if (!res || !res.ok || !res.value) {
@@ -2052,6 +2282,8 @@ window.__ModuleLoader__.load({
           }
           setConfirmed({
             contractId: res.value.contractId,
+            contractNo: res.value.contractNo || null,
+            matchText: res.value.matchText || "",
             uploadedDoc: res.value.uploadedDoc || null,
             uploadWarning: res.value.uploadWarning || null,
           });
@@ -2063,6 +2295,27 @@ window.__ModuleLoader__.load({
 
       var typeLabel = Number(form.contractType) === 2 ? "采购合同" : "销售合同";
 
+      // 合同编号下面的说明：留空时显示预计的系统编号；入库后显示最终编号。
+      var numberNote = null;
+      if (confirmed) {
+        if (confirmed.contractNo) numberNote = h("span", { className: "cs-field-note" }, "系统编号：", h("b", null, confirmed.contractNo));
+      } else if (!contractNoText) {
+        if (typeof validation.previewContractNo === "string" && validation.previewContractNo) {
+          numberNote = h("span", { className: "cs-field-note" }, "系统编号：预计 ", h("b", null, validation.previewContractNo), "（入库时确定）");
+        } else if (warnings.some(function (w) { return String(w).indexOf("自动编号已关闭") >= 0; })) {
+          numberNote = h("span", { className: "cs-field-hint" }, "履约系统没有开启自动编号，请填写合同编号。");
+        } else if (validation.autoNumbered === undefined) {
+          // 旧版履约系统的校验结果里没有这个字段：不支持自动编号。
+          numberNote = h("span", { className: "cs-field-hint" }, "当前履约系统版本不支持自动编号，请填写合同编号。");
+        } else {
+          numberNote = h("span", { className: "cs-field-note" }, "留空时入库自动编号。");
+        }
+      }
+
+      var confirmedLabel = confirmed
+        ? (confirmed.contractNo ? "已入库 " + confirmed.contractNo : "已入库 (ID: #" + confirmed.contractId + ")")
+        : "";
+
       return h("section", { className: "cs-card", "data-draft-id": item.draftId, "aria-label": "合同识别核对卡" },
         h("div", { className: "cs-card-head" },
           h("h3", { className: "cs-card-title" },
@@ -2070,7 +2323,7 @@ window.__ModuleLoader__.load({
             h("span", { className: "cs-pill cs-pill-type" }, typeLabel),
           ),
           confirmed
-            ? h("span", { className: "cs-pill cs-pill-ok" }, "✅ 已入库 (ID: #" + confirmed.contractId + ")")
+            ? h("span", { className: "cs-pill cs-pill-ok" }, "✅ " + confirmedLabel)
             : hasWarnings
               ? h("span", { className: "cs-pill cs-pill-warn" }, "⚠ 存在校验提示，请核对")
               : h("span", { className: "cs-pill cs-pill-ok" }, "✓ 总额校验一致"),
@@ -2089,22 +2342,40 @@ window.__ModuleLoader__.load({
         ),
 
         confirmed && h("div", { className: "cs-banner cs-banner-ok", role: "status" },
-          "已入库 (ID: #" + confirmed.contractId + ")" +
+          (confirmed.contractNo
+            ? "已入库：编号 " + confirmed.contractNo + "（ID: #" + confirmed.contractId + "）"
+            : "已入库 (ID: #" + confirmed.contractId + ")") +
           (confirmed.uploadedDoc && confirmed.uploadedDoc.fileName ? " · 已自动归档原件《" + confirmed.uploadedDoc.fileName + "》" : "") +
-          (confirmed.uploadWarning ? " · " + confirmed.uploadWarning : ""),
+          (confirmed.uploadWarning ? " · " + confirmed.uploadWarning : "") +
+          (confirmed.matchText ? " · " + confirmed.matchText : ""),
         ),
 
         error && h("div", { className: "cs-banner cs-banner-err", role: "alert" }, error),
 
         h("div", { className: "cs-grid" },
           h("div", { className: "cs-field" },
-            h("label", null, "合同编号"),
+            h("label", { htmlFor: "cs-contract-no-" + item.draftId }, "合同编号"),
             h("input", {
+              id: "cs-contract-no-" + item.draftId,
               className: "cs-input",
               type: "text",
+              placeholder: "留空则入库时自动编号",
               value: form.contractNo,
               disabled: readOnly,
               onChange: function (e) { updateField("contractNo", e.target.value); },
+            }),
+            numberNote,
+          ),
+          h("div", { className: "cs-field" },
+            h("label", { htmlFor: "cs-external-no-" + item.draftId }, "原合同编号"),
+            h("input", {
+              id: "cs-external-no-" + item.draftId,
+              className: "cs-input",
+              type: "text",
+              placeholder: "合同上印的编号，没有可不填",
+              value: form.externalContractNo,
+              disabled: readOnly,
+              onChange: function (e) { updateField("externalContractNo", e.target.value); },
             }),
           ),
           h("div", { className: "cs-field" },
@@ -2115,6 +2386,17 @@ window.__ModuleLoader__.load({
               value: form.contractName,
               disabled: readOnly,
               onChange: function (e) { updateField("contractName", e.target.value); },
+            }),
+          ),
+          h("div", { className: "cs-field" },
+            h("label", null, "合同总额（元）"),
+            h("input", {
+              className: "cs-input",
+              type: "number",
+              step: "0.01",
+              value: form.totalAmount,
+              disabled: readOnly,
+              onChange: function (e) { updateField("totalAmount", e.target.value); },
             }),
           ),
           h("div", { className: "cs-field" },
@@ -2137,17 +2419,6 @@ window.__ModuleLoader__.load({
               onChange: function (e) { updateField("partyBName", e.target.value); },
             }),
           ),
-          h("div", { className: "cs-field" },
-            h("label", null, "合同总额（元）"),
-            h("input", {
-              className: "cs-input",
-              type: "number",
-              step: "0.01",
-              value: form.totalAmount,
-              disabled: readOnly,
-              onChange: function (e) { updateField("totalAmount", e.target.value); },
-            }),
-          ),
           h("div", { className: "cs-field" + (signDateMissing && !confirmed ? " cs-field-warn" : "") },
             h("label", { htmlFor: "cs-sign-date-" + item.draftId }, "签订日期"),
             h("input", {
@@ -2165,6 +2436,14 @@ window.__ModuleLoader__.load({
             ),
           ),
         ),
+
+        !confirmed && renderMatchPreview(validation, {
+          previewing: previewing,
+          previewError: previewError,
+          aliasStatus: aliasStatus,
+          readOnly: readOnly,
+          onConfirmAlias: handleConfirmAlias,
+        }),
 
         nodes.length > 0 && h("div", { className: "cs-table-wrap" },
           h("table", { className: "cs-table" },

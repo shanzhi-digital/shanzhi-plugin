@@ -1187,6 +1187,172 @@ test('DraftVerificationCard flags a blank signing date, shows what the signature
   assert.equal(rpcCalls[0].payload.args.editedDraft.signDate, null);
 });
 
+const XINGHE = '北京星河数据有限公司';
+function xingheValidation(previewNo, extra = {}) {
+  return {
+    valid: true,
+    autoNumbered: true,
+    previewContractNo: previewNo,
+    warnings: [],
+    matchPreview: {
+      available: true,
+      engine: 'PARTY_FIFO',
+      reason: null,
+      counterparty: { name: XINGHE, side: 'A', guessed: false },
+      money: {
+        count: 2,
+        total: 50000,
+        items: [
+          { transactionId: 2, date: '2026-04-15', counterparty: XINGHE, transactionAmount: 80000, allocatedAmount: 40000, split: true, matchMethod: 'PARTY_FIFO' },
+          { transactionId: 3, date: '2026-04-30', counterparty: XINGHE, transactionAmount: 10000, allocatedAmount: 10000, split: false, matchMethod: 'PARTY_FIFO' },
+        ],
+      },
+      invoice: { count: 0, total: 0, items: [] },
+      overAllocated: false,
+      adjustedContracts: [
+        { contractId: 3, contractNo: 'sz-2026-0001', contractName: '星河数据平台二期', moneyBefore: 60000, moneyAfter: 60000, invoiceBefore: 50000, invoiceAfter: 0 },
+        { contractId: 5, contractNo: 'sz-2026-0003', contractName: '星河数据平台一期', moneyBefore: 100000, moneyAfter: 100000, invoiceBefore: 100000, invoiceAfter: 100000 },
+      ],
+      suspects: [{ transactionPartyName: '星河数据', contractPartyName: XINGHE, transactionCount: 1, transactionTotal: 30000 }],
+      note: '预匹配结果以入库结果为准',
+      ...extra,
+    },
+  };
+}
+
+test('核对卡：编号留空时显示预计编号，改签订日期后重新预演，确认疑似同一家，入库后显示最终编号和匹配结果', async () => {
+  const renderer = createRenderer();
+  const timers = createFakeTimers();
+  const mod = loadClientModule(renderer.React, { timers });
+  const rpc = createRpc({
+    previewDraft: (args) => ({
+      draftId: args.draftId,
+      validation: xingheValidation(args.editedDraft.signDate === '2025-12-30' ? 'sz-2025-0001' : 'sz-2026-0007', {
+        suspects: [],
+      }),
+    }),
+    confirmPartyAlias: () => ({ adjustedContracts: [], message: '已确认' }),
+    confirmDraft: () => ({ contractId: 101, contractNo: 'sz-2026-0101', matchText: '匹配收付款 2 笔 ¥50,000、发票 0 张 ¥0' }),
+  });
+  const props = {
+    item: {
+      draftId: 'draft_auto',
+      validation: xingheValidation('sz-2026-0007'),
+      draft: { contractNo: '', contractName: '星河数据运维', contractType: 1, totalAmount: 50000, signDate: '2026-04-20', partyAName: XINGHE, partyBName: '善治数字科技（成都）有限公司', nodes: [] },
+    },
+    sessionId: 'sess-ui',
+    connection: rpc.connection,
+  };
+  renderer.mount(renderer.h(mod.DraftVerificationCard, props));
+  await renderer.settle();
+
+  let text = textContent(renderer.tree);
+  assert.match(text, /系统编号：预计 sz-2026-0007（入库时确定）/);
+  assert.match(text, /入库后预计匹配以入库结果为准/);
+  assert.match(text, /对方：北京星河数据有限公司（甲方）/);
+  assert.match(text, /收付款：2 笔 ¥50,000\.00/);
+  assert.match(text, /拆单取 ¥40,000\.00 \/ 原笔 ¥80,000\.00/);
+  assert.match(text, /入库后会顺带调整 2 份合同：sz-2026-0001 星河数据平台二期：已开票 ¥50,000\.00 → ¥0\.00/);
+  assert.match(text, /sz-2026-0003 星河数据平台一期：分到的流水换了，金额不变/);
+  assert.match(text, /流水户名「星河数据」（1 笔，¥30,000\.00）可能就是「北京星河数据有限公司」/);
+  const externalInput = collectNodes(renderer.tree, (n) => n.type === 'input' && n.props.id === 'cs-external-no-draft_auto')[0];
+  assert.ok(externalInput, '原合同编号输入框');
+  assert.equal(rpc.count('previewDraft'), 0, '首次渲染沿用暂存时的校验结果');
+
+  // 确认疑似同一家：登记别名后马上重新预演。
+  click(findButton(renderer.tree, '确认是同一家'));
+  await renderer.settle();
+  assert.deepEqual(plain(rpc.argsOf('confirmPartyAlias')[0]), { sessionId: 'sess-ui', aliasName: '星河数据', canonicalName: XINGHE });
+  assert.equal(rpc.count('previewDraft'), 1);
+  assert.doesNotMatch(textContent(renderer.tree), /可能就是/);
+
+  // 改签订日期：等输入停下来再预演一次；日期没填完整时不发。
+  const signInput = () => collectNodes(renderer.tree, (n) => n.type === 'input' && n.props.id === 'cs-sign-date-draft_auto')[0];
+  externalInput.props.onChange({ target: { value: 'XH-2025-100' } });
+  signInput().props.onChange({ target: { value: '2025-12' } });
+  await renderer.settle();
+  timers.runAll();
+  await renderer.settle();
+  assert.equal(rpc.count('previewDraft'), 1);
+  signInput().props.onChange({ target: { value: '2025-12-30' } });
+  await renderer.settle();
+  assert.deepEqual(timers.delays(), [500]);
+  timers.runAll();
+  await renderer.settle();
+  assert.equal(rpc.count('previewDraft'), 2);
+  const sent = plain(rpc.argsOf('previewDraft')[1]);
+  assert.equal(sent.editedDraft.signDate, '2025-12-30');
+  assert.equal(sent.editedDraft.externalContractNo, 'XH-2025-100');
+  assert.match(textContent(renderer.tree), /系统编号：预计 sz-2025-0001（入库时确定）/);
+
+  // 入库：编号留空交给后端；入库后显示最终编号和匹配结果，预匹配面板收起。
+  click(findButton(renderer.tree, '确认创建合同'));
+  await renderer.settle();
+  const saved = plain(rpc.argsOf('confirmDraft')[0]);
+  assert.equal(saved.editedDraft.contractNo, '');
+  assert.equal(saved.editedDraft.externalContractNo, 'XH-2025-100');
+  text = textContent(renderer.tree);
+  assert.match(text, /✅ 已入库 sz-2026-0101/);
+  assert.match(text, /已入库：编号 sz-2026-0101（ID: #101） · 匹配收付款 2 笔 ¥50,000、发票 0 张 ¥0/);
+  assert.doesNotMatch(text, /入库后预计匹配/);
+  renderer.unmount();
+});
+
+test('核对卡：旧匹配规则下说明原因；后端提示自动编号已关闭时请用户填写编号', async () => {
+  const { React, renderComponent } = createReactStub();
+  const mod = loadClientModule(React);
+  const card = renderComponent(mod.DraftVerificationCard, {
+    item: {
+      draftId: 'draft_legacy',
+      validation: {
+        valid: false,
+        autoNumbered: false,
+        previewContractNo: null,
+        warnings: ['缺少合同编号（自动编号已关闭）'],
+        matchPreview: { available: false, engine: 'LEGACY', reason: '当前仍使用旧匹配规则，入库后按旧规则匹配', suspects: [] },
+      },
+      draft: { contractNo: '', contractName: '服务包', contractType: 1, totalAmount: 100, signDate: '2026-01-08', nodes: [] },
+    },
+    sessionId: 'sess-ui',
+    connection: null,
+  });
+  const text = textContent(card.tree);
+  assert.match(text, /履约系统没有开启自动编号，请填写合同编号。/);
+  assert.match(text, /当前仍使用旧匹配规则，入库后按旧规则匹配/);
+  assert.doesNotMatch(text, /系统编号：预计/);
+
+  // 旧版履约系统的校验结果里没有 autoNumbered：编号留空时请用户手填。
+  const legacy = renderComponent(mod.DraftVerificationCard, {
+    item: { draftId: 'draft_old', validation: { valid: true, warnings: [] }, draft: { contractNo: '', contractName: '服务包', contractType: 1, totalAmount: 100, signDate: '2026-01-08', nodes: [] } },
+    sessionId: 'sess-ui',
+    connection: null,
+  });
+  assert.match(textContent(legacy.tree), /当前履约系统版本不支持自动编号，请填写合同编号。/);
+});
+
+test('入库记录里的最终编号和匹配结果会投影到核对卡', () => {
+  const { React } = createReactStub();
+  const mod = loadClientModule(React);
+  const def = mod.eventDefinition;
+  let state = def.start({}, {
+    event: {
+      type: 'plugin:contract-sure/draft',
+      seq: 5,
+      data: { turn: 1, draftId: 'draft_p', validation: { valid: true, warnings: [] }, draft: { contractNo: '', contractName: '服务包', contractType: 1, totalAmount: 100, nodes: [] } },
+    },
+  });
+  state = def.update({ state }, {
+    event: {
+      type: 'plugin:contract-sure/draft-confirmed',
+      seq: 6,
+      data: { turn: 1, draftId: 'draft_p', contractId: 9, contractNo: 'sz-2026-0009', matchText: '匹配收付款 1 笔 ¥100、发票 0 张 ¥0' },
+    },
+  });
+  const location = def.buildLocationData({ state }, 'turn', null);
+  assert.equal(location.value.confirmedByDraftId.draft_p.contractNo, 'sz-2026-0009');
+  assert.equal(location.value.confirmedByDraftId.draft_p.matchText, '匹配收付款 1 笔 ¥100、发票 0 张 ¥0');
+});
+
 test('DraftVerificationCard rejects a signing date that is not YYYY-MM-DD', async () => {
   const { React, renderComponent } = createReactStub();
   const mod = loadClientModule(React);

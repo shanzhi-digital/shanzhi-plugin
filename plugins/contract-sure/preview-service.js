@@ -77,6 +77,8 @@ export function createContractSureRemoteHandlers(ctx, deps = {}) {
   const maxBytes = deps.maxBytes ?? MAX_DOWNLOAD_BYTES;
   const fetchImpl = deps.fetchImpl;
   const confirmDraftFn = deps.confirmDraft;
+  const previewDraftFn = deps.previewDraft;
+  const confirmPartyAliasFn = deps.confirmPartyAlias;
   const pendingDownloads = new Map();
 
   if (!accounts) {
@@ -144,6 +146,50 @@ export function createContractSureRemoteHandlers(ctx, deps = {}) {
       try {
         const result = await accounts.withBackend((cfg, backend) =>
           confirmDraftFn({ sessionId, draftId, draft: editedDraft, signal, cfg, backend }),
+        );
+        return backendValue(result);
+      } catch (error) {
+        throw wrapError(error);
+      }
+    },
+
+    // 核对卡改了字段后重新校验：预计编号、预匹配结果。只读，不入库。
+    async previewDraft(sessionId, draftId, editedDraft, signal, accessCtx = ctx) {
+      if (typeof sessionId !== 'string' || !sessionId.trim()) {
+        throw new ContractSureRemoteError('INVALID_REQUEST', '缺少有效的会话标识（sessionId）。');
+      }
+      if (!editedDraft || typeof editedDraft !== 'object') {
+        throw new ContractSureRemoteError('INVALID_REQUEST', '请提供合同数据。');
+      }
+      await assertSessionAccess(accessCtx, sessionId);
+      if (typeof previewDraftFn !== 'function') {
+        throw new ContractSureRemoteError('NOT_CONFIGURED', '草稿校验服务未初始化。');
+      }
+      try {
+        const result = await accounts.withBackend((cfg) =>
+          previewDraftFn({ sessionId, draftId, draft: editedDraft, signal, cfg }),
+        );
+        return backendValue(result);
+      } catch (error) {
+        throw wrapError(error);
+      }
+    },
+
+    // 核对卡上确认「疑似同一家」：登记别名，新规则下后端马上重排这个对方。
+    async confirmPartyAlias(sessionId, aliasName, canonicalName, signal, accessCtx = ctx) {
+      if (typeof sessionId !== 'string' || !sessionId.trim()) {
+        throw new ContractSureRemoteError('INVALID_REQUEST', '缺少有效的会话标识（sessionId）。');
+      }
+      if (typeof aliasName !== 'string' || !aliasName.trim() || typeof canonicalName !== 'string' || !canonicalName.trim()) {
+        throw new ContractSureRemoteError('INVALID_REQUEST', '请提供流水户名和合同户名。');
+      }
+      await assertSessionAccess(accessCtx, sessionId);
+      if (typeof confirmPartyAliasFn !== 'function') {
+        throw new ContractSureRemoteError('NOT_CONFIGURED', '户名确认服务未初始化。');
+      }
+      try {
+        const result = await accounts.withBackend((cfg) =>
+          confirmPartyAliasFn({ aliasName, canonicalName, signal, cfg }),
         );
         return backendValue(result);
       } catch (error) {
@@ -357,6 +403,22 @@ export function registerContractSureRemote(ctx, deps = {}) {
       }
     }
 
+    async previewDraft(sessionId, draftId, editedDraft, signal) {
+      try {
+        return await handlers.previewDraft(sessionId, draftId, editedDraft, signal, this.ctx);
+      } catch (error) {
+        throw toRemoteError(error);
+      }
+    }
+
+    async confirmPartyAlias(sessionId, aliasName, canonicalName, signal) {
+      try {
+        return await handlers.confirmPartyAlias(sessionId, aliasName, canonicalName, signal, this.ctx);
+      } catch (error) {
+        throw toRemoteError(error);
+      }
+    }
+
     async cacheOriginalDocument(sessionId, docId, fileName, signal) {
       try {
         return await handlers.cacheOriginalDocument(sessionId, docId, fileName, signal, this.ctx);
@@ -392,6 +454,8 @@ export function registerContractSureRemote(ctx, deps = {}) {
   decorate('setActiveAccount');
   decorate('disconnectAccount');
   decorate('confirmDraft', { resources: { session: (sessionId) => sessionId } });
+  decorate('previewDraft', { resources: { session: (sessionId) => sessionId } });
+  decorate('confirmPartyAlias', { resources: { session: (sessionId) => sessionId } });
   decorate('cacheOriginalDocument', { resources: { session: (sessionId) => sessionId } });
 
   ctx.plugin(ContractSureService);
