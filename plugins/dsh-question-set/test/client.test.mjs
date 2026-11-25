@@ -159,6 +159,52 @@ test('editing a table without a comment displays only its table name', async (t)
   assert.equal(ui.text(ui.control('关联表')), '关联表orders');
 });
 
+test('origin segments combine with search, reset pagination and keep unknown origins only in all', async (t) => {
+  const items = Array.from({ length: 13 }, (_, index) => question(index + 1));
+  items.push({ ...question(14), origin: 'unknown', text: '历史问题' });
+  const ui = await mountClient({ fixture: { items } }); t.after(ui.unmount);
+  assert.equal(ui.namedButton('全部').props['aria-pressed'], true);
+  await ui.click('下一页');
+  await ui.click('用户');
+  assert.equal(ui.namedButton('上一页').props.disabled, true);
+  assert.equal(ui.namedButton('用户').props['aria-pressed'], true);
+  assert.match(ui.text(ui.control('问题分页')), /12 条 · 第 1 \/ 2 页/);
+  assert.equal(ui.control('选择问题 问题 2'), undefined);
+  await ui.click('AI');
+  assert.match(ui.text(ui.control('问题分页')), /1 条 · 第 1 \/ 1 页/);
+  assert.ok(ui.control('选择问题 问题 2'));
+  await ui.change('搜索问题或答案', '原答案');
+  assert.match(ui.text(table(ui, 'questions-table')), /暂无问题/);
+  await ui.click('用户');
+  assert.ok(ui.control('选择问题 问题 1'));
+  await ui.change('搜索问题或答案', '历史问题');
+  assert.match(ui.text(table(ui, 'questions-table')), /暂无问题/);
+  await ui.click('全部');
+  assert.ok(ui.control('选择问题 历史问题'));
+});
+
+test('origin-filtered select-all covers every filtered page and preserves hidden selections', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  await ui.click('AI');
+  await ui.change('全选当前筛选问题', true);
+  await ui.click('用户');
+  await ui.change('搜索问题或答案', '问题 1');
+  await ui.change('全选当前筛选问题', true);
+  await ui.change('全选当前筛选问题', false);
+  await ui.change('搜索问题或答案', '');
+  await ui.change('全选当前筛选问题', true);
+  await ui.click('下一页');
+  assert.equal(ui.control('选择问题 问题 13').props.checked, true);
+  await ui.click('全部');
+  assert.equal(ui.control('选择问题 问题 2').props.checked, true);
+  assert.equal(ui.control('全选当前筛选问题').props.checked, true);
+  await ui.click('泛化问题');
+  const selected = calls(ui, 'ai-tasks')[0].payload.questions;
+  assert.equal(selected.length, 13);
+  assert.ok(selected.some(({ id }) => id === 'q2'));
+  assert.ok(selected.some(({ id }) => id === 'q13'));
+});
+
 test('selection persists across pages and filtered select-all preserves other choices', async (t) => {
   const ui = await mountClient(); t.after(ui.unmount);
   await ui.change('选择问题 问题 1', true); await ui.click('下一页'); await ui.change('选择问题 问题 13', true);

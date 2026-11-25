@@ -26,6 +26,7 @@ window.__ModuleLoader__.load({
 .dsh-qs input[type=checkbox]{width:16px;height:16px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;margin:0}
 .dsh-qs .qs-header,.dsh-qs .qs-row,.dsh-qs .qs-actions,.dsh-qs .qs-filters,.dsh-qs .qs-pagination{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .dsh-qs .qs-header,.dsh-qs .qs-row,.dsh-qs .qs-toolbar,.dsh-qs .qs-pagination{justify-content:space-between}.dsh-qs .qs-header{padding:22px 24px;border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base)}.dsh-qs .qs-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}.dsh-qs .qs-filters{gap:10px}.dsh-qs .qs-filters input{width:min(260px,100%)}.dsh-qs .qs-filters select{width:auto;max-width:260px}.dsh-qs .qs-selection{margin-bottom:10px;min-height:30px}
+.dsh-qs .qs-origin-filter{display:inline-flex;gap:2px;padding:3px;border:1px solid var(--dsw-alias-border-l2);border-radius:7px;background:var(--dsw-alias-bg-base)}.dsh-qs .qs-origin-filter button{border:1px solid transparent;border-radius:5px;padding:4px 12px;background:transparent;color:var(--dsw-alias-label-secondary);white-space:nowrap;line-height:1.5}.dsh-qs .qs-origin-filter button:hover{background:var(--dsw-alias-interactive-bg-hover)}.dsh-qs .qs-origin-filter button[aria-pressed=true]{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-border-l4);color:var(--dsw-alias-label-primary);font-weight:500}
 .dsh-qs .qs-muted{color:var(--dsw-alias-label-secondary);font-size:12px}.dsh-qs .qs-button{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--dsw-alias-border-l4);border-radius:7px;padding:6px 12px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);white-space:nowrap;line-height:1.5}
 .dsh-qs .qs-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.dsh-qs .qs-button.primary{background:var(--dsw-alias-button-primary-fill);border-color:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}.dsh-qs .qs-button.danger{color:var(--dsw-alias-state-error-primary)}
 .dsh-qs .qs-table-wrap{overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:var(--dsw-alias-bg-layer-1)}.dsh-qs table{border-collapse:collapse;width:100%;min-width:780px;text-align:left;font-size:13px;table-layout:fixed;color:var(--dsw-alias-label-primary)}
@@ -191,7 +192,7 @@ window.__ModuleLoader__.load({
     }
     function QuestionSetPage({ openSession }) {
       const [items, setItems] = useState([]), [sources, setSources] = useState([]), [sourceId, setSourceId] = useState('');
-      const [search, setSearch] = useState(''), [page, setPage] = useState(1), [chosen, setChosen] = useState(() => new Set());
+      const [search, setSearch] = useState(''), [originFilter, setOriginFilter] = useState('all'), [page, setPage] = useState(1), [chosen, setChosen] = useState(() => new Set());
       const [loading, setLoading] = useState(true), [restoring, setRestoring] = useState(false), [busy, setBusy] = useState(''), [error, setError] = useState(null);
       const [editing, setEditing] = useState(null), [deleting, setDeleting] = useState(null), [task, setTask] = useState(null), [monitor, setMonitor] = useState(0);
       const [dialog, setDialog] = useState(null);
@@ -267,7 +268,7 @@ window.__ModuleLoader__.load({
         } finally { action.current = null; if (!controller.signal.aborted && alive.current) setBusy(''); }
       };
       const selected = items.filter(({ id }) => chosen.has(id));
-      const filtered = items.filter((item) => matches(search, item.text, item.answer));
+      const filtered = items.filter((item) => (originFilter === 'all' || item.origin === originFilter) && matches(search, item.text, item.answer));
       const lastPage = Math.max(1, Math.ceil(filtered.length / pageSize)), currentPage = Math.min(page, lastPage);
       const locked = !!busy || loading || restoring || active(task);
       const hasResults = !!task?.result;
@@ -311,6 +312,8 @@ window.__ModuleLoader__.load({
         h('div', { className: 'qs-toolbar' },
           h('div', { className: 'qs-filters' },
             h('input', { type: 'search', 'aria-label': '搜索问题或答案', placeholder: '搜索问题或答案', value: search, onChange: (event) => { setSearch(event.target.value); setPage(1); } }),
+            h('div', { className: 'qs-origin-filter', role: 'group', 'aria-label': '问题来源' },
+              [['all', '全部'], ['original', '用户'], ['generated', 'AI']].map(([value, label]) => button(label, () => { setOriginFilter(value); setPage(1); }, { key: value, 'aria-pressed': originFilter === value }))),
             h('select', { 'aria-label': '泛化数据源', value: sourceId, disabled: locked || hasResults, onChange: (event) => { acceptTask(null); setSourceId(event.target.value); setError(null); } },
               !sources.length && h('option', { value: '' }, '暂无数据源'), sources.map((source) => h('option', { key: source.id, value: source.id }, source.name)))),
           h('div', { className: 'qs-actions' },
