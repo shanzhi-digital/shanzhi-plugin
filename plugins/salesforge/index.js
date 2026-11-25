@@ -830,7 +830,9 @@ export function setupSalesforge(ctx, deps = {}) {
 
   // 工具 5：sales_query_projects
   const PROJECT_FILTER_KEYS = ['projectName', 'projectStatus', 'projectRisk', 'quarter', 'minAmount', 'maxAmount', 'salesId', 'salesName', 'includeArchived', 'createdFrom', 'createdTo'];
-  const PROJECT_LIST_ONLY_KEYS = ['customerId', 'channelId', 'expectedSignFrom', 'expectedSignTo', 'minDaysSinceFollow', 'sortBy', 'sortOrder', 'pageNum', 'pageSize'];
+  // 客户、渠道、预计签约日期、跟进天数：列表和汇总都能用（后端汇总接口不支持这些条件，汇总时插件扫描项目列表自己算）。
+  const PROJECT_LOCAL_KEYS = ['customerId', 'channelId', 'expectedSignFrom', 'expectedSignTo', 'minDaysSinceFollow'];
+  const PROJECT_LIST_ONLY_KEYS = ['sortBy', 'sortOrder', 'pageNum', 'pageSize'];
   registerTool({
     name: 'sales_query_projects',
     description:
@@ -839,7 +841,7 @@ export function setupSalesforge(ctx, deps = {}) {
       type: 'object',
       additionalProperties: false,
       properties: {
-        mode: { type: 'string', enum: ['list', 'summary'], description: 'list 项目列表（默认）；summary 金额汇总' },
+        mode: { type: 'string', enum: ['list', 'summary'], description: 'list 项目列表（默认）；summary 金额汇总（带客户、渠道、预计签约日期或跟进天数条件时，扫描最多 500 条项目在本地汇总）' },
         projectName: { type: 'string', description: '可选：项目名称关键词，模糊匹配' },
         projectStatus: { type: 'string', enum: [...PROJECT_STATUSES], description: '可选：项目阶段，精确匹配' },
         projectRisk: { type: 'string', enum: [...PROJECT_RISKS], description: '可选：项目风险，精确匹配' },
@@ -847,14 +849,14 @@ export function setupSalesforge(ctx, deps = {}) {
         minAmount: { type: 'number', minimum: 0, description: '可选：预计金额下限（万元）' },
         maxAmount: { type: 'number', minimum: 0, description: '可选：预计金额上限（万元）' },
         ...salesPersonProps,
-        customerId: { type: 'integer', minimum: 1, description: 'mode="list" 可选：客户ID（用 sales_search 或 sales_query_customers 查）' },
-        channelId: { type: 'integer', minimum: 1, description: 'mode="list" 可选：渠道ID' },
+        customerId: { type: 'integer', minimum: 1, description: '可选：客户ID（用 sales_search 或 sales_query_customers 查）' },
+        channelId: { type: 'integer', minimum: 1, description: '可选：渠道ID' },
         includeArchived: { type: 'boolean', description: '可选：是否包含已签约、已丢单的项目，默认 false' },
         createdFrom: { type: 'string', description: '可选：项目新增时间起 YYYY-MM-DD' },
         createdTo: { type: 'string', description: '可选：项目新增时间止 YYYY-MM-DD' },
-        expectedSignFrom: { type: 'string', description: 'mode="list" 可选：预计签约日期起 YYYY-MM-DD（本地筛选）' },
-        expectedSignTo: { type: 'string', description: 'mode="list" 可选：预计签约日期止 YYYY-MM-DD（本地筛选）' },
-        minDaysSinceFollow: { type: 'integer', minimum: 0, description: 'mode="list" 可选：只看距上次项目梳理至少这么多天的（本地筛选）' },
+        expectedSignFrom: { type: 'string', description: '可选：预计签约日期起 YYYY-MM-DD（本地筛选）' },
+        expectedSignTo: { type: 'string', description: '可选：预计签约日期止 YYYY-MM-DD（本地筛选）' },
+        minDaysSinceFollow: { type: 'integer', minimum: 0, description: '可选：只看距上次项目梳理至少这么多天的（本地筛选）' },
         sortBy: {
           type: 'string',
           enum: ['createTime', 'expectedAmount', 'expectedSignDate', 'daysSinceLastFollow'],
@@ -865,9 +867,9 @@ export function setupSalesforge(ctx, deps = {}) {
       },
     },
     async execute(args, exec) {
-      rejectUnknown(args, ['mode', ...PROJECT_FILTER_KEYS, ...PROJECT_LIST_ONLY_KEYS], 'sales_query_projects');
+      rejectUnknown(args, ['mode', ...PROJECT_FILTER_KEYS, ...PROJECT_LOCAL_KEYS, ...PROJECT_LIST_ONLY_KEYS], 'sales_query_projects');
       const mode = optEnum(args, 'mode', ['list', 'summary']) ?? 'list';
-      if (mode === 'summary') rejectPresent(args, PROJECT_LIST_ONLY_KEYS, '只能在 mode="list" 时使用。');
+      if (mode === 'summary') rejectPresent(args, PROJECT_LIST_ONLY_KEYS, '只能在 mode="list" 时使用（汇总不排序、不分页）。');
       const projectStatus = optEnum(args, 'projectStatus', PROJECT_STATUSES);
       const filters = {
         projectName: optText(args, 'projectName'),
@@ -903,12 +905,48 @@ export function setupSalesforge(ctx, deps = {}) {
         (sortBy !== undefined && sortBy !== 'createTime') ||
         sortOrder === 'asc';
       if (scan && args.pageNum !== undefined) throw invalid('用本地筛选或排序时不分页，只返回前 pageSize 条，请去掉 pageNum。');
+      const matchesLocal = (record) => {
+        const signDay = dateText(record?.expectedSignDate, false);
+        if (signFrom !== undefined && (!signDay || signDay < signFrom)) return false;
+        if (signTo !== undefined && (!signDay || signDay > signTo)) return false;
+        if (minDays !== undefined && (daysOf(record) ?? -1) < minDays) return false;
+        return true;
+      };
+      const sumOf = (items) => round(items.reduce((acc, record) => acc + (toNumber(record?.expectedAmount) ?? 0), 0), 4);
+      const localEcho = {
+        ...(signFrom !== undefined ? { expectedSignFrom: signFrom } : {}),
+        ...(signTo !== undefined ? { expectedSignTo: signTo } : {}),
+        ...(minDays !== undefined ? { minDaysSinceFollow: minDays } : {}),
+      };
+      const truncatedNote = (scanned) => `符合后端条件的项目共 ${scanned.total} 条，只扫描了前 ${scanned.scanned} 条（按新增时间从新到旧）；需要更准确时请加上项目阶段、风险、季度、负责销售等条件缩小范围。`;
 
       return viaBackend(async (cfg) => {
         const resolved = await resolvePerson(cfg, salesId, salesName, 'salesId', 'salesName', exec.signal);
         if (resolved.unresolved) return resolved.unresolved;
         const query = { ...filters, salesId: resolved.person?.userId };
         const echo = { ...query, ...(resolved.person ? { salesName: resolved.person.realName } : {}) };
+        const listQuery = { ...query, customerId, channelId };
+        const listEcho = { ...echo, customerId, channelId };
+        const scanList = () => scanPages((num, size) => apiClient.listProjects(cfg, { ...listQuery, pageNum: num, pageSize: size }, callOpts(exec.signal)));
+
+        if (mode === 'summary' && (customerId !== undefined || channelId !== undefined || Object.keys(localEcho).length > 0)) {
+          const scanned = await scanList();
+          const records = scanned.records.filter(matchesLocal);
+          return {
+            mode,
+            query: listEcho,
+            unit: '万元',
+            localFilter: { ...localEcho, scanned: scanned.scanned, scanTruncated: scanned.scanTruncated, matched: records.length },
+            // 口径和后端汇总一致：必签 = 风险为「必签项目」；有风险 = 其他非空风险。
+            summary: {
+              项目数: records.length,
+              '预计总金额（万元）': sumOf(records),
+              '必签项目金额（万元）': sumOf(records.filter((record) => record?.projectRisk === '必签项目')),
+              '有风险项目金额（万元）': sumOf(records.filter((record) => record?.projectRisk && record.projectRisk !== '必签项目')),
+            },
+            ...(scanned.scanTruncated ? { note: truncatedNote(scanned) } : {}),
+          };
+        }
 
         if (mode === 'summary') {
           const summary = (await apiClient.getProjectSummary(cfg, query, callOpts(exec.signal))) || {};
@@ -925,25 +963,16 @@ export function setupSalesforge(ctx, deps = {}) {
           };
         }
 
-        const listQuery = { ...query, customerId, channelId };
-        const listEcho = { ...echo, customerId, channelId };
         if (!scan) {
           const page = await apiClient.listProjects(cfg, { ...listQuery, pageNum, pageSize }, callOpts(exec.signal));
           const { columns, rows } = table(recordsOf(page), PROJECT_COLUMNS);
           return { mode, query: listEcho, unit: '万元', ...pageInfo(page, pageNum, pageSize, rows.length), rowCount: rows.length, columns, rows };
         }
 
-        const scanned = await scanPages((num, size) => apiClient.listProjects(cfg, { ...listQuery, pageNum: num, pageSize: size }, callOpts(exec.signal)));
-        let records = scanned.records.filter((record) => {
-          const signDay = dateText(record?.expectedSignDate, false);
-          if (signFrom !== undefined && (!signDay || signDay < signFrom)) return false;
-          if (signTo !== undefined && (!signDay || signDay > signTo)) return false;
-          if (minDays !== undefined && (daysOf(record) ?? -1) < minDays) return false;
-          return true;
-        });
+        const scanned = await scanList();
+        let records = scanned.records.filter(matchesLocal);
         const effectiveSort = sortBy ?? (minDays !== undefined ? 'daysSinceLastFollow' : 'createTime');
         records = sortRecords(records, effectiveSort, sortOrder ?? 'desc');
-        const sumOf = (items) => round(items.reduce((acc, record) => acc + (toNumber(record?.expectedAmount) ?? 0), 0), 4);
         const byRisk = {};
         for (const risk of PROJECT_RISKS) byRisk[risk] = sumOf(records.filter((record) => record?.projectRisk === risk));
         const shown = records.slice(0, pageSize);
@@ -953,9 +982,7 @@ export function setupSalesforge(ctx, deps = {}) {
           query: listEcho,
           unit: '万元',
           localFilter: {
-            ...(signFrom !== undefined ? { expectedSignFrom: signFrom } : {}),
-            ...(signTo !== undefined ? { expectedSignTo: signTo } : {}),
-            ...(minDays !== undefined ? { minDaysSinceFollow: minDays } : {}),
+            ...localEcho,
             sortBy: effectiveSort,
             sortOrder: sortOrder ?? 'desc',
             scanned: scanned.scanned,
@@ -968,9 +995,7 @@ export function setupSalesforge(ctx, deps = {}) {
           truncated: records.length > rows.length,
           columns,
           rows,
-          ...(scanned.scanTruncated
-            ? { note: `符合后端条件的项目共 ${scanned.total} 条，只扫描了前 ${scanned.scanned} 条（按新增时间从新到旧）；需要更准确时请加上项目阶段、风险、季度、负责销售等条件缩小范围。` }
-            : {}),
+          ...(scanned.scanTruncated ? { note: truncatedNote(scanned) } : {}),
         };
       });
     },

@@ -160,7 +160,8 @@ export function buildResultChart(args, result, question = '') {
 
   const view = requestedView(question);
   const showChart = view === 'chart' || (view === undefined && ['bar', 'line', 'pie'].includes(args.chartType));
-  return {title: args.title, datasourceId: result.datasourceId, columns, data: result.data,
+  // 只有 DataHub 结果带数据源 ID；其他来源不写这个字段，宿主不接受值为 undefined 的输出。
+  return {title: args.title, ...(result.datasourceId !== undefined ? { datasourceId: result.datasourceId } : {}), columns, data: result.data,
     rowCount: result.rowCount ?? result.data.length, truncated: result.truncated === true, offset: result.offset ?? 0, limit: result.limit ?? result.data.length,
     dimension: switchable ? dimension : null, measures: switchable ? plottedMeasures : [], chartType,
     defaultView: canChart && showChart ? chartType : 'table', reason, followUps};

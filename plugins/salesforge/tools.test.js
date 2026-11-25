@@ -722,7 +722,11 @@ test('sales_query_projects lists and sums projects; signed or lost projects need
   });
 
   await rejectsArg('sales_query_projects', { mode: 'summary', pageNum: 2 }, /pageNum 只能在 mode="list" 时使用/u);
-  await rejectsArg('sales_query_projects', { mode: 'summary', customerId: 1 }, /customerId 只能在 mode="list" 时使用/u);
+  // 汇总也能按客户筛：改为扫描项目列表，客户ID照常传给后端。
+  const byCustomer = await runTool('sales_query_projects', { mode: 'summary', customerId: 1001 });
+  assert.equal(lastRequest('/projects').query.customerId, '1001');
+  assert.equal(typeof byCustomer.summary.项目数, 'number');
+  await rejectsArg('sales_query_projects', { mode: 'summary', sortBy: 'expectedAmount' }, /sortBy 只能在 mode="list" 时使用（汇总不排序、不分页）/u);
   await rejectsArg('sales_query_projects', { projectStatus: '已签约' }, /projectStatus 只能是 发现问题、/u);
   await rejectsArg('sales_query_projects', { projectRisk: '高风险' }, /projectRisk 只能是 必签项目、时间风险、赢单风险 之一/u);
   await rejectsArg('sales_query_projects', { minAmount: 500, maxAmount: 50 }, /minAmount 不能大于 maxAmount/u);
@@ -751,6 +755,13 @@ test('sales_query_projects filters by expected sign date and sorts by amount loc
     '预计总金额（万元）': 645.75,
     '按风险分（万元）': { 必签项目: 345, 时间风险: 0, 赢单风险: 300.75 },
   });
+
+  // 汇总模式带预计签约日期：不调后端汇总接口，扫描列表在本地汇总，口径和后端一致。
+  const summaryCalls = requestsTo('/projects/summary').length;
+  const signSummary = await runTool('sales_query_projects', { mode: 'summary', expectedSignFrom: '2026-11-01', expectedSignTo: '2026-11-30' });
+  assert.equal(requestsTo('/projects/summary').length, summaryCalls);
+  assert.deepEqual(signSummary.summary, { 项目数: 4, '预计总金额（万元）': 645.75, '必签项目金额（万元）': 345, '有风险项目金额（万元）': 300.75 });
+  assert.deepEqual(signSummary.localFilter, { expectedSignFrom: '2026-11-01', expectedSignTo: '2026-11-30', scanned: 6, scanTruncated: false, matched: 4 });
 
   // 升序：没有金额的排在最后。
   const asc = await runTool('sales_query_projects', { sortBy: 'expectedAmount', sortOrder: 'asc' });
