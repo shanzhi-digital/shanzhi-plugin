@@ -1,0 +1,55 @@
+{
+  "name": "@local/salesforge",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "销售管理（SalesForge）：浏览器授权连接销售管理系统，只读查询客户、渠道、项目商机、看板、日报周报和销售目标",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./assets/*": "./lib/assets/*"
+  },
+  "files": [
+    "index.js",
+    "api-client.js",
+    "accounts.js",
+    "config-store.js",
+    "credential-store.js",
+    "tool-output.js",
+    "prompts.js",
+    "remote-service.js",
+    "event-projection.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "lib/assets",
+    "skills",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --check client.js && node --test tool-output.test.js api-client.test.js credential-store.test.js accounts.test.js tools.test.js client.test.js skills.test.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-typert-protocol": ">=0.2.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-typert-protocol": { "optional": true }
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}

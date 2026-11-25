@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { extname } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { extname, join, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ApiError, UPLOAD_EXTENSIONS, defaultApiClient, safeErrorMessage } from './api-client.js';
 import { readDocument } from './doc-reader.js';
 import { createAccountManager } from './accounts.js';
@@ -274,6 +276,108 @@ function formatDocumentSummary(doc) {
   };
 }
 
+// ---------- 内置 skill：skills/<name>/SKILL.md，经宿主 skills 服务注册 ----------
+
+export const SKILL_PROVIDER_NAME = '@local/contract-sure';
+export const BUNDLED_SKILL_NAMES = Object.freeze([
+  'contract-import-analyze',
+  'contract-payment-followup',
+  'contract-reconcile-flows',
+  'contract-performance-report',
+  'contract-risk-review',
+]);
+export const SKILLS_DIR = fileURLToPath(new URL('./skills/', import.meta.url));
+// 与宿主随包 skill 相同的优先级（@deepseek-ai/dsh-skill 的 BUNDLED_SKILL_RANK）。
+const BUNDLED_SKILL_RANK = 600;
+
+/**
+ * 解析 SKILL.md：frontmatter 只认单行的 `key: value`，必须有 name 和 description。
+ * 返回 { name, description, content }，content 是去掉 frontmatter 后的正文。
+ */
+export function parseSkillFile(raw, path) {
+  const block = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(raw);
+  if (!block) throw new Error(`${path} 缺少 frontmatter`);
+  const meta = {};
+  for (const line of block[1].split(/\r?\n/u)) {
+    const pair = /^([A-Za-z][\w-]*):\s*(.*)$/u.exec(line);
+    if (pair) meta[pair[1]] = pair[2].trim().replace(/^(['"])(.*)\1$/u, '$2');
+  }
+  if (!meta.name) throw new Error(`${path} 缺少 name`);
+  if (!meta.description) throw new Error(`${path} 缺少 description`);
+  return { name: meta.name, description: meta.description, content: raw.slice(block[0].length).trim() };
+}
+
+/**
+ * 内置 skill 的提供方。每次列目录和加载都重新读 SKILL.md；文件缺失或格式不对的 skill 不进目录，
+ * 其他读取错误（例如文件被占用）让这次目录标为不完整，宿主下次会重试。
+ */
+export function createSkillProvider({ providerName = SKILL_PROVIDER_NAME, skillsDir = SKILLS_DIR, skillNames = BUNDLED_SKILL_NAMES, control, logger } = {}) {
+  const warned = new Map();
+  const warnOnce = (skillName, error) => {
+    const text = String(error?.message ?? error);
+    if (warned.get(skillName) === text) return;
+    warned.set(skillName, text);
+    try {
+      logger?.warn?.(`${providerName}: skill "${skillName}" 不可用：${text}`);
+    } catch {
+      // 拿不到 logger 时静默。
+    }
+  };
+
+  async function readSkill(skillName, signal) {
+    const directory = join(skillsDir, skillName);
+    const path = join(directory, 'SKILL.md');
+    let raw;
+    try {
+      raw = await readFile(path, { encoding: 'utf8', signal });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      warnOnce(skillName, error);
+      return { ok: false, error, persistent: error?.code === 'ENOENT' || error?.code === 'ENOTDIR' };
+    }
+    try {
+      const parsed = parseSkillFile(raw, path);
+      if (parsed.name !== skillName) throw new Error(`${path} 的 name 是 "${parsed.name}"，应与目录名 "${skillName}" 一致`);
+      warned.delete(skillName);
+      return { ok: true, ...parsed, directory, path };
+    } catch (error) {
+      warnOnce(skillName, error);
+      return { ok: false, error, persistent: true };
+    }
+  }
+
+  return {
+    name: providerName,
+    async list(options = {}) {
+      const reads = await Promise.all(skillNames.map((skillName) => readSkill(skillName, options.signal)));
+      const candidates = reads
+        .filter((read) => read.ok)
+        .map((read) => ({
+          name: read.name,
+          description: read.description,
+          invocation: { modelInvocable: true, userInvocable: true },
+          provider: providerName,
+          source: 'bundled',
+          rank: BUNDLED_SKILL_RANK,
+          path: read.path,
+          resourceBase: { kind: 'directory', path: read.directory.split(sep).join('/') },
+          locator: read.path,
+        }));
+      return { candidates, complete: reads.every((read) => read.ok || read.persistent) };
+    },
+    async get(candidate, options = {}) {
+      const read = await readSkill(candidate.name, options.signal);
+      if (!read.ok) {
+        if (!read.persistent) throw read.error;
+        control?.invalidate?.();
+        return undefined;
+      }
+      const { rank: _rank, locator: _locator, ...summary } = candidate;
+      return { ...summary, content: read.content };
+    },
+  };
+}
+
 /**
  * Core plugin setup, injectable for deterministic unit testing without DSH host dependencies.
  */
@@ -437,6 +541,23 @@ export function setupContractSure(ctx, deps = {}) {
     registerPrompt(immediateSp);
   } else if (typeof ctx.inject === 'function') {
     ctx.inject(['systemPrompt'], (c) => registerPrompt(getHostService(c, 'systemPrompt')));
+  }
+
+  // 1b. 内置 skill：skills 服务是可选的（minimal 预设里没有），不写进硬依赖 inject。
+  const registerSkills = (skills) => {
+    if (typeof skills?.registerProvider !== 'function') return;
+    try {
+      const dispose = skills.registerProvider((control) => createSkillProvider({ control, logger: ctx.logger }));
+      if (typeof dispose === 'function') disposers.push(dispose);
+    } catch {
+      ctx.logger?.warn?.('@local/contract-sure: 内置 skill 注册失败。');
+    }
+  };
+  const immediateSkills = getHostService(ctx, 'skills');
+  if (immediateSkills) {
+    registerSkills(immediateSkills);
+  } else if (typeof ctx.inject === 'function') {
+    ctx.inject(['skills'], (c) => registerSkills(getHostService(c, 'skills')));
   }
 
   // 2. Register 7 host tools

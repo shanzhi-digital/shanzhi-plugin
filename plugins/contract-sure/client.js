@@ -9,7 +9,7 @@
 //   3. Plugin page contributions, rendered only for this bundle's own page:
 //      - plugins.detail.actions: "管理" (account panel) and "试用" (new session with a prompt)
 //      - plugins.detail.badge: connection status beside the title
-//      - plugins.detail.section: "试试这样问" example prompts
+//      - plugins.bundle.config (keyed by this package): "试试这样问" panel under the README
 // Accounts are connected through browser authorization (contractSure/startAuthorization +
 // pollAuthorization); the UI never sees or shows a token.
 
@@ -41,11 +41,29 @@ window.__ModuleLoader__.load({
 
     var TRY_PROMPT = "帮我看看我负责的合同里，本月有哪些待回款的节点";
     var EXAMPLE_PROMPTS = [
-      "本月有哪些待回款的节点？",
-      "查一下合同号 HT-2026-001 的履约进度",
-      "哪些流水还没匹配到合同？",
-      "我负责的合同里，哪些付款节点下个月到期？",
+      "列出我负责的、还在履约中的销售合同，找出本月和下个月要回款的节点，按到期日排成一张表，金额最大的三笔单独提醒我",
+      "查一下还没匹配到合同的银行流水，按对方户名找出最可能对应的合同，先列给我确认，确认前不要关联",
+      "看看今年销售合同的履约看板，把每月签约金额和收入金额画成趋势图，再告诉我哪几个月逾期应收应付偏高",
     ];
+
+    // The examples panel's look. ExamplesSection and EXAMPLES_CSS are generic: a sibling plugin copies them
+    // (renaming the csx- prefix) and changes only this object and EXAMPLE_PROMPTS. Pairs are [light, dark].
+    // ICON_SVG is icon.svg verbatim (a test keeps them equal).
+    var ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><mask id="k"><rect width="48" height="48" fill="#fff"/><path d="M34 21.4A3.6 3.6 0 0 1 40.3 23.09A3.6 3.6 0 0 1 44.91 27.7A3.6 3.6 0 0 1 46.6 34A3.6 3.6 0 0 1 44.91 40.3A3.6 3.6 0 0 1 40.3 44.91A3.6 3.6 0 0 1 34 46.6A3.6 3.6 0 0 1 27.7 44.91A3.6 3.6 0 0 1 23.09 40.3A3.6 3.6 0 0 1 21.4 34A3.6 3.6 0 0 1 23.09 27.7A3.6 3.6 0 0 1 27.7 23.09A3.6 3.6 0 0 1 34 21.4Z"/></mask><g mask="url(#k)"><path d="M10 4h16l10 10v26a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4z" fill="#0EA5E9"/><path d="M26 4v6a4 4 0 0 0 4 4h6z" fill="#7DD3FC"/><rect x="11" y="16" width="16" height="4" rx="2" fill="#E0F2FE"/><rect x="11" y="24" width="10" height="4" rx="2" fill="#FBBF24"/></g><path d="M34 23.8A2.9 2.9 0 0 1 39.1 25.17A2.9 2.9 0 0 1 42.83 28.9A2.9 2.9 0 0 1 44.2 34A2.9 2.9 0 0 1 42.83 39.1A2.9 2.9 0 0 1 39.1 42.83A2.9 2.9 0 0 1 34 44.2A2.9 2.9 0 0 1 28.9 42.83A2.9 2.9 0 0 1 25.17 39.1A2.9 2.9 0 0 1 23.8 34A2.9 2.9 0 0 1 25.17 28.9A2.9 2.9 0 0 1 28.9 25.17A2.9 2.9 0 0 1 34 23.8Z" fill="#10B981"/><path d="M27.8 34.6l2.8-2.8 2 2 5.3-5.3 2.8 2.8-8.1 8.1z" fill="#fff"/></svg>\n';
+    var EXAMPLES_LOOK = {
+      name: "履约无忧",
+      icon: "data:image/svg+xml," + encodeURIComponent(ICON_SVG),
+      // Files in lib/assets, served by the host's package-asset route (package.json "./assets/*").
+      backgrounds: ["examples-bg-light-e341523fe8ea.webp", "examples-bg-dark-95886183e648.webp"],
+      brand: ["#047857", "#34D399"],
+      onBrand: ["#ffffff", "#03241a"],
+      glow: ["rgba(14,165,233,.28)", "rgba(52,211,153,.2)"],
+      // Shown under the image while it loads, and instead of it when it cannot load.
+      fallback: [
+        "radial-gradient(60% 110% at 100% 0%,#c2efe6,rgba(194,239,230,0) 70%),radial-gradient(55% 110% at 0% 100%,#bceae3,rgba(188,234,227,0) 70%),#e9f4f9",
+        "radial-gradient(60% 110% at 100% 0%,#0a544c,rgba(10,84,76,0) 70%),radial-gradient(55% 110% at 0% 100%,#053945,rgba(5,57,69,0) 70%),#051527",
+      ],
+    };
     var AUTH_CARD_TITLES = {
       "no-account": "还没有连接履约系统账户",
       expired: "履约系统授权已过期",
@@ -121,7 +139,7 @@ window.__ModuleLoader__.load({
       ".csu-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:36px;padding:0 14px;border:0;border-radius:var(--csu-r-md);background:transparent;color:var(--csu-text);font:inherit;font-size:14px;line-height:22px;font-weight:400;cursor:pointer;white-space:nowrap;text-decoration:none}",
       ".csu-btn-sm{height:28px;padding:0 10px;font-size:12px;line-height:18px;border-radius:var(--csu-r-sm)}",
       ".csu-btn:disabled{opacity:.4;cursor:not-allowed}",
-      ".csu-btn:focus-visible,.csu-icon-btn:focus-visible,.csu-menu-item:focus-visible,.csu-example:focus-visible,.csu-disclosure:focus-visible,.csu-text-btn:focus-visible,.csu-link:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--csu-info));outline-offset:1px}",
+      ".csu-btn:focus-visible,.csu-icon-btn:focus-visible,.csu-menu-item:focus-visible,.csu-disclosure:focus-visible,.csu-text-btn:focus-visible,.csu-link:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--csu-info));outline-offset:1px}",
       ".csu-btn-primary{background:var(--dsw-alias-button-primary-fill,#1f1f1f);color:var(--dsw-alias-label-primary-foreground,#fff)}",
       ".csu-btn-primary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover,#3a3a3a)}",
       ".csu-btn-outline{box-shadow:inset 0 0 0 var(--csu-hair) var(--csu-line-strong)}",
@@ -205,16 +223,6 @@ window.__ModuleLoader__.load({
       ".csu-text-btn{padding:0;border:0;background:transparent;color:var(--csu-info);font:inherit;font-size:12px;line-height:18px;cursor:pointer}",
       ".csu-text-btn:hover{text-decoration:underline}",
       ".csu-prompt-box{width:100%;min-height:64px;padding:10px 12px;border:0;border-radius:var(--csu-r-md);background:var(--csu-raised);box-shadow:inset 0 0 0 var(--csu-hair) var(--csu-line-strong);color:var(--csu-text);font:inherit;font-size:13px;line-height:20px;resize:none}",
-      ".csu-examples{display:flex;flex-direction:column;gap:12px;color:var(--csu-text)}",
-      ".csu-example-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}",
-      "@media (max-width:640px){.csu-example-grid{grid-template-columns:1fr}}",
-      ".csu-example{display:flex;align-items:center;gap:10px;min-height:52px;padding:10px 12px;border:0;border-radius:var(--csu-r-lg);background:transparent;box-shadow:inset 0 0 0 var(--csu-hair) var(--csu-line-strong);color:var(--csu-text);font:inherit;font-size:13px;line-height:20px;text-align:left;cursor:pointer}",
-      ".csu-example:hover:not(:disabled){background:var(--csu-hover)}",
-      ".csu-example:disabled{opacity:.6;cursor:progress}",
-      ".csu-example-icon{flex:none;color:var(--csu-subtle)}",
-      ".csu-example-text{flex:1;min-width:0}",
-      ".csu-example-go{flex:none;color:var(--csu-subtle);opacity:0;transition:opacity .15s ease}",
-      ".csu-example:hover .csu-example-go,.csu-example:focus-visible .csu-example-go{opacity:1}",
       ".csu-card{display:flex;align-items:flex-start;gap:12px;margin:16px 0 8px;padding:14px 16px;border-radius:var(--csu-r-lg);background:var(--csu-surface);box-shadow:inset 0 0 0 var(--csu-hair) var(--csu-line-strong);color:var(--csu-text);font-size:13px;line-height:20px}",
       ".csu-card-icon{display:inline-flex;align-items:center;justify-content:center;flex:none;width:32px;height:32px;border-radius:50%;background:color-mix(in srgb,var(--csu-warn) 12%,transparent);color:var(--csu-warn)}",
       ".csu-card-icon-ok{background:color-mix(in srgb,var(--csu-ok) 12%,transparent);color:var(--csu-ok)}",
@@ -224,6 +232,42 @@ window.__ModuleLoader__.load({
       ".csu-card-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:8px}",
       ".csu-settings{max-width:640px;padding:4px 0 12px;color:var(--csu-text);font-size:13px;line-height:20px}",
       ".csu-settings-hint{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;margin:0 0 16px;font-size:12px;line-height:18px;color:var(--csu-muted)}",
+    ].join("\n");
+
+    // "试试这样问" panel: a rounded panel over the plugin's background artwork, glass cards that open a new
+    // session with the question, a soft light that follows the pointer and a slow drift of the artwork.
+    // Plugin colors and images arrive as --csx-*-l / --csx-*-d custom properties (examplesStyle), and
+    // body[data-ds-dark-theme] (set by DeepSeek Harness) picks the dark half. Only the active theme's image loads.
+    var EXAMPLES_CSS = [
+      ".csx{--csx-brand:var(--csx-brand-l);--csx-on-brand:var(--csx-on-brand-l);--csx-glow:var(--csx-glow-l);--csx-glow-core:rgba(255,255,255,.75);--csx-fallback:var(--csx-fallback-l);--csx-img:var(--csx-img-l,none);--csx-ring:rgba(16,42,67,.07);--csx-card-bg:rgba(255,255,255,.62);--csx-card-bg-hover:rgba(255,255,255,.82);--csx-card-line:rgba(255,255,255,.9);--csx-card-ring:rgba(16,42,67,.07);--csx-card-shadow:0 1px 2px rgba(16,42,67,.05),0 8px 24px -14px rgba(16,42,67,.28);--csx-card-shadow-hover:0 2px 6px rgba(16,42,67,.06),0 18px 36px -16px rgba(16,42,67,.36);--csx-go-bg:rgba(16,42,67,.06);display:flex;flex-direction:column;gap:12px;color:var(--csu-text)}",
+      "body[data-ds-dark-theme] .csx{--csx-brand:var(--csx-brand-d);--csx-on-brand:var(--csx-on-brand-d);--csx-glow:var(--csx-glow-d);--csx-glow-core:rgba(255,255,255,.06);--csx-fallback:var(--csx-fallback-d);--csx-img:var(--csx-img-d,none);--csx-ring:rgba(255,255,255,.07);--csx-card-bg:rgba(8,14,24,.46);--csx-card-bg-hover:rgba(12,20,32,.6);--csx-card-line:rgba(255,255,255,.08);--csx-card-ring:rgba(0,0,0,.3);--csx-card-shadow:0 1px 2px rgba(0,0,0,.3),0 10px 28px -14px rgba(0,0,0,.7);--csx-card-shadow-hover:0 2px 6px rgba(0,0,0,.35),0 20px 40px -16px rgba(0,0,0,.8);--csx-go-bg:rgba(255,255,255,.08)}",
+      ".csx-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px}",
+      ".csx-title{margin:0;font-size:14px;line-height:20px;font-weight:500}",
+      ".csx-hint{font-size:12px;line-height:18px;color:var(--csu-muted)}",
+      ".csx-panel{position:relative;isolation:isolate;overflow:hidden;padding:clamp(20px,5vw,44px) clamp(14px,4.5vw,40px);border-radius:20px;background:var(--csx-fallback)}",
+      ".csx-panel::after{content:'';position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 1px var(--csx-ring);pointer-events:none}",
+      ".csx-bg{position:absolute;inset:0;z-index:-2;overflow:hidden;background:var(--csx-fallback);pointer-events:none}",
+      ".csx-bg-img{position:absolute;inset:-5%;background-image:var(--csx-img);background-position:center;background-size:cover;animation:csx-drift 56s ease-in-out infinite alternate;will-change:transform}",
+      "@keyframes csx-drift{from{transform:translate3d(-1.6%,-1.2%,0) scale(1.02)}to{transform:translate3d(1.6%,1.2%,0) scale(1.07)}}",
+      ".csx-glow{position:absolute;inset:0;z-index:-1;background:radial-gradient(260px circle at var(--csx-x,50%) var(--csx-y,50%),var(--csx-glow-core),transparent 70%),radial-gradient(480px circle at var(--csx-x,50%) var(--csx-y,50%),var(--csx-glow),transparent 72%);opacity:0;transition:opacity .6s ease;pointer-events:none}",
+      ".csx-panel[data-glow] .csx-glow{opacity:1}",
+      ".csx-list{display:flex;flex-direction:column;gap:10px;max-width:760px;margin:0 auto}",
+      ".csx-card{display:flex;align-items:center;gap:16px;width:100%;min-height:70px;padding:14px 14px 14px 18px;border:1px solid var(--csx-card-line);border-radius:16px;background:var(--csx-card-bg);background-clip:padding-box;box-shadow:0 0 0 .5px var(--csx-card-ring),var(--csx-card-shadow);-webkit-backdrop-filter:blur(18px) saturate(1.6);backdrop-filter:blur(18px) saturate(1.6);color:var(--csu-text);font:inherit;font-size:14px;line-height:22px;text-align:left;cursor:pointer;transition:translate .32s cubic-bezier(.2,.8,.2,1),scale .2s cubic-bezier(.2,.8,.2,1),background-color .24s ease,box-shadow .32s ease;animation:csx-rise .64s cubic-bezier(.2,.8,.2,1) backwards;animation-delay:calc(var(--csx-i,0) * 80ms + 80ms)}",
+      "@keyframes csx-rise{from{opacity:0;transform:translateY(12px)}}",
+      ".csx-card:hover:not(:disabled){translate:0 -2px;background-color:var(--csx-card-bg-hover);box-shadow:0 0 0 .5px var(--csx-card-ring),var(--csx-card-shadow-hover)}",
+      ".csx-card:active:not(:disabled){translate:0 -1px;scale:.985;transition-duration:.12s}",
+      ".csx-card:focus-visible{outline:2px solid var(--csx-brand);outline-offset:2px}",
+      ".csx-card:disabled{cursor:progress}",
+      ".csx-text{display:-webkit-box;flex:1;min-width:0;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}",
+      ".csx-mention{display:inline-flex;align-items:center;gap:5px;height:22px;margin-right:6px;vertical-align:bottom;color:var(--csx-brand);font-weight:600}",
+      ".csx-mention img{flex:none;width:16px;height:16px}",
+      ".csx-go{display:inline-flex;align-items:center;justify-content:center;flex:none;width:32px;height:32px;border-radius:50%;background:var(--csx-go-bg);color:var(--csu-muted);transition:background-color .24s ease,color .24s ease}",
+      ".csx-go svg{transition:translate .32s cubic-bezier(.2,.8,.2,1)}",
+      ".csx-card:hover:not(:disabled) .csx-go,.csx-card:focus-visible .csx-go{background:var(--csx-brand);color:var(--csx-on-brand)}",
+      ".csx-card:hover:not(:disabled) .csx-go svg{translate:2px 0}",
+      "@media (max-width:560px){.csx-card{gap:12px;padding:12px 12px 12px 14px;font-size:13px;line-height:20px}.csx-mention{height:20px}}",
+      // Reduced motion: no drift, no pointer light, no entrance or lift; colors still change on hover.
+      "@media (prefers-reduced-motion:reduce){.csx-bg-img{inset:0;animation:none}.csx-glow{display:none}.csx-card{animation:none;transition:background-color .24s ease,box-shadow .24s ease}.csx-card:hover:not(:disabled),.csx-card:active:not(:disabled){translate:none;scale:none}.csx-go svg,.csx-card:hover:not(:disabled) .csx-go svg{transition:none;translate:none}}",
     ].join("\n");
 
     // ---- File address helpers (matching DSH sidebarRight protocol) ----
@@ -827,6 +871,7 @@ window.__ModuleLoader__.load({
       spark: ["M10 3.2l1.5 4.2 4.3 1.6-4.3 1.6L10 14.8l-1.5-4.2-4.3-1.6 4.3-1.6z"],
       chat: ["M4 6.2a2.7 2.7 0 0 1 2.7-2.7h6.6A2.7 2.7 0 0 1 16 6.2v4.6a2.7 2.7 0 0 1-2.7 2.7H9.2L6 16.2v-2.7a2.7 2.7 0 0 1-2-2.6z"],
       arrow: ["M7 13l6-6", "M8.2 7H13v4.8"],
+      next: ["M4.5 10h11", "M11 5.5l4.5 4.5-4.5 4.5"],
       check: ["M5 10.4l3.2 3.1L15 6.7"],
       alert: ["M10 3.6l7 12.4H3z", "M10 8.4v3.4", "M10 14.1v.1"],
       lock: ["M6.4 9V7.2a3.6 3.6 0 0 1 7.2 0V9", "M5 9h10a1 1 0 0 1 1 1v5.5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1z"],
@@ -1695,30 +1740,121 @@ window.__ModuleLoader__.load({
       return h("span", { className: "csu", style: { display: "inline-flex" } }, h("style", null, UI_CSS), tag);
     }
 
+    // ---- "试试这样问" panel ----
+    // The package-asset URL of a file in lib/assets, or null on a host without require.asset (the panel then
+    // shows its CSS gradient alone).
+    function packageAssetUrl(file) {
+      if (typeof require.asset !== "function") return null;
+      try {
+        var url = require.asset("plugins/" + PACKAGE_NAME + "/assets/" + file);
+        return typeof url === "string" && url ? url : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function cssUrl(url) {
+      return url ? "url(" + JSON.stringify(url) + ")" : "none";
+    }
+
+    var EXAMPLES_BACKGROUNDS = EXAMPLES_LOOK.backgrounds.map(packageAssetUrl);
+
+    // Inline custom properties carrying the plugin's look; EXAMPLES_CSS picks the light or dark half.
+    function examplesStyle(look, images) {
+      return {
+        "--csx-brand-l": look.brand[0], "--csx-brand-d": look.brand[1],
+        "--csx-on-brand-l": look.onBrand[0], "--csx-on-brand-d": look.onBrand[1],
+        "--csx-glow-l": look.glow[0], "--csx-glow-d": look.glow[1],
+        "--csx-fallback-l": look.fallback[0], "--csx-fallback-d": look.fallback[1],
+        "--csx-img-l": cssUrl(images[0]), "--csx-img-d": cssUrl(images[1]),
+      };
+    }
+
+    function prefersReducedMotion(win) {
+      try {
+        return !!(win && typeof win.matchMedia === "function" && win.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      } catch (_) {
+        return false;
+      }
+    }
+
+    // A soft light that follows a mouse or pen over the panel. Pointer moves only record the position; one
+    // animation frame writes it to --csx-x/--csx-y, so nothing re-renders. Returns the detach function.
+    function attachPointerGlow(el, win) {
+      if (!el || typeof el.addEventListener !== "function" || !win || prefersReducedMotion(win)) return noop;
+      var raf = typeof win.requestAnimationFrame === "function" ? win.requestAnimationFrame.bind(win) : null;
+      var cancel = typeof win.cancelAnimationFrame === "function" ? win.cancelAnimationFrame.bind(win) : noop;
+      if (!raf) return noop;
+      var frame = 0;
+      var clientX = 0;
+      var clientY = 0;
+      function paint() {
+        frame = 0;
+        var box = el.getBoundingClientRect();
+        el.style.setProperty("--csx-x", Math.round(clientX - box.left) + "px");
+        el.style.setProperty("--csx-y", Math.round(clientY - box.top) + "px");
+      }
+      function move(event) {
+        if (event.pointerType === "touch") return;
+        clientX = event.clientX;
+        clientY = event.clientY;
+        if (!frame) frame = raf(paint);
+      }
+      function enter(event) {
+        if (event.pointerType === "touch") return;
+        move(event);
+        el.setAttribute("data-glow", "");
+      }
+      function leave() {
+        el.removeAttribute("data-glow");
+      }
+      el.addEventListener("pointerenter", enter);
+      el.addEventListener("pointermove", move);
+      el.addEventListener("pointerleave", leave);
+      return function () {
+        el.removeEventListener("pointerenter", enter);
+        el.removeEventListener("pointermove", move);
+        el.removeEventListener("pointerleave", leave);
+        if (frame) cancel(frame);
+        frame = 0;
+      };
+    }
+
     function ExamplesSection(props) {
-      var store = props.store;
-      var services = props.services;
-      var launcher = usePromptLauncher(store, services);
-      return h("section", { className: "csu csu-examples", "aria-label": "试试这样问" },
+      var look = EXAMPLES_LOOK;
+      var launcher = usePromptLauncher(props.store, props.services);
+      var panelRef = useRef(null);
+      useEffect(function () {
+        return attachPointerGlow(panelRef.current, typeof window === "undefined" ? null : window);
+      }, []);
+      return h("section", { className: "csu csx", "aria-label": "试试这样问", style: examplesStyle(look, EXAMPLES_BACKGROUNDS) },
         h("style", null, UI_CSS),
-        h("div", { className: "csu-section-head" },
-          h("h4", { className: "csu-section-title" }, "试试这样问"),
-          h("span", { className: "csu-section-hint" }, "点一下会打开新会话并填好问题，可以改完再发送"),
+        h("style", null, EXAMPLES_CSS),
+        h("div", { className: "csx-head" },
+          h("h4", { className: "csx-title" }, "试试这样问"),
+          h("span", { className: "csx-hint" }, "点一下会打开新对话并填好问题，按回车发送"),
         ),
-        h("div", { className: "csu-example-grid" },
-          EXAMPLE_PROMPTS.map(function (prompt) {
-            return h("button", {
-              key: prompt,
-              type: "button",
-              className: "csu-example",
-              disabled: launcher.checking,
-              onClick: function () { launcher.launch(prompt); },
-            },
-              h("span", { className: "csu-example-icon" }, icon("chat")),
-              h("span", { className: "csu-example-text" }, prompt),
-              h("span", { className: "csu-example-go" }, icon("arrow")),
-            );
-          }),
+        h("div", { ref: panelRef, className: "csx-panel" },
+          h("div", { className: "csx-bg", "aria-hidden": "true" }, h("div", { className: "csx-bg-img" })),
+          h("div", { className: "csx-glow", "aria-hidden": "true" }),
+          h("div", { className: "csx-list" },
+            EXAMPLE_PROMPTS.map(function (prompt, index) {
+              return h("button", {
+                key: prompt,
+                type: "button",
+                className: "csx-card",
+                style: { "--csx-i": index },
+                disabled: launcher.checking,
+                onClick: function () { launcher.launch(prompt); },
+              },
+                h("span", { className: "csx-text" },
+                  h("span", { className: "csx-mention" }, h("img", { src: look.icon, alt: "", width: 16, height: 16 }), look.name),
+                  prompt,
+                ),
+                h("span", { className: "csx-go", "aria-hidden": "true" }, icon("next", 16)),
+              );
+            }),
+          ),
         ),
         launcher.dialogs,
       );
@@ -2215,6 +2351,8 @@ window.__ModuleLoader__.load({
     exports.eventDefinition = eventDefinition;
     exports.TRY_PROMPT = TRY_PROMPT;
     exports.EXAMPLE_PROMPTS = EXAMPLE_PROMPTS;
+    exports.EXAMPLES_LOOK = EXAMPLES_LOOK;
+    exports.attachPointerGlow = attachPointerGlow;
 
     exports.apply = function (ctx) {
       // Never fall back to `ctx[svcName]` when `typeof ctx.get === "function"`:
@@ -2261,7 +2399,16 @@ window.__ModuleLoader__.load({
       };
       registerDetail("plugins.detail.actions", "contract-sure-actions", DetailActions);
       registerDetail("plugins.detail.badge", "contract-sure-status", DetailBadge);
-      registerDetail("plugins.detail.section", "contract-sure-examples", ExamplesSection);
+
+      // "试试这样问" goes in this bundle's own cell, right under the README: the host gives that cell no heading
+      // or frame and renders it only on this bundle's page. plugins.detail.section would put the panel at the
+      // very bottom, after components, versions and source.
+      slots.inject("plugins.bundle.config", function () {
+        var Examples = function (props) {
+          return props && props.view === "page" ? h(ExamplesSection, { store: store, services: services }) : null;
+        };
+        return slots.register({ name: "plugins.bundle.config", key: PACKAGE_NAME }, Examples);
+      });
 
       // 3. Register conversation.chat.turnTail ("contract-sure-cards") when uiConversation is present or becomes ready
       var registeredTurnTail = false;

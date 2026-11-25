@@ -1,0 +1,10 @@
+{
+  "meta": {
+    "title": "销售管理",
+    "description": "连接销售管理系统（SalesForge），在对话里查询客户、渠道、项目商机、销售看板、日报周报和销售目标。"
+  },
+  "settings": {
+    "title": "销售管理配置",
+    "serverUrl": "服务器地址"
+  }
+}

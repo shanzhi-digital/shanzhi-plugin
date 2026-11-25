@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { projectEvents } from './event-projection.js';
@@ -311,10 +312,12 @@ function loadClientModule(reactStub, options = {}) {
   vm.runInNewContext(clientSource, sandbox, { filename: 'client.js' });
   assert.ok(loadedDescriptor, 'window.__ModuleLoader__.load should be invoked');
   assert.equal(loadedDescriptor.id, '@local/contract-sure');
-  const exportsObj = loadedDescriptor.factory((id) => {
+  const require = (id) => {
     if (id === 'react') return reactStub;
     throw new Error(`Unexpected require: ${id}`);
-  });
+  };
+  if (options.asset) require.asset = options.asset;
+  const exportsObj = loadedDescriptor.factory(require);
   return exportsObj;
 }
 
@@ -444,7 +447,7 @@ test('client.js registers settings, turnTail and plugin page slots safely even w
   mod.apply(ctx);
   assert.deepEqual(
     registeredSlots.map((s) => s.slotName).sort(),
-    ['conversation.chat.turnTail', 'plugins.detail.actions', 'plugins.detail.badge', 'plugins.detail.section', 'settings.section'],
+    ['conversation.chat.turnTail', 'plugins.bundle.config', 'plugins.detail.actions', 'plugins.detail.badge', 'settings.section'],
   );
 
   const settingsSlot = registeredSlots.find((s) => s.slotName === 'settings.section');
@@ -462,7 +465,6 @@ test('client.js registers settings, turnTail and plugin page slots safely even w
   const expected = {
     'plugins.detail.actions': mod.DetailActions,
     'plugins.detail.badge': mod.DetailBadge,
-    'plugins.detail.section': mod.ExamplesSection,
   };
   const others = [
     { kind: 'bundle', pkg: { name: '@local/datahub-echarts', installed: true, enabled: true, rows: [] } },
@@ -480,6 +482,16 @@ test('client.js registers settings, turnTail and plugin page slots safely even w
     assert.equal(element.type, Component, `${slotName} renders for ${PACKAGE_NAME}`);
     assert.ok(element.props.store && element.props.services);
   }
+
+  // The examples panel sits in this bundle's own keyed cell (under the README), page view only.
+  const examples = registeredSlots.find((s) => s.slotName === 'plugins.bundle.config');
+  assert.equal(examples.meta.name, 'plugins.bundle.config');
+  assert.equal(examples.meta.key, PACKAGE_NAME);
+  const page = examples.component({ view: 'page' });
+  assert.equal(page.type, mod.ExamplesSection);
+  assert.ok(page.props.store && page.props.services);
+  assert.equal(examples.component({ view: 'summary' }), null);
+  assert.equal(examples.component(undefined), null);
 });
 
 test('status badge shows connected, invalid and not-connected states from the shared account store', async () => {
@@ -746,11 +758,11 @@ test('试用 opens a session with the default prompt when an account works, and 
   assert.equal(rpc.count('startAuthorization'), 0);
 
   // An example card uses its own text.
-  const section = registeredSlots.find((s) => s.slotName === 'plugins.detail.section').component;
-  renderer.mount(renderer.h(section, { subject: ownBundle }));
+  const section = registeredSlots.find((s) => s.slotName === 'plugins.bundle.config').component;
+  renderer.mount(renderer.h(section, { view: 'page' }));
   await renderer.settle();
   assert.match(textContent(renderer.tree), /试试这样问/);
-  assert.equal(collectNodes(renderer.tree, (n) => n.type === 'button' && /csu-example/.test(n.props.className)).length, 4);
+  assert.equal(collectNodes(renderer.tree, (n) => n.type === 'button' && /csx-card/.test(n.props.className)).length, 3);
   click(findButton(renderer.tree, mod.EXAMPLE_PROMPTS[1]));
   await renderer.settle();
   assert.equal(sessions[1].options.prompt, mod.EXAMPLE_PROMPTS[1]);
@@ -786,6 +798,164 @@ test('试用 opens a session with the default prompt when an account works, and 
   assert.match(textContent(fallback), /当前页面不支持直接开始新会话，请手动新建会话后输入：/);
   assert.equal(collectNodes(fallback, (n) => n.type === 'textarea')[0].props.value, mod.TRY_PROMPT);
   assert.ok(findButton(fallback, '复制'));
+});
+
+function styleText(tree) {
+  return collectNodes(tree, (n) => n.type === 'style').map(textContent).join('\n');
+}
+
+test('examples panel: each glass card asks its own question, backgrounds come from the package asset route', async () => {
+  const renderer = createRenderer();
+  const asked = [];
+  const mod = loadClientModule(renderer.React, { asset: (ref) => { asked.push(ref); return `/served/${ref}`; } });
+  const sessions = [];
+  const workspace = { startSession: (id, options) => { sessions.push({ id, options }); return Promise.resolve(); } };
+  const rpc = createRpc({ getState: () => stateWith([ZHANG], 'u7') });
+  const store = mod.createAccountStore(() => rpc.connection);
+  renderer.mount(renderer.h(mod.ExamplesSection, { store, services: servicesFor(rpc.connection, { workspace }) }));
+  await renderer.settle();
+
+  assert.deepEqual(asked, [
+    `plugins/${PACKAGE_NAME}/assets/${mod.EXAMPLES_LOOK.backgrounds[0]}`,
+    `plugins/${PACKAGE_NAME}/assets/${mod.EXAMPLES_LOOK.backgrounds[1]}`,
+  ]);
+  const section = collectNodes(renderer.tree, (n) => n.type === 'section')[0];
+  assert.equal(section.props.style['--csx-img-l'], `url("/served/plugins/${PACKAGE_NAME}/assets/${mod.EXAMPLES_LOOK.backgrounds[0]}")`);
+  assert.equal(section.props.style['--csx-img-d'], `url("/served/plugins/${PACKAGE_NAME}/assets/${mod.EXAMPLES_LOOK.backgrounds[1]}")`);
+  assert.equal(section.props.style['--csx-brand-l'], '#047857');
+  assert.equal(section.props.style['--csx-brand-d'], '#34D399');
+  assert.match(textContent(renderer.tree), /点一下会打开新对话并填好问题，按回车发送/);
+
+  const cards = collectNodes(renderer.tree, (n) => n.type === 'button' && /csx-card/.test(n.props.className));
+  assert.equal(cards.length, 3);
+  assert.equal(mod.EXAMPLE_PROMPTS.length, 3);
+  cards.forEach((card, i) => {
+    assert.equal(textContent(card), `履约无忧${mod.EXAMPLE_PROMPTS[i]}`);
+    const img = collectNodes(card, (n) => n.type === 'img')[0];
+    assert.equal(img.props.src, mod.EXAMPLES_LOOK.icon);
+    assert.equal(img.props.alt, '');
+  });
+  for (let i = 0; i < cards.length; i++) {
+    click(collectNodes(renderer.tree, (n) => n.type === 'button' && /csx-card/.test(n.props.className))[i]);
+    await renderer.settle();
+  }
+  assert.deepEqual(sessions.map((s) => plain(s.options)), plain(mod.EXAMPLE_PROMPTS).map((prompt) => ({ prompt, whenDraftExists: 'append' })));
+  assert.equal(rpc.count('startAuthorization'), 0);
+  renderer.unmount();
+});
+
+test('examples panel falls back to its CSS gradient without require.asset or when it throws', async () => {
+  for (const options of [{}, { asset: () => { throw new Error('no route'); } }, { asset: () => '' }]) {
+    const renderer = createRenderer();
+    const mod = loadClientModule(renderer.React, options);
+    const rpc = createRpc({ getState: () => stateWith([], null) });
+    renderer.mount(renderer.h(mod.ExamplesSection, { store: mod.createAccountStore(() => rpc.connection), services: servicesFor(rpc.connection) }));
+    await renderer.settle();
+    const style = collectNodes(renderer.tree, (n) => n.type === 'section')[0].props.style;
+    assert.equal(style['--csx-img-l'], 'none');
+    assert.equal(style['--csx-img-d'], 'none');
+    assert.match(style['--csx-fallback-l'], /^radial-gradient\(.+#e9f4f9$/);
+    assert.match(style['--csx-fallback-d'], /^radial-gradient\(.+#051527$/);
+    const css = styleText(renderer.tree);
+    assert.match(css, /\.csx-panel\{[^}]*background:var\(--csx-fallback\)/);
+    assert.match(css, /\.csx-bg-img\{[^}]*background-image:var\(--csx-img\)/);
+    assert.match(css, /body\[data-ds-dark-theme\] \.csx\{[^}]*--csx-img:var\(--csx-img-d,none\)/);
+    assert.equal(collectNodes(renderer.tree, (n) => n.type === 'button' && /csx-card/.test(n.props.className)).length, 3);
+    renderer.unmount();
+  }
+});
+
+test('examples panel motion: reduced-motion CSS switch, and the pointer light batches moves into one frame', async () => {
+  const renderer = createRenderer();
+  const mod = loadClientModule(renderer.React);
+  const rpc = createRpc({ getState: () => stateWith([ZHANG], 'u7') });
+  renderer.mount(renderer.h(mod.ExamplesSection, { store: mod.createAccountStore(() => rpc.connection), services: servicesFor(rpc.connection) }));
+  await renderer.settle();
+  const css = styleText(renderer.tree);
+  const reduced = css.match(/@media \(prefers-reduced-motion:reduce\)\{(\.csx-.*)\}$/m);
+  assert.ok(reduced, 'a prefers-reduced-motion block exists');
+  assert.match(reduced[1], /\.csx-bg-img\{inset:0;animation:none\}/);
+  assert.match(reduced[1], /\.csx-glow\{display:none\}/);
+  assert.match(reduced[1], /\.csx-card\{animation:none;/);
+  assert.match(reduced[1], /translate:none;scale:none/);
+  assert.match(css, /\.csx-card:focus-visible\{outline:2px solid var\(--csx-brand\)/);
+  renderer.unmount();
+
+  function fakePanel() {
+    const listeners = {};
+    const props = {};
+    const attrs = new Set();
+    return {
+      listeners, props, attrs,
+      addEventListener: (type, fn) => { listeners[type] = fn; },
+      removeEventListener: (type, fn) => { if (listeners[type] === fn) delete listeners[type]; },
+      getBoundingClientRect: () => ({ left: 100, top: 50 }),
+      style: { setProperty: (k, v) => { props[k] = v; } },
+      setAttribute: (k) => attrs.add(k),
+      removeAttribute: (k) => attrs.delete(k),
+    };
+  }
+  function fakeWindow(reduce) {
+    const frames = [];
+    return {
+      frames,
+      matchMedia: (q) => ({ matches: reduce && q === '(prefers-reduced-motion: reduce)' }),
+      requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; },
+      cancelAnimationFrame: () => {},
+    };
+  }
+
+  // Reduced motion: no listeners at all.
+  const still = fakePanel();
+  const detachStill = mod.attachPointerGlow(still, fakeWindow(true));
+  assert.deepEqual(Object.keys(still.listeners), []);
+  detachStill();
+
+  // Several moves before a frame paint once, at the last position, relative to the panel.
+  const panel = fakePanel();
+  const win = fakeWindow(false);
+  const detach = mod.attachPointerGlow(panel, win);
+  panel.listeners.pointerenter({ pointerType: 'mouse', clientX: 110, clientY: 60 });
+  panel.listeners.pointermove({ pointerType: 'mouse', clientX: 150, clientY: 80 });
+  panel.listeners.pointermove({ pointerType: 'mouse', clientX: 300, clientY: 170 });
+  assert.equal(win.frames.length, 1);
+  assert.ok(panel.attrs.has('data-glow'));
+  assert.deepEqual(panel.props, {});
+  win.frames[0]();
+  assert.deepEqual(panel.props, { '--csx-x': '200px', '--csx-y': '120px' });
+  panel.listeners.pointermove({ pointerType: 'touch', clientX: 0, clientY: 0 });
+  assert.equal(win.frames.length, 1, 'touch does not move the light');
+  panel.listeners.pointerleave({ pointerType: 'mouse' });
+  assert.ok(!panel.attrs.has('data-glow'));
+  detach();
+  assert.deepEqual(Object.keys(panel.listeners), []);
+
+  // No element or no window: nothing to attach.
+  assert.equal(typeof mod.attachPointerGlow(null, win), 'function');
+  assert.equal(typeof mod.attachPointerGlow(fakePanel(), null), 'function');
+});
+
+test('the card icon is icon.svg itself, a small flat SVG, and the backgrounds ship under content-hashed names', () => {
+  const { React } = createReactStub();
+  const mod = loadClientModule(React);
+  const svg = readFileSync(join(__dirname, 'icon.svg'), 'utf8');
+  assert.equal(decodeURIComponent(mod.EXAMPLES_LOOK.icon.replace(/^data:image\/svg\+xml,/, '')), svg);
+  assert.ok(Buffer.byteLength(svg) <= 4096, 'icon.svg stays under 4 KB');
+  assert.match(svg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 48 48">/);
+  assert.doesNotMatch(svg, /<script|<image|<filter|href=|stroke|<text|url\((?!#)/i);
+
+  const pkg = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf8'));
+  assert.equal(pkg.exports['./icon'], './icon.svg');
+  assert.equal(pkg.exports['./assets/*'], './lib/assets/*');
+  assert.ok(pkg.files.includes('icon.svg') && pkg.files.includes('lib/assets'));
+  const names = [...mod.EXAMPLES_LOOK.backgrounds];
+  assert.deepEqual(names.map((n) => n.replace(/-[0-9a-f]{12}\.webp$/, '')), ['examples-bg-light', 'examples-bg-dark']);
+  for (const name of names) {
+    const bytes = readFileSync(join(__dirname, 'lib', 'assets', name));
+    assert.equal(bytes.subarray(0, 4).toString('latin1'), 'RIFF');
+    assert.equal(bytes.subarray(8, 12).toString('latin1'), 'WEBP');
+    assert.equal(name.slice(-17, -5), createHash('sha1').update(bytes).digest('hex').slice(0, 12), `${name} is named by its content`);
+  }
 });
 
 test('auth-required tool results project into one card per turn, titled by reason, that connects in place', async () => {
