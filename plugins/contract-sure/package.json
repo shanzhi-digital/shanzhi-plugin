@@ -1,0 +1,61 @@
+{
+  "name": "@local/contract-sure",
+  "version": "0.4.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "履约无忧智能合同履约助手（合同识别入库、三流核对、看板分析与原件预览）",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./assets/*": "./lib/assets/*"
+  },
+  "files": [
+    "index.js",
+    "config-store.js",
+    "credential-store.js",
+    "accounts.js",
+    "tool-output.js",
+    "api-client.js",
+    "doc-reader.js",
+    "prompts.js",
+    "preview-service.js",
+    "event-projection.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "lib/assets",
+    "skills",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test tool-output.test.js api-client.test.js credential-store.test.js doc-reader.test.js accounts.test.js tools.test.js client.test.js skills.test.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-session": ">=0.2.0-0",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.2.0-0",
+    "@deepseek-ai/dsh-home-paths": ">=0.2.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-session": { "optional": true },
+    "@deepseek-ai/dsh-typert-protocol": { "optional": true },
+    "@deepseek-ai/dsh-home-paths": { "optional": true }
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  }
+}

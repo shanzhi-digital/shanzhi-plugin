@@ -12,6 +12,8 @@
 | [公文全流程处理专家](plugins/gongwen/README.md) | `gongwen-skill` | 2.15.0-local.3 | 上游公文工具的本地适配版本，提供生成、检查、修复、模板与版式处理及 DSH 集成 |
 | [数据源](plugins/dsh-datasource/README.md) | `dsh-sql` | 0.9.0-local.13 | 只读数据源接入、源表启停、问题泛化与辅助选表；提供目录、标注与关系存储、全局保存校验 |
 | [数据标注](plugins/dsh-data-annotation/README.md) | `dsh-data-annotation` | 0.1.0-local.11 | 表标注、字段标注、业务主题关系画布、标注确认四步；AI 按主表生成多个业务组合草稿与人工确认；依赖 dsh-sql 0.9.0-local.13 及管理库 v7 |
+| [履约无忧](plugins/contract-sure/README.md) | `@local/contract-sure` | 0.2.1 | 浏览器授权连接履约系统账户（多账户、可吊销），合同 PDF/扫描件识别核对卡、三流流水批量对账、履约看板趋势分析及原件右侧预览 |
+| [EchoMind 会议纪要](plugins/echomind/README.md) | `@local/echomind` | 0.1.1 | 双轨实时录音、本机离线转写与声纹识别、带出处结构化纪要、待办确认推飞书、时间轴双轨音频回放与 DataHub 知识库同步 |
 
 两个数据插件保留各自 DSH 界面，后端业务与 AI 任务接口也可供 Web 同款界面的后端调用。同一部署使用同一套管理库；数据源插件可显式启用仅监听 `127.0.0.1` 的内部 HTTP 端口，默认关闭。AI 任务支持发起、查询、取消，离页不取消执行，具体接入见各插件 README。
 

@@ -1,0 +1,10 @@
+{
+  "meta": {
+    "title": "SalesForge",
+    "description": "Connect to SalesForge to look up and maintain customers, channels, opportunities, daily and weekly reports, and sales targets in chat. Deletions and transfers wait for your confirmation."
+  },
+  "settings": {
+    "title": "SalesForge Settings",
+    "serverUrl": "Server URL"
+  }
+}

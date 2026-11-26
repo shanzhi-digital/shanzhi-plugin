@@ -13,6 +13,25 @@ function events(value = rows, overrides = {}) {
     { type: 'tool/result', seq: 4, surfaceOp: 'append', data: { message: { source: { callId: 'q1' }, content: [{ type: 'text', text: JSON.stringify(value) }], ...overrides } } }];
 }
 
+/** 和宿主 snapshotJsonValue 同样的规则：只能是普通对象、数组、字符串、布尔、null 和有限数（不含 -0），不能有 undefined。 */
+function assertHostJson(value, path = '$') {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+  if (typeof value === 'number') {
+    assert.ok(Number.isFinite(value) && !Object.is(value, -0), `${path} 不是有限数`);
+    return;
+  }
+  assert.equal(typeof value, 'object', `${path} 的类型是 ${typeof value}`);
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertHostJson(item, `${path}[${index}]`));
+    return;
+  }
+  assert.ok([Object.prototype, null].includes(Object.getPrototypeOf(value)), `${path} 不是普通对象`);
+  for (const key of Reflect.ownKeys(value)) {
+    assert.equal(typeof key, 'string', `${path} 有非字符串键`);
+    assertHostJson(value[key], `${path}.${key}`);
+  }
+}
+
 test('normalizes SQL MCP, API JSON and matrices without changing raw cells', () => {
   for (const value of [rows, { rows }, { data: rows }, { columns: ['region', 'enroll'], rows: [['东区', 12], ['西区', 7]] },
     { fields: [{ name: 'region', dataTypeID: 25 }, { name: 'enroll', dataTypeID: 23 }], rows }]) {
@@ -35,7 +54,8 @@ test('source is bound to completed current-turn call, preserving SQL and making 
   assert.equal(result.source.callId, 'q1');
   assert.match(result.source.sql, /^select/);
   assert.deepEqual(result.followUps, args.followUps);
-  assert.throws(() => chartFromEvents({ ...args, sourceCallId: 'other-session' }, events()), /sourceCallId/);
+  // 给错的 ID：本轮只有一个可出表的来源时直接用它。
+  assert.equal(chartFromEvents({ ...args, sourceCallId: 'other-session' }, events()).source.callId, 'q1');
   assert.throws(() => chartFromEvents(args, [...events(), { type: 'turn/end' }]), /本轮/);
   assert.throws(() => chartFromEvents(args, [...events(), { type: 'turn/start' }]), /当前回合/);
   assert.throws(() => chartFromEvents(args, events().slice(0, -1)), /尚未/);
@@ -114,6 +134,19 @@ test('automatic source selection is unique; ambiguity returns real candidate IDs
     data: event.type === 'tool/call' ? { ...event.data, callId: 'q2' } : { message: { ...event.data.message, source: { callId: 'q2' } } } }));
   assert.throws(() => chartFromEvents(auto, [...events(), ...second]), /q1.*q2/);
   assert.throws(() => chartFromEvents(auto, events().slice(0, 2)), /没有唯一/);
+  // 给错的 ID 且有多个来源：报错里列出真实候选；本轮没有来源：仍然拒绝。
+  assert.throws(() => chartFromEvents({ ...args, sourceCallId: 'call_made_up' }, [...events(), ...second]), /call_made_up.*q1.*q2/);
+  assert.throws(() => chartFromEvents({ ...args, sourceCallId: 'call_made_up' }, events().slice(0, 2)), /sourceCallId 必须引用/);
+});
+
+test('results from non-DataHub tools are valid host JSON and carry no datasourceId', () => {
+  // 例如履约的 contract_query、销售管理的 sales_dashboard：结果里没有数据源 ID。
+  const contracts = { columns: [{ name: '合同编号', title: '合同编号' }, { name: '完成率（%）', title: '完成率（%）' }, { name: '备注', title: '备注' }],
+    rows: [{ 合同编号: 'HT-001', '完成率（%）': 0, 备注: '' }, { 合同编号: 'HT-002', '完成率（%）': 2.05, 备注: null }] };
+  const result = chartFromEvents(args, events(contracts));
+  assert.equal(Object.hasOwn(result, 'datasourceId'), false);
+  assertHostJson(result);
+  assertHostJson(chartFromEvents(args, events()));
 });
 
 test('follow-ups may be omitted; explicitly supplied suggestions must clean to three valid questions', () => {

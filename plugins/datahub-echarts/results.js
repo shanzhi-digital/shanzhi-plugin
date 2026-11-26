@@ -97,7 +97,14 @@ export function chartFromEvents(args, events) {
   if (!canPresentResults(events)) throw new Error('仅支持本轮未结束的查询结果，且用户未要求仅文字回答。');
   const start = events.findLastIndex(event => event.type === 'turn/start');
   const active = events.slice(start + 1);
-  if (!args.sourceCallId) {
+  const callsFor = id => active.filter(event => event.type === 'tool/call' &&
+    (event.data?.callId === id || event.data?.callId?.split('|')[0] === id));
+  const realCall = id => {
+    const found = callsFor(id);
+    return found.length === 1 && !['query_result_chart', 'datahub_chart'].includes(found[0].data.name);
+  };
+  // 没给 sourceCallId，或给的 ID 对不上本轮的查询调用：本轮只有一个可出表的来源就用它，否则列出候选让模型重选。
+  if (!args.sourceCallId || !realCall(args.sourceCallId)) {
     const eligible = active.filter(event => event.type === 'tool/call' && !['query_result_chart', 'datahub_chart'].includes(event.data?.name))
       .filter(call => {
         const results = active.filter(event => event.type === 'tool/result' && event.seq > call.seq && event.surfaceOp === 'append' &&
@@ -107,13 +114,14 @@ export function chartFromEvents(args, events) {
           try { assertSuccess(root); normalizeTable(select(root, args.resultPath)); return true; } catch { return false; }
         });
       });
+    const given = args.sourceCallId ? `sourceCallId「${args.sourceCallId}」不是本轮的查询工具调用。` : '';
     if (eligible.length !== 1) throw new Error(eligible.length
-      ? `本轮有多个表格来源，请指定 sourceCallId：${eligible.map(call => `${call.data.name}: ${call.data.callId}`).join('；')}`
-      : '本轮没有唯一可识别的已完成表格结果，请先查询或指定 sourceCallId 与 resultPath。');
+      ? `${given || '本轮有多个表格来源，'}请指定 sourceCallId：${eligible.map(call => `${call.data.name}: ${call.data.callId}`).join('；')}`
+      : given ? `sourceCallId 必须引用当前回合的一个真实查询工具调用；本轮也没有可识别的已完成表格结果。`
+        : '本轮没有唯一可识别的已完成表格结果，请先查询或指定 sourceCallId 与 resultPath。');
     args = { ...args, sourceCallId: eligible[0].data.callId };
   }
-  const calls = active.filter(event => event.type === 'tool/call' &&
-    (event.data?.callId === args.sourceCallId || event.data?.callId?.split('|')[0] === args.sourceCallId));
+  const calls = callsFor(args.sourceCallId);
   if (calls.length !== 1 || ['query_result_chart', 'datahub_chart'].includes(calls[0].data.name)) {
     throw new Error('sourceCallId 必须引用当前回合的一个真实查询工具调用。');
   }

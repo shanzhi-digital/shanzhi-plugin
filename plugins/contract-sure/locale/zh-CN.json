@@ -1,0 +1,13 @@
+{
+  "meta": {
+    "title": "履约无忧",
+    "description": "连接履约无忧合同履约系统，提供合同 PDF/扫描件识别核对、三流流水对账、履约看板查询与原件预览。"
+  },
+  "settings": {
+    "title": "履约无忧配置",
+    "serverUrl": "后端接口地址",
+    "apiToken": "长期访问令牌",
+    "ocrApiUrl": "DeepSeek OCR 地址",
+    "ocrApiKey": "DeepSeek OCR API Key"
+  }
+}
