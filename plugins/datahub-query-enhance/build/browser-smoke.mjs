@@ -53,7 +53,27 @@ try {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/*', route => route.abort());
-  await page.setContent('<html lang="zh-CN"><meta charset="utf-8"><body style="margin:64px;font-family:Microsoft YaHei,sans-serif;color:#302d28"><main style="max-width:760px"><p>浏览器烟测：以下结果均为合成夹具。</p><p>查询结果与数据洞察正文。</p><div id="root"></div><p id="actions" style="color:#999;font-size:12px">复制 · 反馈</p></main></body></html>');
+  // Mirror the installed host's flow spacing, turn-tail layout and slot wrappers.
+  await page.setContent(`<html lang="zh-CN"><meta charset="utf-8"><style>
+    body{margin:32px;font-family:Microsoft YaHei,sans-serif;color:#302d28}
+    main{max-width:760px;margin:auto}p{margin:0}
+    [data-slot="conversation.chat.flow"]{display:flex;flex-direction:column}
+    [data-slot="conversation.chat.flow"]>div+div{margin-top:var(--dsh-chat-flow-gap,4px)}
+    [data-chat-group-part="response"]+[data-chat-flow-kind]{--dsh-chat-flow-gap:12px}
+    [data-slot="conversation.chat.turnTail"],#root{display:contents}
+    [data-turn-tail]{display:flex;flex-direction:column;gap:16px}
+    #results{margin:16px 0}
+    #actions{margin:4px 0 0 -6px;color:#999;font-size:12px}
+    #suggestions{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin-top:12px;font-size:12px}
+    #suggestions span{padding:5px 12px;border:1px solid #eee;border-radius:16px}
+  </style><main><p>浏览器烟测：以下结果均为合成夹具。</p>
+    <div data-slot="conversation.chat.flow">
+      <div data-chat-group-part="response"><p>查询结果与数据洞察正文。</p></div>
+      <div data-chat-flow-kind="turn-tail"><div data-slot="conversation.chat.node"><div data-turn-tail="1">
+        <div id="root" data-slot="conversation.chat.turnTail"></div><p id="actions">复制 · 反馈</p>
+      </div></div></div>
+      <div data-chat-flow-kind="turn-tail" id="other-tail"><div data-turn-tail="2">其他回合</div></div>
+    </div></main></html>`);
   await page.addScriptTag({ content: runtime.outputFiles[0].text });
   await page.evaluate(() => {
     window.definitions = [];
@@ -68,16 +88,48 @@ try {
   assert.equal(await page.evaluate(() => window.definitions.length), 2);
   assert.equal(await page.evaluate(() => window.slot.name), 'conversation.chat.turnTail');
   async function render(name) {
-    await page.evaluate(({ key, trust }) => window.root.render(window.React.createElement(window.Tail, { seq: 100, turn: { data: new Map([[key, trust]]) } })), { key: KEY, trust: fixtures[name] });
+    await page.evaluate(({ key, trust }) => {
+      const h = window.React.createElement;
+      window.root.render(h(window.React.Fragment, null,
+        h('div', { id: 'results', style: { margin: '16px 0' } }, h('section', null, '查询结果表格'),
+          h('div', { id: 'suggestions', 'aria-label': '后续问题' }, h('p', null, '进一步分析'),
+            h('span', null, '各区县的基础改造项数与可选改造项数分别是多少？'),
+            h('span', null, '把各区县的改造费用、补助金额与达标率放在一起对比看看'))),
+        h(window.Tail, { seq: 100, turn: { data: new Map([[key, trust]]) } })));
+    }, { key: KEY, trust: fixtures[name] });
   }
   await render('trusted');
   await page.getByText('可信指标', { exact: true }).waitFor();
   const help = page.getByRole('button', { name: '可信指标说明', exact: true });
+  const layout = await page.evaluate(() => {
+    const stylesheet = document.querySelector('.dqe-trust style').sheet;
+    stylesheet.disabled = true;
+    const previousGap = document.querySelector('.dqe-trust').getBoundingClientRect().top - document.querySelector('#suggestions').getBoundingClientRect().bottom;
+    stylesheet.disabled = false;
+    const badge = document.querySelector('.dqe-trust').getBoundingClientRect();
+    const above = document.querySelector('#suggestions').getBoundingClientRect();
+    const icon = document.querySelector('.dqe-trust-help svg')?.getBoundingClientRect();
+    return { gap: badge.top - above.bottom, previousGap, icon: icon ? { width: icon.width, height: icon.height } : null,
+      otherTailGap: getComputedStyle(document.querySelector('#other-tail')).marginTop };
+  });
+  assert.equal(layout.previousGap, 32, 'Host flex gap and result panel margin reproduce the reported spacing');
+  assert.equal(layout.gap, 12, 'Trust status sits 12px below the follow-up list');
+  assert.deepEqual(layout.icon, { width: 14, height: 14 });
+  assert.equal(layout.otherTailGap, '4px', 'Unrelated turn tails retain host spacing');
+  assert.equal(await help.evaluate(button => getComputedStyle(button).borderTopWidth), '0px');
+  await page.screenshot({ path: join(output, 'trusted-compact.png') });
   assert.equal(await help.getAttribute('aria-expanded'), 'false');
   await help.click();
   await page.getByText('可信指标是指统计口径、数据来源已经人工确认的指标', { exact: true }).waitFor();
   await page.screenshot({ path: join(output, 'trusted.png') });
   await help.press('Escape');
+  assert.equal(await help.getAttribute('aria-expanded'), 'false');
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await help.evaluate(button => button.matches(':focus-visible') && getComputedStyle(button).outlineStyle !== 'none'), true);
+  await help.press('Enter');
+  assert.equal(await help.getAttribute('aria-expanded'), 'true');
+  await help.click();
   assert.equal(await help.getAttribute('aria-expanded'), 'false');
   await render('partial');
   await page.getByText('部分可信', { exact: true }).waitFor();
@@ -88,9 +140,14 @@ try {
   assert.equal(await page.locator('.dqe-trust button').count(), 0);
   const badge = await page.locator('.dqe-trust').boundingBox();
   const actions = await page.locator('#actions').boundingBox();
-  assert.ok(Math.abs(badge.x - actions.x) < 1 && badge.y < actions.y, 'Badge is left-aligned above actions');
+  assert.ok(Math.abs(badge.x - actions.x - 6) < 1 && badge.y < actions.y, 'Badge is aligned with content above the host action row');
   await page.screenshot({ path: join(output, 'untrusted.png') });
   await page.setViewportSize({ width: 390, height: 600 });
+  await render('trusted');
+  await page.getByRole('button', { name: '可信指标说明', exact: true }).click();
+  await page.getByText('可信指标是指统计口径、数据来源已经人工确认的指标', { exact: true }).waitFor();
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+  await page.screenshot({ path: join(output, 'trusted-narrow.png') });
   await render('expression');
   await page.getByText('数据由AI提取，注意辨别', { exact: true }).waitFor();
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
@@ -98,7 +155,8 @@ try {
   await page.locator('.dqe-trust').waitFor({ state: 'detached' });
   await render('empty');
   assert.equal(await page.locator('.dqe-trust').count(), 0);
+  assert.equal(await page.locator('#results').evaluate(element => getComputedStyle(element).marginBottom), '16px', 'Result margin is unchanged when no trust badge is rendered');
   assert.deepEqual(errors, []);
-  writeFileSync(join(output, 'result.json'), JSON.stringify({ passed: true, scenarios: Object.keys(fixtures), browser: browser.version() }, null, 2));
+  writeFileSync(join(output, 'result.json'), JSON.stringify({ passed: true, scenarios: Object.keys(fixtures), layout, browser: browser.version() }, null, 2));
   console.log(`Browser smoke passed: ${Object.keys(fixtures).join(', ')}`);
 } finally { await browser.close(); }
