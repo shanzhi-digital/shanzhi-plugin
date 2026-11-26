@@ -182,3 +182,22 @@ test('可编辑业务提示词与固定工具协议组合，首次和重试都�
   }
   assert.ok(questionPrompt().includes(DEFAULT_PROMPT));
 });
+
+test('独立答题提示词与泛化配置隔离，配置读取失败也不影响查询任务', async () => {
+  let snapshot, reads = 0;
+  const routes = createRoutes({ store: {}, query: {}, flow: { prune() {} }, tasks: {
+    tasks: new Map(), _prune() {}, start(input) { snapshot = input; return { taskId: 'answer-task', kind: input.kind }; },
+  }, settings: { async get() { reads++; throw new Error('泛化配置损坏'); } } });
+  const endpoint = routes.find(route => route.path.endsWith('/ai-tasks'));
+  const response = await endpoint.fetch(request('ai-tasks', { kind: 'answer', sourceId: 'source', questions: [{ id: 'q1', version: 1 }] }));
+  assert.equal(response.status, 202);
+  assert.equal(reads, 0);
+  assert.equal(snapshot.kind, 'answer');
+  for (const retry of [false, true]) {
+    const message = questionPrompt({ ...snapshot, retry });
+    assert.match(message, /无论是否已有答案都重新执行真实查询/);
+    assert.match(message, /queryIds 必须属于该条问题/);
+    assert.match(message, /1～3/);
+    assert.doesNotMatch(message, /15～20|已存在的答案不改写/);
+  }
+});

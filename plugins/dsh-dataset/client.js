@@ -32,7 +32,7 @@ window.__ModuleLoader__.load({
 .dsh-qs .qs-muted{color:var(--dsw-alias-label-secondary);font-size:12px}.dsh-qs .qs-button{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--dsw-alias-border-l4);border-radius:7px;padding:6px 12px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);white-space:nowrap;line-height:1.5}
 .dsh-qs .qs-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.dsh-qs .qs-button.primary{background:var(--dsw-alias-button-primary-fill);border-color:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}.dsh-qs .qs-button.danger{color:var(--dsw-alias-state-error-primary)}
 .dsh-qs .qs-table-wrap{overflow:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:var(--dsw-alias-bg-layer-1)}.dsh-qs table{border-collapse:collapse;width:100%;min-width:780px;text-align:left;font-size:13px;table-layout:fixed;color:var(--dsw-alias-label-primary)}
-.dsh-qs th{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform);white-space:nowrap}.dsh-qs th,.dsh-qs td{padding:12px 14px;border-bottom:1px solid var(--dsw-alias-border-l2);vertical-align:middle;overflow-wrap:anywhere}.dsh-qs tbody tr:last-child td{border-bottom:0}.dsh-qs tbody tr:nth-child(even){background:var(--dsw-alias-bg-base)}.dsh-qs th:first-child{width:44px}.dsh-qs th:last-child{width:160px}.dsh-qs .qs-main-table th:nth-child(4){width:140px}.dsh-qs .qs-main-table th:nth-child(5){width:100px}.dsh-qs .qs-results th:last-child{width:28%}.dsh-qs .qs-assessment{color:var(--dsw-alias-label-secondary)}.dsh-qs .qs-row-actions .qs-evaluate{border:0;background:transparent;padding:3px 0}
+.dsh-qs th{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform);white-space:nowrap}.dsh-qs th,.dsh-qs td{padding:12px 14px;border-bottom:1px solid var(--dsw-alias-border-l2);vertical-align:middle;overflow-wrap:anywhere}.dsh-qs tbody tr:last-child td{border-bottom:0}.dsh-qs tbody tr:nth-child(even){background:var(--dsw-alias-bg-base)}.dsh-qs th:first-child{width:44px}.dsh-qs th:last-child{width:240px}.dsh-qs .qs-main-table th:nth-child(4){width:140px}.dsh-qs .qs-main-table th:nth-child(5){width:100px}.dsh-qs .qs-results th:last-child{width:28%}.dsh-qs .qs-assessment{color:var(--dsw-alias-label-secondary)}.dsh-qs .qs-row-actions .qs-evaluate{border:0;background:transparent;padding:3px 0}
 .dsh-qs .qs-empty{padding:32px 12px;text-align:center;color:var(--dsw-alias-label-secondary)}.dsh-qs .qs-text{white-space:pre-wrap;overflow-wrap:anywhere}.dsh-qs .qs-tag{display:inline-block;border:1px solid var(--dsw-alias-border-l2);border-radius:5px;padding:1px 6px;font-size:11px;color:var(--dsw-alias-label-secondary);margin:4px 5px 0 0}
 .dsh-qs .qs-pagination{margin-top:10px}.dsh-qs .qs-notice{padding:9px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:7px;background:var(--dsw-alias-interactive-bg-hover-danger);margin:8px 0 12px;overflow-wrap:anywhere}.dsh-qs .qs-error{color:var(--dsw-alias-state-error-primary)}
 .dsh-qs .qs-answer-preview{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden}.dsh-qs .qs-status{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 14px;margin:0 0 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:var(--dsw-alias-bg-layer-1)}.dsh-qs .qs-status-main{display:grid;gap:6px;flex:1;min-width:200px}.dsh-qs .qs-status progress{width:min(360px,100%);height:6px;accent-color:var(--dsw-alias-brand-primary)}.dsh-qs .qs-status .qs-notice{margin:0}.dsh-qs .qs-links{display:grid;gap:7px}.dsh-qs .qs-links strong{font-weight:500}.dsh-qs .qs-row-actions{display:flex;gap:6px}.dsh-qs .qs-row-actions button{padding:3px 8px;font-size:12px}
@@ -161,8 +161,8 @@ window.__ModuleLoader__.load({
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
         return () => window.clearInterval(timer);
       }, [task.taskId, task.status]);
-      const labels = { running: '正在处理', cancelling: '正在取消', succeeded: '查询完成', failed: '任务失败', cancelled: '已取消' };
-      const phases = { reading: '正在读取结构', planning: '正在生成候选问题', answering: '正在查询答案', done: '查询完成' };
+      const labels = { running: task.kind === 'answer' ? '正在查询答案' : '正在处理', cancelling: '正在取消', succeeded: '查询完成', failed: task.kind === 'answer' ? '查询任务失败' : '任务失败', cancelled: '已取消' };
+      const phases = { reading: task.kind === 'answer' ? '正在准备查询' : '正在读取结构', planning: task.kind === 'answer' ? '正在准备查询' : '正在生成候选问题', answering: '正在查询答案', done: '查询完成' };
       const progress = task.progress;
       const elapsed = Math.max(0, Math.floor(((active(task) ? now : Date.parse(task.finishedAt)) - Date.parse(task.startedAt)) / 1000));
       const measured = ['answering', 'done'].includes(progress?.phase) && progress.total > 0;
@@ -180,15 +180,15 @@ window.__ModuleLoader__.load({
           active(task) && button(task.status === 'cancelling' ? '正在取消…' : '取消操作', onCancel, { disabled: busy || task.status === 'cancelling' }),
           task.sessionId && onOpenSession && button('查看对话', () => onOpenSession(task.sessionId))));
     }
-    function ResultDialog({ items, chosen, onChoose, onClose, onSave, disabled, canSave, error }) {
+    function ResultDialog({ items, chosen, onChoose, onClose, onSave, disabled, canSave, error, kind }) {
       const valid = items.filter(savable);
-      return h(Dialog, { title: '泛化结果', onClose, busy: disabled, wide: true, testId: 'result-dialog',
+      return h(Dialog, { title: kind === 'answer' ? '查询结果' : '泛化结果', onClose, busy: disabled, wide: true, testId: 'result-dialog',
         footer: h(React.Fragment, null, button('关闭', onClose, { disabled }), button('保存所选结果', onSave, { className: 'qs-button primary', disabled: disabled || !canSave || !valid.some(({ key }) => chosen.has(key)) })) },
       notice(error), h(DataTable, { results: true, testId: 'combined-results', labels: [
         h(SelectAll, { label: '全选结果', rows: valid.map((item) => ({ id: item.key })), chosen, disabled, onChange: (value) => onChoose(valid.map(({ key }) => key), value) }), '问题', '答案', '关联表'],
       rows: items.map((item) => h('tr', { key: item.key },
         cell(check(`选择结果 ${item.text}`, chosen.has(item.key), (value) => onChoose([item.key], value), { disabled: disabled || !savable(item) })),
-        cell(h('div', null, h('div', { className: 'qs-text' }, item.text), h('span', { className: 'qs-tag' }, item.kind === 'updates' ? '补答' : '泛化'))),
+        cell(h('div', null, h('div', { className: 'qs-text' }, item.text), kind !== 'answer' && h('span', { className: 'qs-tag' }, item.kind === 'updates' ? '补答' : '泛化'))),
         cell(h('div', { className: `qs-text${item.error ? ' qs-error' : ''}` }, item.error ? errorText(item.error) : item.answer || '—')),
         cell(h(TableLinks, { links: item.links })))) }));
     }
@@ -284,9 +284,9 @@ window.__ModuleLoader__.load({
       const hasFailures = results.some((item) => item.error);
       const validUpdates = updates.filter((item) => savable(item) && updateIds.has(item.id)).map(({ id }) => id);
       const validCandidates = candidates.filter((item) => savable(item) && candidateIds.has(item.id)).map(({ id }) => id);
-      const start = () => {
-        if (locked || !sourceId || !selected.length || hasResults) return;
-        void perform('start', 'ai-tasks', { sourceId, questions: selected.map(({ id, version }) => ({ id, version })) }, (value) => {
+      const start = (kind = 'generalize', questions = selected) => {
+        if (locked || !sourceId || !questions.length || hasResults) return;
+        void perform('start', 'ai-tasks', { ...(kind === 'answer' ? { kind } : {}), sourceId, questions: questions.map(({ id, version }) => ({ id, version })) }, (value) => {
           acceptTask(value.task); setMonitor((current) => current + 1);
         });
       };
@@ -302,24 +302,26 @@ window.__ModuleLoader__.load({
         cell(h('div', null, h('div', { className: 'qs-text' }, item.text), h('span', { className: 'qs-tag' }, origin(item)))),
         cell(h('div', { className: 'qs-text qs-answer-preview' }, item.answer || '—')),
         cell(h('span', { className: 'qs-assessment' }, '—')), cell(h('span', { className: 'qs-assessment' }, '—')),
-        cell(h('div', { className: 'qs-row-actions' }, button('评测', undefined, { disabled: true, className: 'qs-button qs-evaluate', 'aria-label': `评测 ${item.text}`, title: '暂未开放' }), button('编辑', () => setEditing({ question: item }), { disabled: locked, 'aria-label': `编辑 ${item.text}` }),
+        cell(h('div', { className: 'qs-row-actions' }, button(item.answer?.trim() ? '重新查询答案' : '查询答案', () => start('answer', [item]), { disabled: locked || !sourceId || hasResults, 'aria-label': `${item.answer?.trim() ? '重新查询答案' : '查询答案'} ${item.text}` }),
+          button('评测', undefined, { disabled: true, className: 'qs-button qs-evaluate', 'aria-label': `评测 ${item.text}`, title: '暂未开放' }), button('编辑', () => setEditing({ question: item }), { disabled: locked, 'aria-label': `编辑 ${item.text}` }),
           button('删除', () => setDeleting([item]), { disabled: locked, 'aria-label': `删除 ${item.text}`, className: 'qs-button danger' })))));
       return h('div', { className: 'dsh-qs', 'data-testid': 'question-set-page' }, h('style', null, css),
-        h('header', { className: 'qs-header' }, h('h1', null, '问题集')),
+        h('header', { className: 'qs-header' }, h('h1', null, '数据集')),
         h('div', { className: 'qs-content' }, h('div', { className: 'qs-wrap' },
         notice(error), task && h(TaskStatus, { task, busy: !!busy, onOpenSession: openSession,
           resultCount: results.length, successCount: results.filter(savable).length, hasFailures,
           onView: () => setDialog('results'), onSave: () => saveResults(true), onRetry: retry, onDiscard: discard,
           onCancel: () => void perform('cancel', 'ai-tasks/cancel', { taskId: task.taskId }, (value) => { acceptTask(value.task); setMonitor((current) => current + 1); }) }),
         h('div', { className: 'qs-source-row' },
-          h('select', { 'aria-label': '泛化数据源', value: sourceId, disabled: locked || hasResults, onChange: (event) => { acceptTask(null); setSourceId(event.target.value); setError(null); } },
+          h('select', { 'aria-label': '数据源', value: sourceId, disabled: locked || hasResults, onChange: (event) => { acceptTask(null); setSourceId(event.target.value); setError(null); } },
             !sources.length && h('option', { value: '' }, '暂无数据源'), sources.map((source) => h('option', { key: source.id, value: source.id }, source.name)))),
         h('div', { className: 'qs-toolbar' },
           h('div', { className: 'qs-filters' },
             h('div', { className: 'qs-origin-filter', role: 'group', 'aria-label': '问题来源' },
               [['all', '全部'], ['original', '用户'], ['generated', 'AI']].map(([value, label]) => button(label, () => { setOriginFilter(value); setPage(1); }, { key: value, 'aria-pressed': originFilter === value })))),
           h('div', { className: 'qs-actions qs-toolbar-actions' },
-            button(busy === 'start' ? '正在启动…' : '泛化问题', start, { disabled: locked || !sourceId || !selected.length || hasResults }),
+            button('批量查询答案', () => start('answer'), { disabled: locked || !sourceId || !selected.length || hasResults }),
+            button(busy === 'start' ? '正在启动…' : '泛化问题', () => start(), { disabled: locked || !sourceId || !selected.length || hasResults }),
             button('泛化提示词', () => setDialog('prompt')),
             button('批量评测', undefined, { disabled: true, title: '暂未开放' }),
             button('新增问题', () => setEditing({ question: null }), { disabled: locked, className: 'qs-button primary' }))),
@@ -336,7 +338,7 @@ window.__ModuleLoader__.load({
         h('nav', { className: 'qs-pagination', 'aria-label': '问题分页' }, h('span', { className: 'qs-muted' }, `${filtered.length} 条 · 第 ${currentPage} / ${lastPage} 页`),
           h('div', { className: 'qs-actions' }, button('上一页', () => setPage(currentPage - 1), { disabled: currentPage === 1 }), button('下一页', () => setPage(currentPage + 1), { disabled: currentPage === lastPage }))),
         dialog === 'prompt' && h(PromptDialog, { onClose: () => setDialog(null) }),
-        dialog === 'results' && task && h(ResultDialog, { items: results, chosen: resultChosen, onChoose: chooseResults, onClose: () => setDialog(null),
+        dialog === 'results' && task && h(ResultDialog, { kind: task.kind, items: results, chosen: resultChosen, onChoose: chooseResults, onClose: () => setDialog(null),
           onSave: () => saveResults(), disabled: !!busy, canSave: task.status === 'succeeded', error }),
         editing && h(QuestionDialog, { question: editing.question, onClose: () => setEditing(null), onSaved: async (signal) => { await refreshQuestions(signal); if (!signal.aborted) setEditing(null); } }),
         deleting && h(DeleteDialog, { items: deleting, onClose: () => setDeleting(null), onRemoved: (id) => { setItems((current) => current.filter((item) => item.id !== id)); setChosen((current) => withChecked(current, [id], false)); } }))));
@@ -347,7 +349,7 @@ window.__ModuleLoader__.load({
       const QuestionIcon = () => h('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.65, 'aria-hidden': true },
         h('path', { d: 'M5 3h14v18H5zM8 7h8M8 11h8M8 15h5' }));
       ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'question-set' }, Page));
-      ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: 'question-set', order: 5.5, label: '问题集' }, QuestionIcon));
+      ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: 'question-set', order: 5.5, label: '数据集' }, QuestionIcon));
     }
     return { name: 'question-set', inject: ['slots', 'layout'], apply };
   },

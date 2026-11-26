@@ -232,3 +232,78 @@ test('任务路由直接接收任意来源问题并隔离内部重试种子', as
   assert.equal(tasks.get(task.taskId).status, 'succeeded');
   await tasks.close();
 });
+
+test('独立查询重新回答全部所选问题，不生成候选且保存前保留原数据', async () => {
+  const fx = fixture(async ({ call }) => {
+    const { items } = await call({ operation: 'read' });
+    assert.deepEqual(items.map(item => item.id), ['q1', 'q2']);
+    assert.ok(items.every(item => item.answer === ''));
+    await assert.rejects(call({ operation: 'plan', candidates: [{ text: '不应新增的问题' }] }), /不能生成候选/);
+    await assert.rejects(call({ operation: 'answer', itemId: 'q2', answer: '旧答案', queryIds: [] }), /成功查询/);
+    for (const item of items) await answer(call, item);
+    await call({ operation: 'finish' });
+  });
+  const result = await fx.run({ kind: 'answer', sourceId: 'source', questions: refs });
+  assert.equal(result.candidates.length, 0);
+  assert.equal(result.updates.length, 2);
+  assert.equal(fx.calls.length, 2);
+  assert.equal(fx.commits.length, 0);
+  assert.equal((await fx.store.list())[1].answer, '已有答案');
+  assert.ok(fx.reports.every(report => report.progress?.phase !== 'planning'));
+  assert.match(fx.prompts[0], /不调用 plan/);
+  assert.doesNotMatch(fx.prompts[0], /15～20|已存在的答案不改写/);
+  await fx.flow.save({ taskId: 'task1', updateIds: ['q2'] });
+  assert.deepEqual(fx.commits[0].updates.map(item => item.id), ['q2']);
+  assert.equal(fx.commits[0].updates[0].links[0].tableId, 't1');
+  assert.deepEqual(fx.commits[0].candidates, []);
+});
+
+test('独立查询失败保留旧答案，重试保留类型及成功项，仅重查失败项', async () => {
+  let stage = 0;
+  const fx = fixture(async ({ call }) => {
+    const { items } = await call({ operation: 'read' });
+    if (stage++ === 0) {
+      await answer(call, items[0]);
+      await assert.rejects(call({ operation: 'query', itemId: 'q2', sql: 'broken' }), /SQL失败/);
+      await call({ operation: 'fail-item', itemId: 'q2', error: '数据库查询失败' });
+    } else {
+      assert.deepEqual(items.map(item => item.id), ['q2']);
+      await answer(call, items[0]);
+    }
+    await call({ operation: 'finish' });
+  });
+  const first = await fx.run({ kind: 'answer', sourceId: 'source', questions: refs });
+  assert.equal((await fx.store.list())[1].answer, '已有答案');
+  await assert.rejects(fx.flow.save({ taskId: 'task1', updateIds: ['q2'] }), /成功查询/);
+  const retry = fx.flow.retry('task1');
+  assert.equal(retry.kind, 'answer');
+  const second = await fx.run(retry, new AbortController().signal, 'task2');
+  assert.deepEqual(second.updates[0], first.updates[0]);
+  assert.equal(second.updates[1].answer, '床位合计12张。');
+  assert.deepEqual(second.candidates, []);
+  assert.match(fx.prompts[1], /本次是失败项重试/);
+  assert.doesNotMatch(fx.prompts[1], /15～20/);
+});
+
+test('查询任务路由校验类型，快照及恢复返回 answer 类型并保持同源互斥', async t => {
+  const fx = fixture(async ({ call }) => {
+    for (const item of (await call({ operation: 'read' })).items) await answer(call, item);
+    await call({ operation: 'finish' });
+  });
+  const tasks = new AiTasks({ validate: input => fx.flow.validate(input), identify: input => ({ sourceId: input.sourceId, kind: input.kind ?? 'generalize' }), execute: (...args) => fx.flow.run(...args) });
+  t.after(() => tasks.close());
+  const endpoint = createRoutes({ store: fx.store, query: fx.query, flow: fx.flow, tasks }).find(route => route.path.endsWith('/ai-tasks'));
+  const request = value => new Request('http://localhost/api/question-set/ai-tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
+  for (const kind of ['invalid', '', 1]) assert.equal((await endpoint.fetch(request({ sourceId: 'source', questions: refs, kind }))).status, 400);
+  const response = await endpoint.fetch(request({ sourceId: 'source', questions: refs, kind: 'answer' }));
+  assert.equal(response.status, 202);
+  const { task } = await response.json();
+  assert.equal(task.kind, 'answer');
+  const conflict = await endpoint.fetch(request({ sourceId: 'source', questions: refs }));
+  assert.equal(conflict.status, 409);
+  await tasks.tasks.get(task.taskId).done;
+  const restored = await (await endpoint.fetch(new Request('http://localhost/api/question-set/ai-tasks?sourceId=source'))).json();
+  assert.equal(restored.task.kind, 'answer');
+  assert.equal(restored.task.status, 'succeeded');
+  assert.deepEqual(restored.task.result.candidates, []);
+});
