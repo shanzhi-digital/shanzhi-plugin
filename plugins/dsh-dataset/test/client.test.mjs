@@ -62,7 +62,7 @@ async function mountClient(options = {}) {
     calls.push({ operation, payload, request });
     let value, status = 200;
     if (operation === 'questions') value = { items: structuredClone(fixture.items) };
-    else if (operation === 'sources') value = { items: [{ id: 's1', name: '业务库' }, { id: 's2', name: '客户库' }] };
+    else if (operation === 'sources') value = { items: fixture.sources ?? [{ id: 's1', name: '业务库' }, { id: 's2', name: '客户库' }] };
     else if (operation === 'prompt-settings') {
       if (fixture.promptGate) await fixture.promptGate.promise;
       if (fixture.promptError) { status = 503; value = { error: '提示词服务不可用' }; }
@@ -77,7 +77,9 @@ async function mountClient(options = {}) {
       value = { task: structuredClone(fixture.task) };
     } else if (operation === 'ai-tasks') {
       if (fixture.start) await fixture.start.promise;
-      fixture.task = payload.retryFailed ? task('running', { updates: result().updates, candidates: [result().candidates[0]] }, 'task-2') : { ...task(), sourceId: payload.sourceId };
+      fixture.task = payload.retryFailed
+        ? { ...task('running', fixture.task.kind === 'answer' ? { updates: fixture.task.result.updates.filter(item => !item.error), candidates: [] } : { updates: result().updates, candidates: [result().candidates[0]] }, 'task-2'), kind: fixture.task.kind, sourceId: fixture.task.sourceId }
+        : { ...task(), kind: payload.kind || 'generalize', sourceId: payload.sourceId };
       if (fixture.startResponseLost) { fixture.startResponseLost = false; throw new TypeError('Network response lost'); }
       value = { task: structuredClone(fixture.task) };
     } else if (operation === 'ai-tasks/cancel') {
@@ -86,7 +88,10 @@ async function mountClient(options = {}) {
     } else if (operation === 'results-discard') {
       fixture.task = null; value = { ok: true };
     } else if (operation === 'results-save') {
-      fixture.items = [...fixture.items.map((item) => payload.updateIds.includes(item.id) ? { ...item, answer: '补答结果', version: item.version + 1 } : item), ...payload.candidateIds.map((id) => ({ id, version: 1, text: '保存的泛化问题', answer: '查询结果 A', origin: 'generated', links: [] }))];
+      fixture.items = [...fixture.items.map((item) => {
+        const update = fixture.task.result.updates.find(update => payload.updateIds.includes(update.id) && update.id === item.id);
+        return update ? { ...item, answer: update.answer, links: update.links, version: item.version + 1 } : item;
+      }), ...payload.candidateIds.map((id) => ({ id, version: 1, text: '保存的泛化问题', answer: '查询结果 A', origin: 'generated', links: [] }))];
       fixture.task = null; value = { items: structuredClone(fixture.items) };
     } else if (operation === 'save') {
       const existing = fixture.items.find((item) => item.id === payload.id);
@@ -139,8 +144,9 @@ const table = (ui, id) => ui.nodes().find((node) => node.props['data-testid'] ==
 test('registers an isolated question-set page and loads only the new API', async (t) => {
   const ui = await mountClient(); t.after(ui.unmount);
   assert.equal(ui.loaded.id, 'dsh-question-set'); assert.equal(ui.plugin.name, 'question-set');
+  assert.equal(ui.text(ui.nodes().find(node => node.type === 'h1')), '数据集');
   assert.deepEqual(ui.registrations.map(({ meta }) => JSON.parse(JSON.stringify(meta))), [
-    { name: 'main', key: 'question-set' }, { name: 'sidebar.panellist', id: 'question-set', order: 5.5, label: '问题集' },
+    { name: 'main', key: 'question-set' }, { name: 'sidebar.panellist', id: 'question-set', order: 5.5, label: '数据集' },
   ]);
   assert.equal(calls(ui, 'questions')[0].request.method, 'GET'); assert.equal(calls(ui, 'sources').length, 1);
   assert.equal(ui.control('选择问题 问题 1').props.checked, false);
@@ -158,7 +164,7 @@ test('source stays above the toolbar and search follows the selection count besi
   const sourceRow = ui.nodes().find(node => node.props.className === 'qs-source-row');
   const toolbar = ui.nodes().find(node => node.props.className === 'qs-toolbar');
   const filters = toolbar.props.children[0], actions = toolbar.props.children[1];
-  assert.equal(sourceRow.props.children[0].props['aria-label'], '泛化数据源');
+  assert.equal(sourceRow.props.children[0].props['aria-label'], '数据源');
   assert.ok(ui.nodes().indexOf(sourceRow) < ui.nodes().indexOf(toolbar));
   assert.equal(filters.props.className, 'qs-filters');
   assert.equal(filters.props.children[0].props['aria-label'], '问题来源');
@@ -169,7 +175,7 @@ test('source stays above the toolbar and search follows the selection count besi
   assert.equal(searchGroup.props.children[1].props['aria-label'], '搜索问题或答案');
   assert.equal(ui.text(selection.props.children[1]), '清除所有勾选批量删除');
   assert.equal(actions.props.className, 'qs-actions qs-toolbar-actions');
-  assert.equal(ui.text(actions), '泛化问题泛化提示词批量评测新增问题');
+  assert.equal(ui.text(actions), '批量查询答案泛化问题泛化提示词批量评测新增问题');
 });
 
 test('editing a table without a comment displays only its table name', async (t) => {
@@ -256,7 +262,7 @@ test('CRUD sends versions and batch deletion retains only failures for retry', a
 
 test('generalization progress stays in the top bar and completed results open one selectable dialog', async (t) => {
   const ui = await mountClient(); t.after(ui.unmount);
-  await ui.change('泛化数据源', 's2');
+  await ui.change('数据源', 's2');
   await ui.change('选择问题 问题 2', true); await ui.click('泛化问题');
   assert.equal(calls(ui, 'ai-tasks')[0].payload.sourceId, 's2');
   assert.match(ui.text(table(ui, 'task-status')), /正在读取结构.*秒/);
@@ -306,10 +312,10 @@ test('failed-result retry uses task identity and saving consumes the replacement
 
 test('viewing conversation and reentry restore the real task by source without POST or cancellation', async (t) => {
   const ui = await mountClient(); t.after(ui.unmount);
-  await ui.change('泛化数据源', 's2'); await ui.change('选择问题 问题 1', true); await ui.click('泛化问题');
+  await ui.change('数据源', 's2'); await ui.change('选择问题 问题 1', true); await ui.click('泛化问题');
   await ui.click('查看对话'); assert.deepEqual(ui.sessions, ['session-1']);
   await ui.remount();
-  assert.equal(ui.control('泛化数据源').props.value, 's2');
+  assert.equal(ui.control('数据源').props.value, 's2');
   assert.equal(calls(ui, 'ai-tasks?sourceId=s2').length, 2);
   assert.equal(calls(ui, 'ai-tasks').length, 1); assert.equal(calls(ui, 'ai-tasks/cancel').length, 0);
   assert.match(ui.text(table(ui, 'task-status')), /正在读取结构/);
@@ -366,10 +372,10 @@ test('lost start response restores by source without repeating the task POST', a
 test('consumed task snapshots do not restore candidates and source selection survives reentry', async (t) => {
   const ui = await mountClient({ task: { ...task('succeeded', result()), resultState: 'saved' } }); t.after(ui.unmount);
   assert.equal(table(ui, 'task-status'), undefined);
-  await ui.change('泛化数据源', 's2');
+  await ui.change('数据源', 's2');
   ui.fixture.task = { ...task('succeeded', result()), sourceId: 's2', resultState: 'discarded' };
   await ui.remount();
-  assert.equal(ui.control('泛化数据源').props.value, 's2');
+  assert.equal(ui.control('数据源').props.value, 's2');
   assert.ok(calls(ui, 'ai-tasks?sourceId=s2').length);
   assert.equal(table(ui, 'candidates-results'), undefined);
 });
@@ -391,7 +397,7 @@ test('prompt settings cancel, draft reset and save use the shared API', async (t
   assert.equal(ui.nodes().filter(node => node.type === 'textarea').length, 1);
   await ui.change('提示词', '未保存修改'); await ui.click('取消');
   assert.equal(calls(ui, 'prompt-settings').length, 1);
-  await ui.change('泛化数据源', 's2'); await ui.click('泛化提示词');
+  await ui.change('数据源', 's2'); await ui.click('泛化提示词');
   assert.equal(ui.control('提示词').props.value, '当前提示词');
   await ui.click('恢复默认'); assert.equal(ui.control('提示词').props.value, '默认提示词');
   assert.equal(calls(ui, 'prompt-settings').filter(call => call.request.method === 'POST').length, 0);
@@ -445,6 +451,112 @@ test('answer previews clamp via CSS while edit and result dialogs retain the com
   assert.equal(ui.nodes().some(node => node.props.className === 'qs-text qs-answer-preview' && ui.text(node) === answer), true);
   assert.equal(ui.nodes().filter(node => node.type === 'dialog').length, 1);
   assert.ok(ui.nodes().some(node => node.props.className === 'qs-text' && ui.text(node) === answer));
+});
+
+test('row answer queries use only that row without changing the selected questions', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  assert.equal(ui.namedButton('批量查询答案').props.disabled, true);
+  assert.equal(ui.namedButton('重新查询答案 问题 1', true).props.disabled, false);
+  assert.equal(ui.text(ui.namedButton('重新查询答案 问题 1', true)), '重新查询答案');
+  assert.equal(ui.text(ui.namedButton('查询答案 问题 2', true)), '查询答案');
+  await ui.click('重新查询答案 问题 1', true);
+  assert.deepEqual(calls(ui, 'ai-tasks')[0].payload, { kind: 'answer', sourceId: 's1', questions: [{ id: 'q1', version: 1 }] });
+  assert.equal(ui.control('选择问题 问题 1').props.checked, false);
+  ui.fixture.task = { ...ui.fixture.task, status: 'cancelled' }; await ui.advance(); await ui.click('丢弃');
+  await ui.change('选择问题 问题 2', true); await ui.click('重新查询答案 问题 1', true);
+  assert.deepEqual(calls(ui, 'ai-tasks')[1].payload.questions, [{ id: 'q1', version: 1 }]);
+  assert.equal(ui.control('选择问题 问题 1').props.checked, false);
+  assert.equal(ui.control('选择问题 问题 2').props.checked, true);
+  ui.fixture.task = { ...ui.fixture.task, status: 'cancelled' }; await ui.advance(); await ui.click('丢弃');
+  await ui.click('泛化问题');
+  assert.deepEqual(calls(ui, 'ai-tasks')[2].payload, { sourceId: 's1', questions: [{ id: 'q2', version: 1 }] });
+});
+
+test('bulk answer queries include cross-page selections hidden by search and source filters', async (t) => {
+  const ui = await mountClient(); t.after(ui.unmount);
+  await ui.change('数据源', 's2');
+  await ui.change('选择问题 问题 1', true); await ui.click('下一页'); await ui.change('选择问题 问题 13', true);
+  await ui.click('AI'); await ui.change('选择问题 问题 2', true); await ui.change('搜索问题或答案', '找不到的问题');
+  assert.match(ui.text(table(ui, 'questions-table')), /暂无问题/);
+  await ui.click('批量查询答案');
+  assert.deepEqual(calls(ui, 'ai-tasks')[0].payload, { kind: 'answer', sourceId: 's2', questions: [{ id: 'q1', version: 1 }, { id: 'q2', version: 1 }, { id: 'q13', version: 1 }] });
+});
+
+test('answer entry points stay disabled without a source and during restore, start, active tasks or unsaved results', async (t) => {
+  const assertDisabled = (ui) => {
+    assert.equal(ui.namedButton('批量查询答案').props.disabled, true);
+    assert.ok(ui.nodes().filter(node => node.type === 'button' && /^(?:重新)?查询答案 /.test(node.props['aria-label'] || '')).every(node => node.props.disabled));
+  };
+  await t.test('no source', async (t) => {
+    const ui = await mountClient({ fixture: { sources: [] } }); t.after(ui.unmount);
+    await ui.change('选择问题 问题 1', true); assertDisabled(ui);
+    assert.equal(calls(ui, 'ai-tasks').length, 0);
+  });
+  await t.test('restoring and starting', async (t) => {
+    const gate = deferred(); const ui = await mountClient({ fixture: { poll: gate } }); t.after(ui.unmount);
+    assertDisabled(ui); assert.equal(calls(ui, 'ai-tasks').length, 0);
+    gate.resolve(); await ui.flush(); await ui.change('选择问题 问题 1', true);
+    assert.equal(ui.namedButton('批量查询答案').props.disabled, false);
+    ui.fixture.start = deferred(); await ui.click('批量查询答案'); assertDisabled(ui);
+    assert.equal(calls(ui, 'ai-tasks').length, 1);
+    ui.fixture.start.resolve(); await ui.flush(); assertDisabled(ui);
+  });
+  for (const status of ['running', 'cancelling', 'succeeded', 'failed', 'cancelled']) {
+    await t.test(status, async (t) => {
+      const ui = await mountClient({ task: { ...task(status, result()), kind: 'answer' } }); t.after(ui.unmount);
+      if (status !== 'running' && status !== 'cancelling') await ui.change('选择问题 问题 1', true);
+      assertDisabled(ui); assert.equal(calls(ui, 'ai-tasks').length, 0);
+    });
+  }
+});
+
+test('restored answer task keeps query wording and updates-only results can be selectively saved', async (t) => {
+  const snapshot = { updates: [
+    { ...question(1), answer: '重新查询答案', links: [{ tableName: 'new_orders', sourceComment: '新订单表' }] },
+    { ...question(2), answer: '第二个答案' },
+  ], candidates: [] };
+  const ui = await mountClient({ task: { ...task(), kind: 'answer' } }); t.after(ui.unmount);
+  assert.match(ui.text(table(ui, 'task-status')), /正在准备查询/);
+  assert.doesNotMatch(ui.text(table(ui, 'task-status')), /候选问题|泛化/);
+  await ui.remount();
+  assert.equal(calls(ui, 'ai-tasks').length, 0);
+  ui.fixture.task = { ...task('succeeded', snapshot), kind: 'answer' }; await ui.advance(); await ui.click('查看结果');
+  assert.equal(table(ui, 'result-dialog').props['aria-label'], '查询结果');
+  assert.doesNotMatch(ui.text(table(ui, 'combined-results')), /补答|泛化/);
+  await ui.change('选择结果 问题 2', false); await ui.click('保存所选结果');
+  assert.deepEqual(calls(ui, 'results-save')[0].payload, { taskId: 'task-1', candidateIds: [], updateIds: ['q1'] });
+  assert.equal(table(ui, 'task-status'), undefined); assert.equal(table(ui, 'result-dialog'), undefined);
+  assert.equal(ui.fixture.items[0].answer, '重新查询答案'); assert.equal(ui.fixture.items[0].version, 2);
+  assert.equal(ui.fixture.items[0].origin, 'original'); assert.equal(ui.fixture.items[1].answer, '');
+  await ui.click('编辑 问题 1', true);
+  assert.equal(ui.control('答案（选填）').props.value, '重新查询答案');
+  assert.match(ui.text(ui.control('关联表')), /new_orders新订单表/);
+});
+
+test('answer retry retains its kind and top-bar saving writes successful updates only', async (t) => {
+  const snapshot = { updates: [{ ...question(1), answer: '第一次答案' }, { ...question(2), error: '查询失败' }], candidates: [] };
+  const ui = await mountClient({ task: { ...task('succeeded', snapshot), kind: 'answer' } }); t.after(ui.unmount);
+  await ui.click('重试失败');
+  assert.deepEqual(calls(ui, 'ai-tasks')[0].payload, { taskId: 'task-1', retryFailed: true });
+  assert.equal(ui.fixture.task.kind, 'answer');
+  assert.match(ui.text(table(ui, 'task-status')), /正在准备查询/);
+  ui.fixture.task = { ...task('succeeded', { updates: snapshot.updates.map(item => ({ ...item, error: undefined, answer: '重试后答案' })), candidates: [] }, 'task-2'), kind: 'answer' };
+  await ui.advance(); await ui.click('查看结果');
+  assert.equal(table(ui, 'result-dialog').props['aria-label'], '查询结果');
+  await ui.change('全选结果', false); await ui.click('关闭'); await ui.click('保存结果');
+  assert.deepEqual(calls(ui, 'results-save')[0].payload, { taskId: 'task-2', candidateIds: [], updateIds: ['q1', 'q2'] });
+  assert.equal(ui.fixture.items.length, 13); assert.equal(ui.fixture.items[0].answer, '重试后答案');
+  assert.equal(ui.fixture.items[1].origin, 'generated'); assert.equal(ui.fixture.items[1].version, 2);
+});
+
+test('lost answer start response restores query kind without repeating the POST', async (t) => {
+  const ui = await mountClient({ fixture: { startResponseLost: true } }); t.after(ui.unmount);
+  await ui.click('重新查询答案 问题 1', true);
+  assert.equal(calls(ui, 'ai-tasks').length, 1); assert.equal(calls(ui, 'ai-tasks?sourceId=s1').length, 2);
+  assert.match(ui.text(table(ui, 'task-status')), /正在准备查询/);
+  await ui.remount(); assert.equal(calls(ui, 'ai-tasks').length, 1);
+  assert.match(ui.text(table(ui, 'task-status')), /正在准备查询/);
+  assert.equal(calls(ui, 'ai-tasks/cancel').length, 0);
 });
 
 test('unmount while starting aborts observation and does not schedule task polling', async () => {

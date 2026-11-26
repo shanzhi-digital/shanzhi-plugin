@@ -1,4 +1,4 @@
-import { DEFAULT_PROMPT, TOOL_PROTOCOL } from './task-prompts.js';
+import { DEFAULT_PROMPT, TOOL_PROTOCOL, ANSWER_PROMPT } from './task-prompts.js';
 
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { publicMessage: message, status }); };
 const json = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -35,8 +35,10 @@ export function createRoutes({ store, query, flow, tasks, settings }) {
         if (task.status !== 'succeeded') fail('请等待任务处理结束。', 409);
         values = flow.retry(input.taskId);
       } else {
-        if (Object.keys(input).some(key => !['sourceId', 'questions'].includes(key))) fail('泛化参数无效。');
-        values = { ...input, prompt: settings ? (await settings.get()).prompt : DEFAULT_PROMPT };
+        if (Object.keys(input).some(key => !['sourceId', 'questions', 'kind'].includes(key))) fail('问题集任务参数无效。');
+        const kind = input.kind ?? 'generalize';
+        if (!['generalize', 'answer'].includes(kind)) fail('问题集任务类型无效。');
+        values = { ...input, kind, prompt: kind === 'answer' ? ANSWER_PROMPT : settings ? (await settings.get()).prompt : DEFAULT_PROMPT };
       }
       const task = tasks.start(values);
       if (values.previousTaskId) flow.retire(values.previousTaskId);

@@ -22,7 +22,7 @@ async function createProductionServices(ctx, config) {
     const flow = new QuestionFlow({ store, query, bridge, cwd: resolve(config.workingDirectory || process.cwd()) });
     const tasks = new AiTasks({
       validate: input => flow.validate(input),
-      identify: input => ({ sourceId: input.sourceId, kind: 'generalize' }),
+      identify: input => ({ sourceId: input.sourceId, kind: input.kind ?? 'generalize' }),
       execute: (input, signal, report, taskId) => flow.run(input, signal, report, taskId),
     });
     return { db, store, query, flow, tasks };

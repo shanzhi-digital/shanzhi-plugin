@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { questionPrompt, DEFAULT_PROMPT } from './task-prompts.js';
+import { questionPrompt, DEFAULT_PROMPT, ANSWER_PROMPT } from './task-prompts.js';
 
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { publicMessage: message, status }); };
 const text = (value, max, label) => {
@@ -22,6 +22,7 @@ export class QuestionFlow {
 
   validate(input) {
     text(input?.sourceId, 128, '数据源');
+    if (!['generalize', 'answer'].includes(input.kind ?? 'generalize')) fail('问题集任务类型无效。');
     if (!Array.isArray(input.questions) || !input.questions.length) fail('请至少选择一个问题。');
     const seen = new Set();
     for (const item of input.questions) {
@@ -44,12 +45,13 @@ export class QuestionFlow {
     });
     const catalog = await this.query.schema(input.sourceId);
     if (!catalog.tables.length) fail('该数据源没有已启用的数据表，请先在数据源中启用需要的表。');
-    if (input.seed && input.seed.connectionVersion !== catalog.connectionVersion) fail('数据源连接已变化，请重新发起泛化。', 409);
+    if (input.seed && input.seed.connectionVersion !== catalog.connectionVersion) fail('数据源连接已变化，请重新发起任务。', 409);
+    const kind = input.kind ?? 'generalize';
     const operation = {
-      taskId, sourceId: input.sourceId, references: input.questions, all, catalog, signal, report, prompt: input.prompt ?? DEFAULT_PROMPT, phase: 'reading',
-      updates: input.seed ? structuredClone(input.seed.updates) : references.filter(item => !item.answer.trim()).map(item => ({ id: item.id, version: item.version, text: item.text, answer: '', links: [] })),
+      taskId, kind, sourceId: input.sourceId, references: input.questions, all, catalog, signal, report, prompt: input.prompt ?? (kind === 'answer' ? ANSWER_PROMPT : DEFAULT_PROMPT), phase: 'reading',
+      updates: input.seed ? structuredClone(input.seed.updates) : references.filter(item => kind === 'answer' || !item.answer.trim()).map(item => ({ id: item.id, version: item.version, text: item.text, answer: '', links: [] })),
       candidates: input.seed ? structuredClone(input.seed.candidates) : [],
-      planned: Boolean(input.seed), previousTaskId: input.previousTaskId, reason: input.seed?.reason || '', pages: new Set(), queries: new Map(), busy: false, finished: false,
+      planned: kind === 'answer' || Boolean(input.seed), previousTaskId: input.previousTaskId, reason: input.seed?.reason || '', pages: new Set(), queries: new Map(), busy: false, finished: false,
     };
     if (input.seed) {
       for (const item of [...operation.updates, ...operation.candidates]) if (item.error) { item.error = null; item.answer = ''; item.links = []; }
@@ -59,7 +61,7 @@ export class QuestionFlow {
     done.catch(() => {});
     operation.resolve = resolveDone;
     operation.reject = rejectDone;
-    const abort = () => rejectDone(Object.assign(new Error('问题泛化已取消或超时。'), { publicMessage: '问题泛化已取消或超时。' }));
+    const abort = () => rejectDone(Object.assign(new Error('问题集任务已取消或超时。'), { publicMessage: '问题集任务已取消或超时。' }));
     signal.addEventListener('abort', abort, { once: true });
     try {
       const { sessionId } = await this.bridge.create({ cwd: this.cwd });
@@ -72,7 +74,7 @@ export class QuestionFlow {
         if (!operation.finished) rejectDone(cause || Object.assign(new Error('会话结束但未完成问题处理。'), { publicMessage: '会话结束但未完成问题处理，请重试。' }));
       } });
       checked(signal);
-      Promise.resolve().then(() => this.bridge.send({ sessionId, requestId: randomUUID(), text: questionPrompt({ retry: Boolean(input.seed), prompt: operation.prompt }), signal })).catch(rejectDone);
+      Promise.resolve().then(() => this.bridge.send({ sessionId, requestId: randomUUID(), text: questionPrompt({ kind, retry: Boolean(input.seed), prompt: operation.prompt }), signal })).catch(rejectDone);
       return await done;
     } finally {
       signal.removeEventListener('abort', abort);
@@ -86,7 +88,7 @@ export class QuestionFlow {
     const draft = this.drafts.get(taskId);
     if (!draft || draft.state !== 'ready') fail('候选结果已保存、丢弃或失效。', 409);
     if (![...draft.result.updates, ...draft.result.candidates].some(item => item.error)) fail('没有需要重试的失败项。');
-    return { sourceId: draft.sourceId, questions: structuredClone(draft.references), seed: structuredClone(draft.result), previousTaskId: taskId, prompt: draft.prompt };
+    return { kind: draft.kind, sourceId: draft.sourceId, questions: structuredClone(draft.references), seed: structuredClone(draft.result), previousTaskId: taskId, prompt: draft.prompt };
   }
 
   prune(taskIds) {
@@ -169,6 +171,7 @@ export class QuestionFlow {
       }
       if (operation.pages.size !== Math.ceil(operation.catalog.tables.length / PAGE_SIZE)) fail('请先读完全部目录页。');
       if (kind === 'plan') {
+        if (operation.kind === 'answer') fail('查询答案任务不能生成候选问题。');
         if (operation.planned) fail('本次候选已确定，不可重复生成。');
         if (!Array.isArray(input.candidates) || input.candidates.length > 20) fail('候选数量应为0至20条。');
         const seen = new Set(operation.all.map(item => normalize(item.text)));
@@ -195,7 +198,7 @@ export class QuestionFlow {
         const signal = execution?.signal ? AbortSignal.any([operation.signal, execution.signal]) : operation.signal;
         const result = await this.query.query(operation.sourceId, sql, signal);
         checked(signal);
-        if (result.connectionVersion !== operation.catalog.connectionVersion) fail('数据源连接已变化，请重新发起泛化。', 409);
+        if (result.connectionVersion !== operation.catalog.connectionVersion) fail('数据源连接已变化，请重新发起任务。', 409);
         const queryId = randomUUID();
         operation.queries.set(queryId, { itemId: item.id, sql, result });
         return { queryId, ...result };
@@ -230,7 +233,7 @@ export class QuestionFlow {
         if ([...operation.updates, ...operation.candidates].some(pending)) fail('尚有问题未查询回答或说明失败原因。');
         checked(operation.signal);
         const result = visible(operation);
-        this.drafts.set(operation.taskId, { state: 'ready', sourceId: operation.sourceId, references: operation.references, result, prompt: operation.prompt });
+        this.drafts.set(operation.taskId, { state: 'ready', kind: operation.kind, sourceId: operation.sourceId, references: operation.references, result, prompt: operation.prompt });
         if (operation.previousTaskId) this.retire(operation.previousTaskId);
         operation.finished = true;
         operation.phase = 'done';
@@ -246,7 +249,7 @@ export class QuestionFlow {
     const string = { type: 'string' };
     return {
       name: 'question_set_task',
-      description: '仅用于问题集后台任务：read读取真实结构，plan建立候选，query按问题执行真实只读SQL，answer引用查询结果，fail-item记录失败，finish结束处理待用户保存。',
+      description: '仅用于问题集后台任务：read读取真实结构及待查询问题，泛化任务用plan建立候选；查询答案任务直接query，不调用plan。query按问题执行真实只读SQL，answer引用查询结果，fail-item记录失败，finish结束处理待用户保存。',
       parameters: { type: 'object', additionalProperties: false, required: ['operation'], properties: {
         operation: { type: 'string', enum: ['read', 'plan', 'query', 'answer', 'fail-item', 'finish'] }, cursor: { type: 'integer', minimum: 0 },
         candidates: { type: 'array', maxItems: 20, items: { type: 'object', additionalProperties: false, required: ['text'], properties: { text: string } } },

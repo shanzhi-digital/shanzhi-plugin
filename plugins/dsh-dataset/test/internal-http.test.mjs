@@ -33,7 +33,7 @@ function createFixture(events = []) {
     },
   };
   const tasks = new AiTasks({
-    identify: input => ({ sourceId: input.sourceId, kind: 'generalize' }),
+    identify: input => ({ sourceId: input.sourceId, kind: input.kind ?? 'generalize' }),
     execute: (...args) => flow.run(...args),
   });
   const closeTasks = tasks.close.bind(tasks);
@@ -251,4 +251,25 @@ test('initialization failure returns 503 in both entries while prompt settings s
   const saved = await call(plugin.transport.port, `${prefix}prompt-settings`, post({ prompt: '数据库离线时仍可保存' }));
   assert.equal(saved.status, 200);
   assert.equal((await (await plugin.internal(`${prefix}prompt-settings`)).json()).prompt, '数据库离线时仍可保存');
+});
+
+test('answer task started over HTTP is restored with its type through DSH and shares source exclusion', async t => {
+  const plugin = await startPlugin(t);
+  const response = await call(plugin.transport.port, `${prefix}ai-tasks`, post({ kind: 'answer', sourceId: 'source-1', questions: [{ id: 'q1', version: 2 }] }));
+  assert.equal(response.status, 202);
+  const { task } = await response.json();
+  assert.equal(task.kind, 'answer');
+  assert.deepEqual(plugin.executions[0].input.questions, [{ id: 'q1', version: 2 }]);
+  assert.match(plugin.executions[0].input.prompt, /无论是否已有答案都重新执行真实查询/);
+  assert.doesNotMatch(plugin.executions[0].input.prompt, /共享的泛化提示词/);
+  const observed = await (await plugin.internal(`${prefix}ai-tasks?sourceId=source-1`)).json();
+  assert.equal(observed.task.taskId, task.taskId);
+  assert.equal(observed.task.kind, 'answer');
+  const conflict = await plugin.internal(`${prefix}ai-tasks`, post({ sourceId: 'source-1', questions: [{ id: 'q2', version: 1 }] }));
+  assert.equal(conflict.status, 409);
+  plugin.executions[0].complete({ updates: [], candidates: [] });
+  await plugin.services.tasks.tasks.get(task.taskId).done;
+  const completed = await (await plugin.internal(`${prefix}ai-tasks?taskId=${task.taskId}`)).json();
+  assert.equal(completed.task.status, 'succeeded');
+  assert.equal(completed.task.kind, 'answer');
 });

@@ -1,7 +1,7 @@
 {
   "name": "dsh-question-set",
   "version": "0.1.0",
-  "description": "问题集：问题、真实查询答案与关联表，支持勾选泛化及缺失答案补齐。",
+  "description": "数据集：问题、真实查询答案与关联表，支持勾选泛化及缺失答案补齐。",
   "type": "module",
   "main": "./index.js",
   "exports": { ".": "./index.js", "./client": "./client.js", "./package.json": "./package.json", "./cordis.patch.yml": "./cordis.patch.yml" },
