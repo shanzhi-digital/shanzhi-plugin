@@ -154,7 +154,10 @@ test('registers an isolated question-set page and loads only the new API', async
   assert.match(ui.text(table(ui, 'questions-table')), /问题.*答案.*最近评测准确率.*通过状态.*操作/);
   assert.doesNotMatch(ui.text(table(ui, 'questions-table')), /关联表|orders|业务库/);
   assert.equal(ui.namedButton('批量评测').props.disabled, true);
-  assert.ok(ui.nodes().filter(node => node.type === 'button' && /^评测 /.test(node.props['aria-label'] || '')).every(node => node.props.disabled));
+  const evaluations = ui.nodes().filter(node => node.type === 'button' && /^评测 /.test(node.props['aria-label'] || ''));
+  assert.ok(evaluations.length > 0);
+  assert.ok(evaluations.every(node => node.props.disabled && node.props.className === 'qs-button' && !node.props.onClick));
+  assert.ok(!source.includes('qs-evaluate'));
   assert.ok(ui.namedButton('新增问题').props.className.includes('primary'));
   assert.equal(ui.nodes().some((node) => node.type === 'dialog'), false);
 });
@@ -564,4 +567,20 @@ test('unmount while starting aborts observation and does not schedule task polli
   await ui.change('选择问题 问题 1', true); await ui.click('泛化问题');
   ui.unmount(); assert.equal(calls(ui, 'ai-tasks')[0].request.signal.aborted, true);
   gate.resolve(); await ui.flush(); assert.equal(ui.timers.size, 0); assert.equal(calls(ui, 'ai-tasks/cancel').length, 0);
+});
+
+test('search, origin filters and pagination preserve the server newest-first order', async t => {
+  const originals = Array.from({ length: 12 }, (_, index) => ({ ...question(12 - index), origin: 'original' }));
+  const generated = [{ ...question(14), origin: 'generated' }, { ...question(13), origin: 'generated' }];
+  const ui = await mountClient({ fixture: { items: [...originals, ...generated] } }); t.after(ui.unmount);
+  const displayed = () => ui.nodes().filter(node => node.type === 'input' && /^选择问题 /.test(node.props['aria-label'] || '')).map(node => node.props['aria-label']);
+  assert.deepEqual(displayed(), originals.slice(0, 10).map(item => `选择问题 ${item.text}`));
+  await ui.click('下一页');
+  assert.deepEqual(displayed(), [...originals.slice(10), ...generated].map(item => `选择问题 ${item.text}`));
+  await ui.click('用户');
+  assert.deepEqual(displayed(), originals.slice(0, 10).map(item => `选择问题 ${item.text}`));
+  await ui.change('搜索问题或答案', '问题 1');
+  assert.deepEqual(displayed(), ['选择问题 问题 12', '选择问题 问题 11', '选择问题 问题 10', '选择问题 问题 1']);
+  await ui.click('AI');
+  assert.deepEqual(displayed(), generated.map(item => `选择问题 ${item.text}`));
 });

@@ -38,7 +38,7 @@ test('CRUD preserves provenance, checks versions and normalized duplicates, and 
   assert.equal(result.updates[0].links[0].tableName, 'sales');
   assert.equal(result.updates[0].links[0].sourceComment, '销售流水');
   sqlite.exec('UPDATE dsh_source_tables SET source_comment = NULL');
-  assert.equal((await store.list())[0].links[0].sourceComment, '');
+  assert.equal((await store.list()).find(item => item.id === original.id).links[0].sourceComment, '');
   const edited = await store.save({ ...generated, text: '每周销售' });
   assert.equal(edited.answer, ''); assert.deepEqual(edited.links, []); assert.equal(edited.origin, 'generated');
   const answered = await store.save({ ...result.updates[0], text: '季度销售', answer: '用户新填的答案' });
@@ -77,4 +77,24 @@ test('multi-reference generated questions have no false parent and all reference
   await store.save({ ...b, answer: 'updated' });
   await assert.rejects(store.commit({ sourceId: 's', references: [a, b], updates: [{ ...a, answer: '2', links: link() }] }), /已更新/);
   assert.equal((await store.list()).find(item => item.id === a.id).answer, '');
+});
+
+test('original questions precede other origins, newest creation first with stable ID ties', async t => {
+  const { sqlite, store } = fixture(); t.after(() => sqlite.close());
+  const insert = sqlite.prepare('INSERT INTO dsh_questions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  for (const [id, origin, created] of [
+    ['ai-old', 'generated', 3000], ['original-old', 'original', 1000],
+    ['ai-new', 'generated', 5000], ['original-b', 'original', 2000],
+    ['unknown', 'unknown', 4000], ['original-a', 'original', 2000],
+  ]) insert.run('p', id, id, '', 1, created, created, origin, null);
+  const expected = ['original-a', 'original-b', 'original-old', 'ai-new', 'unknown', 'ai-old'];
+  assert.deepEqual((await store.list()).map(item => item.id), expected);
+  const older = (await store.list()).find(item => item.id === 'original-old');
+  const edited = await store.save({ ...older, answer: '手动答案' });
+  assert.equal(edited.createdAt, older.createdAt);
+  assert.deepEqual((await store.list()).map(item => item.id), expected);
+  await store.commit({ sourceId: 's', references: [edited], updates: [{ ...edited, answer: '查询后答案', links: link() }] });
+  assert.deepEqual((await store.list()).map(item => item.id), expected);
+  const newest = await store.save({ text: '最新原问题' });
+  assert.deepEqual((await store.list()).map(item => item.id), [newest.id, ...expected]);
 });
