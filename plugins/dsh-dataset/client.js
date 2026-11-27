@@ -302,7 +302,7 @@ window.__ModuleLoader__.load({
         cell(h('div', null, h('div', { className: 'qs-text' }, item.text), h('span', { className: 'qs-tag' }, origin(item)))),
         cell(h('div', { className: 'qs-text qs-answer-preview' }, item.answer || '—')),
         cell(h('span', { className: 'qs-assessment' }, '—')), cell(h('span', { className: 'qs-assessment' }, '—')),
-        cell(h('div', { className: 'qs-row-actions' }, button(item.answer?.trim() ? '重新查询答案' : '查询答案', () => start('answer', [item]), { disabled: locked || !sourceId || hasResults, 'aria-label': `${item.answer?.trim() ? '重新查询答案' : '查询答案'} ${item.text}` }),
+        cell(h('div', { className: 'qs-row-actions' }, button(item.answer?.trim() ? '重新查询' : '查询答案', () => start('answer', [item]), { disabled: locked || !sourceId || hasResults, 'aria-label': `${item.answer?.trim() ? '重新查询' : '查询答案'} ${item.text}` }),
           button('评测', undefined, { disabled: true, 'aria-label': `评测 ${item.text}`, title: '暂未开放' }), button('编辑', () => setEditing({ question: item }), { disabled: locked, 'aria-label': `编辑 ${item.text}` }),
           button('删除', () => setDeleting([item]), { disabled: locked, 'aria-label': `删除 ${item.text}`, className: 'qs-button danger' })))));
       return h('div', { className: 'dsh-qs', 'data-testid': 'question-set-page' }, h('style', null, css),

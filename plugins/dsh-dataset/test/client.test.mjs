@@ -459,14 +459,14 @@ test('answer previews clamp via CSS while edit and result dialogs retain the com
 test('row answer queries use only that row without changing the selected questions', async (t) => {
   const ui = await mountClient(); t.after(ui.unmount);
   assert.equal(ui.namedButton('批量查询答案').props.disabled, true);
-  assert.equal(ui.namedButton('重新查询答案 问题 1', true).props.disabled, false);
-  assert.equal(ui.text(ui.namedButton('重新查询答案 问题 1', true)), '重新查询答案');
+  assert.equal(ui.namedButton('重新查询 问题 1', true).props.disabled, false);
+  assert.equal(ui.text(ui.namedButton('重新查询 问题 1', true)), '重新查询');
   assert.equal(ui.text(ui.namedButton('查询答案 问题 2', true)), '查询答案');
-  await ui.click('重新查询答案 问题 1', true);
+  await ui.click('重新查询 问题 1', true);
   assert.deepEqual(calls(ui, 'ai-tasks')[0].payload, { kind: 'answer', sourceId: 's1', questions: [{ id: 'q1', version: 1 }] });
   assert.equal(ui.control('选择问题 问题 1').props.checked, false);
   ui.fixture.task = { ...ui.fixture.task, status: 'cancelled' }; await ui.advance(); await ui.click('丢弃');
-  await ui.change('选择问题 问题 2', true); await ui.click('重新查询答案 问题 1', true);
+  await ui.change('选择问题 问题 2', true); await ui.click('重新查询 问题 1', true);
   assert.deepEqual(calls(ui, 'ai-tasks')[1].payload.questions, [{ id: 'q1', version: 1 }]);
   assert.equal(ui.control('选择问题 问题 1').props.checked, false);
   assert.equal(ui.control('选择问题 问题 2').props.checked, true);
@@ -488,7 +488,7 @@ test('bulk answer queries include cross-page selections hidden by search and sou
 test('answer entry points stay disabled without a source and during restore, start, active tasks or unsaved results', async (t) => {
   const assertDisabled = (ui) => {
     assert.equal(ui.namedButton('批量查询答案').props.disabled, true);
-    assert.ok(ui.nodes().filter(node => node.type === 'button' && /^(?:重新)?查询答案 /.test(node.props['aria-label'] || '')).every(node => node.props.disabled));
+    assert.ok(ui.nodes().filter(node => node.type === 'button' && /^(?:重新查询|查询答案) /.test(node.props['aria-label'] || '')).every(node => node.props.disabled));
   };
   await t.test('no source', async (t) => {
     const ui = await mountClient({ fixture: { sources: [] } }); t.after(ui.unmount);
@@ -554,7 +554,7 @@ test('answer retry retains its kind and top-bar saving writes successful updates
 
 test('lost answer start response restores query kind without repeating the POST', async (t) => {
   const ui = await mountClient({ fixture: { startResponseLost: true } }); t.after(ui.unmount);
-  await ui.click('重新查询答案 问题 1', true);
+  await ui.click('重新查询 问题 1', true);
   assert.equal(calls(ui, 'ai-tasks').length, 1); assert.equal(calls(ui, 'ai-tasks?sourceId=s1').length, 2);
   assert.match(ui.text(table(ui, 'task-status')), /正在准备查询/);
   await ui.remount(); assert.equal(calls(ui, 'ai-tasks').length, 1);
